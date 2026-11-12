@@ -21,7 +21,7 @@ class SourcePromptTests(unittest.TestCase):
         source = root / "temp/MaiBot/prompts/zh-CN"
         if not source.is_dir():
             self.skipTest("本地 MaiBot 对照源码未提供")
-        for template in (root / "chat/prompts").glob("*.prompt"):
+        for template in (root / "src/fxbot/chat/prompts").glob("*.prompt"):
             if template.stem in {
                 "maisaka_chat",
                 "maisaka_chat_passive",

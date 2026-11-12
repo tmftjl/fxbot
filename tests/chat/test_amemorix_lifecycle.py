@@ -27,7 +27,9 @@ class KernelResourceTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(folder.cleanup)
         config = AMemorixConfig().model_dump()
         config["storage"]["data_dir"] = folder.name
-        kernel = kernel_module.SDKMemoryKernel(plugin_root=Path("chat/amemorix").resolve(), config=config)
+        kernel = kernel_module.SDKMemoryKernel(
+            plugin_root=Path(kernel_module.__file__).resolve().parents[2], config=config
+        )
         return folder, kernel
 
     async def test_shutdown_releases_sparse_and_metadata_connections(self) -> None:

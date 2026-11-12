@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import logging
 from typing import Any
 from dataclasses import dataclass
@@ -122,6 +123,19 @@ class Router:
             match=lambda event: event.message.plain_text() if event.is_message else None,
             **options,
         )
+
+    def regex(self, name: str, pattern: str, handler: Handler, **options: Any) -> None:
+        """注册文本正则路由，参数为匹配到的完整文本。"""
+        expression = re.compile(pattern)
+
+        def match(event: Event) -> str | None:
+            """非消息事件不参与文本匹配。"""
+            if not event.is_message:
+                return None
+            result = expression.search(event.message.plain_text())
+            return result.group(0) if result is not None else None
+
+        self.add(name, handler, match=match, **options)
 
     async def dispatch(self, bot: BotClient, event: Event) -> DispatchResult:
         """分发单条事件，异常闭锁、取消传播，并在全部退出路径恢复上下文。"""

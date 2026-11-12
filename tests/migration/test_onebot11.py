@@ -6,9 +6,9 @@ import unittest
 from copy import deepcopy
 from unittest.mock import AsyncMock
 
-from core import Message, SessionTarget, MessageSegment, UnsupportedCapability, current_event
-from core.router import Router
-from core.platforms.onebot11 import OneBot11Client, parse_event, parse_message, encode_message
+from fxbot.core import Message, SessionTarget, MessageSegment, UnsupportedCapability, current_event
+from fxbot.core.router import Router
+from fxbot.core.platforms.onebot11 import OneBot11Client, parse_event, parse_message, encode_message
 
 
 def payload(kind: str = "group") -> dict:

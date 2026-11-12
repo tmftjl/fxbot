@@ -6,13 +6,13 @@ exclude = [
     "__pycache__",
     "build",
     "dist",
-    "chat/amemorix",
+    "src/fxbot/chat/amemorix",
 ]
 
 [lint]
 select = ["E", "F", "I", "W", "DTZ"]
 ignore = []
-per-file-ignores = { "system_control/bot_status.py" = ["E501"] }
+per-file-ignores = { "src/fxbot/system_control/bot_status.py" = ["E501"] }
 
 [lint.isort]
 force-sort-within-sections = false

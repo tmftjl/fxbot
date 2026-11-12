@@ -9,7 +9,7 @@ import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 
-from core import (
+from fxbot.core import (
     Event,
     Message,
     SessionTarget,
@@ -57,12 +57,12 @@ class CoreTypeTests(unittest.TestCase):
             Event(None, None, "message", "other", "bot", "user", "", SessionTarget("test", "bot", "private", "user"))
 
     def test_import_in_interpreter_without_site_packages(self) -> None:
-        root = Path(__file__).resolve().parents[2]
+        root = Path(__file__).resolve().parents[2] / "src"
         script = (
             "import sys, importlib.util; "
             "sys.path.insert(0, sys.argv[1]); "
             "assert importlib.util.find_spec('nonebot') is None; "
-            "import core; "
+            "from fxbot import core; "
             "assert core.Message.text('hello').plain_text() == 'hello'; "
             "assert not any(n == 'nonebot' or n.startswith('nonebot.') for n in sys.modules)"
         )

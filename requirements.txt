@@ -1,14 +1,12 @@
-nonebot2[fastapi,httpx]
-nonebot-adapter-onebot
-nonebot-adapter-qq
 openai>=1.0.0
-nonebot-plugin-apscheduler
 pydantic
 sqlmodel
 sqlalchemy
 aiosqlite
 httpx[socks]
 fastapi
+uvicorn
+websockets
 Pillow>=9.2
 playwright>=1.40
 psutil>=5.9.0

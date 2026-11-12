@@ -127,7 +127,9 @@ def audit_repository(root: Path) -> dict:
         check=True,
         capture_output=True,
     )
-    paths = sorted({name for name in result.stdout.decode("utf-8").split("\0") if name.endswith(".py")})
+    paths = sorted(
+        {name for name in result.stdout.decode("utf-8").split("\0") if name.endswith(".py") and (root / name).is_file()}
+    )
     files = [inspect_source((root / name).read_text(encoding="utf-8-sig"), name) for name in paths]
     groups = {}
     for group, selected in (
@@ -141,7 +143,9 @@ def audit_repository(root: Path) -> dict:
             "direct_import_files": len(coupled),
             "logger_only_import_files": sum(item["logger_only_imports"] for item in coupled),
             "import_symbols": sum(len(item["imports"]) for item in coupled),
-            "coupled_by_directory": dict(sorted(Counter(item["path"].split("/")[0] for item in coupled).items())),
+            "coupled_by_directory": dict(
+                sorted(Counter(item["path"].removeprefix("src/fxbot/").split("/")[0] for item in coupled).items())
+            ),
             "registration_candidates": dict(
                 sorted(
                     Counter(

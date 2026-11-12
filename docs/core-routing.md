@@ -1,7 +1,7 @@
 # 核心协议与消息路由
 
-`core` 只依赖标准库，不在导入时注册入口、建立连接或启动后台任务。
-平台协议放在 `core/platforms/`，业务通过核心事件和客户端接口处理消息。
+`fxbot.core` 位于 `src/fxbot/core/`，只依赖标准库，导入时不注册入口、建立连接或启动后台任务。
+平台协议放在 `src/fxbot/core/platforms/`，业务通过核心事件和客户端接口处理消息。
 
 ## 消息入口
 
@@ -30,8 +30,8 @@ OneBot V11 使用 `parse_event(payload, bot_id=...)` 解析平台消息段数组
 ## 使用方式
 
 ```python
-from core import Router, HandlerContext
-from core.platforms.onebot11 import OneBot11Client, parse_event
+from fxbot.core import Router, HandlerContext
+from fxbot.core.platforms.onebot11 import OneBot11Client, parse_event
 
 router = Router()
 
@@ -46,6 +46,9 @@ router.command("ping", "/ping", ping)
 协议连接提供异步 `sender(action, params)` 后构造 `OneBot11Client(bot_id, sender)`，
 将收到的协议数据交给 `parse_event`，再调用 `router.dispatch(client, event)`。
 客户端只做动作和消息编码，连接鉴权、请求与响应关联、超时和断线清理由传输层负责。
-当前仅有测试传输函数，没有可对外监听的网络服务，也没有持久化处理。
+网络传输位于 `src/fxbot/runtime/`，独立应用装配入口为 `src/fxbot/bootstrap.py`。
+反向 WebSocket 地址是 `/onebot/v11/ws`，使用 Bearer 令牌和 Bot ID 白名单校验 Universal 连接。
+动作通过 echo 关联响应，事件使用有界队列顺序分发；超时不自动重试。
+当前独立入口尚未接入会员、AI、数据库或完整控制台。
 
 验证：`python -I -S -m unittest discover -s tests/migration -t .`。

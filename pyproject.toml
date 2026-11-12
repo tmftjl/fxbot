@@ -1,13 +1,9 @@
 [project]
 name = "fxbot"
 version = "0.1.0"
-description = "FxBot NoneBot plugin"
+description = "FxBot standalone messaging application"
 requires-python = ">=3.10"
 dependencies = [
-    "nonebot2[fastapi,httpx]",
-    "nonebot-adapter-onebot",
-    "nonebot-adapter-qq",
-    "nonebot-plugin-apscheduler",
     "pydantic",
     "sqlmodel==0.0.42",
     "sqlalchemy",
@@ -15,6 +11,8 @@ dependencies = [
     "httpx[socks]",
     "openai>=1.0.0",
     "fastapi",
+    "uvicorn",
+    "websockets",
     "Pillow>=10.1",
     "numpy>=2.2.6",
     "scipy>=1.7.0",
@@ -37,8 +35,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["build", "setuptools>=61", "wheel", "ruff"]
 
-[project.entry-points."nonebot.plugins"]
-fxbot = "fxbot"
+[project.scripts]
+fxbot = "fxbot.runtime.cli:main"
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -46,7 +44,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 include-package-data = false
-package-dir = {fxbot = ".", core = "core"}
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["fxbot", "fxbot.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 "*" = ["resources/**/*", "resource/**/*", "*.json"]

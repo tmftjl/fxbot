@@ -8,9 +8,8 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 from contextlib import ExitStack
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, patch
 
-import fxbot as plugin
 from fxbot.chat.focus import manager as focus_module
 from fxbot.chat.tools import subagent
 from fxbot.chat.types import ChatRequest
@@ -18,76 +17,6 @@ from fxbot.chat.tools.types import ToolError, ToolContext
 from fxbot.chat.focus.context import FocusEntry, FocusCheckpointStore
 from fxbot.chat.focus.manager import FocusModeManager
 from fxbot.chat.focus.group_runtime import FocusMember, FocusGroupRuntime
-
-
-class ShutdownTests(unittest.IsolatedAsyncioTestCase):
-    """入口清理先于其他关闭钩子，且单步异常不会截断收尾。"""
-
-    async def test_shutdown_registered_last_once_even_on_startup_failure(self) -> None:
-        for failed in (False, True):
-            with self.subTest(failed=failed):
-                early, stats = AsyncMock(), AsyncMock()
-                hooks = [early]
-
-                async def initialize() -> None:
-                    hooks.append(stats)
-                    if failed:
-                        raise RuntimeError("startup failed")
-
-                driver = SimpleNamespace(on_shutdown=hooks.append)
-                with (
-                    patch.object(plugin, "_shutdown_registered", False),
-                    patch.object(plugin, "get_driver", return_value=driver),
-                    patch.object(plugin.bootstrap, "init", side_effect=initialize) as initialize_mock,
-                ):
-                    if failed:
-                        with self.assertRaisesRegex(RuntimeError, "startup failed"):
-                            await plugin._fxbot_startup()
-                    else:
-                        await plugin._fxbot_startup()
-                    initialize_mock.side_effect = None
-                    await plugin._fxbot_startup()
-                self.assertEqual(list(reversed(hooks)), [plugin._fxbot_shutdown, stats, early])
-
-    async def test_cleanup_order_and_each_failure_is_logged(self) -> None:
-        from fxbot.chat import audit
-        from fxbot.utils import http
-        from fxbot.chat.focus import focus_mode_manager
-        from fxbot.chat.providers import provider_manager
-        from fxbot.chat.continuation import reply_scheduler
-        from fxbot.console.chat_channel import console_chat
-        from fxbot.chat.amemorix.runtime import amemorix_runtime
-        from fxbot.chat.amemorix.writeback import chat_writeback
-
-        steps = [
-            (console_chat, "stop"),
-            (reply_scheduler, "stop"),
-            (focus_mode_manager, "stop_all"),
-            (subagent.subagent_tasks, "cancel_all"),
-            (chat_writeback, "stop"),
-            (audit, "stop_audit_observers"),
-            (amemorix_runtime, "stop"),
-            (provider_manager, "reset"),
-            (http, "close_shared_async_client"),
-        ]
-        for failed in (None, *range(len(steps))):
-            with self.subTest(failed=failed), ExitStack() as stack:
-                calls = []
-
-                def cleanup(index: int) -> AsyncMock:
-                    async def run() -> None:
-                        calls.append(index)
-                        if failed == index:
-                            raise RuntimeError("cleanup failed")
-
-                    return AsyncMock(side_effect=run)
-
-                for index, (target, method) in enumerate(steps):
-                    stack.enter_context(patch.object(target, method, cleanup(index)))
-                logger = stack.enter_context(patch.object(plugin, "logger"))
-                await plugin._fxbot_shutdown()
-                self.assertEqual(calls, list(range(len(steps))))
-                self.assertEqual(logger.opt.return_value.warning.call_count, int(failed is not None))
 
 
 class FocusShutdownTests(unittest.IsolatedAsyncioTestCase):

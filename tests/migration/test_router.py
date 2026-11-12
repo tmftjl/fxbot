@@ -7,8 +7,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from core import Event, Message, SessionTarget, current_event
-from core.router import Router
+from fxbot.core import Event, Message, SessionTarget, current_event
+from fxbot.core.router import Router
 
 
 def event(text: str = "/ping", *, event_type: str = "message") -> Event:
@@ -138,7 +138,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
             router.add("broken", handler, match=match, **options)
             if stage == "preprocessor":
                 router.add_preprocessor(failure)
-            with self.subTest(stage=stage), self.assertLogs("core.router", level="ERROR") as logs:
+            with self.subTest(stage=stage), self.assertLogs("fxbot.core.router", level="ERROR") as logs:
                 result = await router.dispatch(self.bot, event())
             self.assertTrue(result.blocked)
             self.assertTrue(result.failed)
@@ -166,7 +166,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
         fallback = AsyncMock()
         self.router.message("send", handler, block=False)
         self.router.message("fallback", fallback, priority=99)
-        with self.assertLogs("core.router", level="ERROR"):
+        with self.assertLogs("fxbot.core.router", level="ERROR"):
             result = await self.router.dispatch(self.bot, event())
         self.assertEqual(result.failed, ("send",))
         fallback.assert_not_awaited()

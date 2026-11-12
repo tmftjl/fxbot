@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-DIST = ROOT / "console" / "web" / "dist"
+DIST = ROOT / "src" / "fxbot" / "console" / "web" / "dist"
 OUTPUT = ROOT / "temp"
 CONVERSATION = "11111111-1111-4111-8111-111111111111"
 
