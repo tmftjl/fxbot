@@ -31,7 +31,7 @@ def compare(label, before, after, *, number):
 
 async def dispatch_comparison():
     """对比同样十个空通知订阅者下的完整派发。"""
-    from src.plugins.nonebot_plugin_fxbot.chat import audit, hooks, extensions
+    from fxbot.chat import audit, hooks, extensions
 
     context = hooks.ChatHookContext("bench:bot:private:user")
     details = {"items": [{"id": index, "text": "sample", "tags": ["a", "b"]} for index in range(100)]}
@@ -69,7 +69,7 @@ async def dispatch_comparison():
 
 def main():
     """运行注册读取和通知派发基准，不修改持久配置或发起模型请求。"""
-    from src.plugins.nonebot_plugin_fxbot.chat.hook_registry import (
+    from fxbot.chat.hook_registry import (
         CallbackRegistry,
         ordered_callbacks,
         register_callback,

@@ -15,17 +15,18 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import emoji, vision
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import emoji_tools
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatTurn, ChatTurnItem
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+
+from fxbot.db import base_models
+from fxbot.chat import emoji, vision
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.memory import state, migrate
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.heart_flow import emoji_tools
+from fxbot.chat.memory.models import ChatTurn, ChatTurnItem
+from fxbot.chat.message_receive import sender
+from fxbot.chat.memory.repository import chat_repository
 
 
 def request(tenant: str) -> ChatRequest:

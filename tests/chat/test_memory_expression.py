@@ -11,17 +11,18 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 from sqlalchemy import update
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import (
+
+from fxbot.db import base_models
+from fxbot.chat.memory import (
     state as memory_state,
     config as config_module,
     migrate,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.memory.inject import learning_context
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatMessage, utc_now_naive
-from src.plugins.nonebot_plugin_fxbot.chat.memory.expression import (
+from fxbot.chat.providers import LLMResponse
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.memory.inject import learning_context
+from fxbot.chat.memory.models import ChatMessage, utc_now_naive
+from fxbot.chat.memory.expression import (
     CHUNK_LENGTH,
     ExpressionItem,
     text_hash,
@@ -34,7 +35,7 @@ from src.plugins.nonebot_plugin_fxbot.chat.memory.expression import (
     parse_text_expressions,
     extract_text_expressions,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.memory.repository import chat_repository
 
 U1 = "50001"
 U2 = "50002"

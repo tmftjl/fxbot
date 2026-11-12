@@ -1,11 +1,12 @@
 [project]
-name = "nonebot-plugin-fxbot"
+name = "fxbot"
 version = "0.1.0"
 description = "FxBot NoneBot plugin"
 requires-python = ">=3.10"
 dependencies = [
     "nonebot2[fastapi,httpx]",
     "nonebot-adapter-onebot",
+    "nonebot-adapter-qq",
     "nonebot-plugin-apscheduler",
     "pydantic",
     "sqlmodel==0.0.42",
@@ -33,16 +34,26 @@ dependencies = [
     "bilibili-api-python>=17.4.1,<18.0.0",
 ]
 
+[project.optional-dependencies]
+dev = ["build", "setuptools>=61", "wheel", "ruff"]
+
 [project.entry-points."nonebot.plugins"]
-nonebot_plugin_fxbot = "nonebot_plugin_fxbot"
+fxbot = "fxbot"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["nonebot_plugin_fxbot*"]
+[tool.setuptools]
+include-package-data = false
+package-dir = {fxbot = ".", core = "core"}
 
 [tool.setuptools.package-data]
-nonebot_plugin_fxbot = ["resources/**/*", "chat/prompts/*.prompt", "chat/amemorix/prompts/**/*.prompt", "plugins/infinite_gen2/LICENSE"]
+"*" = ["resources/**/*", "resource/**/*", "*.json"]
+fxbot = ["resources/**/*", "console/web/dist/**/*"]
+"fxbot.chat" = ["prompts/*.prompt"]
+"fxbot.chat.amemorix" = ["prompts/**/*.prompt"]
+"fxbot.plugins.help" = ["resources/**/*"]
+"fxbot.plugins.wuwa_emoji" = ["char_alias.json"]
+"fxbot.plugins.video_parser.parsers" = ["a_bogus.cjs"]
+"fxbot.plugins.infinite_gen2" = ["LICENSE"]

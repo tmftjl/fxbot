@@ -9,13 +9,13 @@ from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import router, service as service_module, message_adapter as adapter_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import debounce
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
+from fxbot.chat import router, service as service_module, message_adapter as adapter_module
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.behavior import debounce
+from fxbot.chat.providers import LLMResponse
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
 
 from .support import RouterUnitTests
 

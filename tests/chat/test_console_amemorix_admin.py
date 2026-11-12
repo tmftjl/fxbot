@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-from src.plugins.nonebot_plugin_fxbot.console.routes import amemorix
+
+from fxbot.console.routes import amemorix
 
 
 class _Store:

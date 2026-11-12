@@ -8,15 +8,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-from src.plugins.nonebot_plugin_fxbot.chat import router, service as service_module, message_adapter
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import reply_gate as reply_gate_module
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import PendingBatch, DebounceRegistry
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.reply_gate import (
+
+from fxbot.chat import router, service as service_module, message_adapter
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.behavior import reply_gate as reply_gate_module
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.message_receive import sender as sender_module
+from fxbot.chat.behavior.debounce import PendingBatch, DebounceRegistry
+from fxbot.chat.behavior.reply_gate import (
     ReplyGate,
     DynamicReplyGate,
     ReplyGateRegistry,
@@ -26,7 +27,7 @@ from src.plugins.nonebot_plugin_fxbot.chat.behavior.reply_gate import (
     summarize_pending_texts,
     estimate_reply_probability,
 )
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
+from fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
 
 from .support import RouterUnitTests
 
@@ -544,7 +545,7 @@ class SessionConsoleTests(unittest.IsolatedAsyncioTestCase):
     """控制台读取与保存会话设置。"""
 
     async def test_clear_session_reports_persistence_and_focus_failures(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.focus import focus_mode_manager
+        from fxbot.chat.focus import focus_mode_manager
 
         for ready, focus_error, storage_error in (
             (True, False, False),

@@ -8,26 +8,26 @@ from typing import Any
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import typo as typo_module, service as service_module
-from src.plugins.nonebot_plugin_fxbot.adapter import (
+from fxbot.chat import typo as typo_module, service as service_module
+from fxbot.adapter import (
     PlatformAdapter,
     UnsupportedCapability,
     OneBotV11MessageAdapter,
     OneBotV12MessageAdapter,
     QQOfficialMessageAdapter,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.quote import (
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.behavior.quote import (
     QuoteCounter,
     decide_quote,
     quote_probability,
     normalize_quote_frequency,
     private_quote_probability,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module
+from fxbot.chat.message_receive import sender as sender_module
 
 
 def _request(**values: object) -> ChatRequest:

@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from src.plugins.nonebot_plugin_fxbot.chat.web import (
+
+from fxbot.chat.web import (
     ADAPTERS,
     WebRuntimeConfig,
     WebSearchService,
@@ -17,12 +18,12 @@ from src.plugins.nonebot_plugin_fxbot.chat.web import (
     result_text,
     web_runtime,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolContext, result as result_module, default_registry
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import generator
-from src.plugins.nonebot_plugin_fxbot.chat.web.models import SearchHit, PageResult, SearchResult, WebSearchError
-from src.plugins.nonebot_plugin_fxbot.chat.tools.store import ToolResultStore
-from src.plugins.nonebot_plugin_fxbot.chat.tools.read_result import read_tool_result_tool
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+from fxbot.chat.tools import ToolContext, result as result_module, default_registry
+from fxbot.chat.replyer import generator
+from fxbot.chat.web.models import SearchHit, PageResult, SearchResult, WebSearchError
+from fxbot.chat.tools.store import ToolResultStore
+from fxbot.chat.tools.read_result import read_tool_result_tool
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )
@@ -103,7 +104,7 @@ class WebConfigTests(unittest.TestCase):
                 "model_routing": {"web_search": "ds"},
             }
         }
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.web.config.get_manager") as manager:
+        with patch("fxbot.chat.web.config.get_manager") as manager:
             manager.return_value.get_system.return_value = fake
             config = web_runtime()
         self.assertTrue(config.enabled)
@@ -114,7 +115,7 @@ class WebConfigTests(unittest.TestCase):
         payload = self._payload()
         payload["chat"]["web"]["services"][0]["category"] = "programming"  # type: ignore[index]
         validate_system_config(payload)
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.web.config.get_manager") as manager:
+        with patch("fxbot.chat.web.config.get_manager") as manager:
             manager.return_value.get_system.return_value = payload
             config = web_runtime()
         self.assertTrue(config.enabled)
@@ -124,20 +125,20 @@ class WebConfigTests(unittest.TestCase):
         payload = self._payload()
         payload["chat"]["web"]["services"][0]["server_ref"] = "mc-a"  # type: ignore[index]
         validate_system_config(payload)
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.web.config.get_manager") as manager:
+        with patch("fxbot.chat.web.config.get_manager") as manager:
             manager.return_value.get_system.return_value = payload
             config = web_runtime()
         self.assertTrue(config.enabled)
         self.assertFalse(hasattr(config.service, "server_ref"))
 
     def test_runtime_disabled_on_bad_config(self) -> None:
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.web.config.get_manager") as manager:
+        with patch("fxbot.chat.web.config.get_manager") as manager:
             manager.return_value.get_system.side_effect = RuntimeError
             self.assertFalse(web_runtime().enabled)
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.web.config.get_manager") as manager:
+        with patch("fxbot.chat.web.config.get_manager") as manager:
             manager.return_value.get_system.return_value = {"chat": {"web": []}}
             self.assertFalse(web_runtime().enabled)
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.web.config.get_manager") as manager:
+        with patch("fxbot.chat.web.config.get_manager") as manager:
             manager.return_value.get_system.return_value = {
                 "chat": {
                     "web": {"preview_chars": True, "services": [{"name": "ds"}]},
@@ -334,7 +335,7 @@ class ReadToolResultTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.store = ToolResultStore()
         self.result_id = self.store.save("s-1", "web_search", "甲" * 100 + "关键词" + "乙" * 100)
-        patcher = patch("src.plugins.nonebot_plugin_fxbot.chat.tools.read_result.tool_result_store", self.store)
+        patcher = patch("fxbot.chat.tools.read_result.tool_result_store", self.store)
         patcher.start()
         self.addCleanup(patcher.stop)
 

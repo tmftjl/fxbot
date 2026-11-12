@@ -6,8 +6,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import generator
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
+from fxbot.chat.replyer import generator
+from fxbot.chat.providers import LLMResponse
 
 MESSAGES = [{"role": "user", "content": "在吗"}]
 

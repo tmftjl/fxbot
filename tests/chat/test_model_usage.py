@@ -9,13 +9,14 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import delete
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import voice
-from src.plugins.nonebot_plugin_fxbot.utils.tz import now, to_naive_utc
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state as memory_state, migrate, expression_vector
-from src.plugins.nonebot_plugin_fxbot.chat.providers import usage
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host import llm
-from src.plugins.nonebot_plugin_fxbot.chat.providers.usage import (
+
+from fxbot.db import base_models
+from fxbot.chat import voice
+from fxbot.utils.tz import now, to_naive_utc
+from fxbot.chat.memory import state as memory_state, migrate, expression_vector
+from fxbot.chat.providers import usage
+from fxbot.chat.amemorix._host import llm
+from fxbot.chat.providers.usage import (
     ModelTaskUsage,
     usage_repository,
     get_model_task_usage,

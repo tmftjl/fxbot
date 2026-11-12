@@ -13,16 +13,17 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import migrate
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix import image_writeback as bridge_module
-from src.plugins.nonebot_plugin_fxbot.chat.tools.types import ToolError, ToolContext
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatMessage
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host import llm as host_llm
-from src.plugins.nonebot_plugin_fxbot.chat.tools.amemorix import query_image_memory_tool
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.image_journal import ImageWritebackJournal
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.core.image.embedder import HostImageEmbedder
+
+from fxbot.db import base_models
+from fxbot.chat.memory import migrate
+from fxbot.chat.amemorix import image_writeback as bridge_module
+from fxbot.chat.tools.types import ToolError, ToolContext
+from fxbot.chat.memory.models import ChatMessage
+from fxbot.chat.amemorix._host import llm as host_llm
+from fxbot.chat.tools.amemorix import query_image_memory_tool
+from fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.amemorix.image_journal import ImageWritebackJournal
+from fxbot.chat.amemorix.core.image.embedder import HostImageEmbedder
 
 
 class ImageEmbedderBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -110,7 +111,7 @@ class ImageMemoryBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(restarted.next_job())
 
     async def test_image_query_rejects_foreign_message(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.tools import amemorix as tools
+        from fxbot.chat.tools import amemorix as tools
 
         context = ToolContext(user_id="u1", group_id="g1", session_id=self.tenant, platform="test")
         with patch.object(tools, "amemorix_runtime", self.runtime):

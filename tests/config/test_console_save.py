@@ -10,10 +10,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from src.plugins.nonebot_plugin_fxbot.utils.cache import cache
-from src.plugins.nonebot_plugin_fxbot.config.manager import ConfigManager
-from src.plugins.nonebot_plugin_fxbot.console.routes import config as config_routes, ai_providers
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS
+
+from fxbot.utils.cache import cache
+from fxbot.config.manager import ConfigManager
+from fxbot.console.routes import config as config_routes, ai_providers
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS
 
 
 class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
@@ -75,7 +76,7 @@ class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
             invalid["chat"].update(changes)
             with (
                 self.subTest(changes=changes),
-                patch("src.plugins.nonebot_plugin_fxbot.config.storage.ConfigStorage.write") as write,
+                patch("fxbot.config.storage.ConfigStorage.write") as write,
                 self.assertRaisesRegex(ValueError, field),
             ):
                 self.manager.save_console_configs({"system": invalid, "example": {"enabled": False}})
@@ -104,7 +105,7 @@ class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
         for value in ({"enabled": "yes"}, None, []):
             with (
                 self.subTest(value=value),
-                patch("src.plugins.nonebot_plugin_fxbot.config.storage.ConfigStorage.write") as write,
+                patch("fxbot.config.storage.ConfigStorage.write") as write,
                 self.assertRaises(ValueError),
             ):
                 self.manager.save_console_configs({"system": updated, "example": value})
@@ -156,7 +157,7 @@ class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
             return write(storage, data)
 
         with (
-            patch("src.plugins.nonebot_plugin_fxbot.config.storage.ConfigStorage.write", new=fail_history),
+            patch("fxbot.config.storage.ConfigStorage.write", new=fail_history),
             self.assertRaises(OSError) as raised,
         ):
             self.manager.save_console_configs({"system": updated, "example": {"enabled": False}})
@@ -178,7 +179,7 @@ class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(Path, "read_bytes", new=fail_read),
-            patch("src.plugins.nonebot_plugin_fxbot.config.storage.ConfigStorage.write") as write,
+            patch("fxbot.config.storage.ConfigStorage.write") as write,
             self.assertRaisesRegex(OSError, "snapshot error"),
         ):
             self.manager.save_console_configs({"system": self.valid, "example": {"enabled": False}})
@@ -204,8 +205,8 @@ class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
         updated = deepcopy(self.valid)
         updated["chat"]["max_context_size"] += 1
         with (
-            patch("src.plugins.nonebot_plugin_fxbot.chat.memory.tasks.setup_memory_tasks"),
-            patch("src.plugins.nonebot_plugin_fxbot.membership.tasks.setup_membership_tasks"),
+            patch("fxbot.chat.memory.tasks.setup_memory_tasks"),
+            patch("fxbot.membership.tasks.setup_membership_tasks"),
         ):
             self.manager.save_console_configs({"system": updated, "example": {"enabled": False}})
         for proxy, expected in ((self.system, updated), (self.plugin, {"enabled": False})):
@@ -267,7 +268,7 @@ class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
                 before = self._snapshot()
                 with (
                     patch.object(config_routes, "get_manager", return_value=self.manager),
-                    patch("src.plugins.nonebot_plugin_fxbot.config.storage.ConfigStorage.write") as write,
+                    patch("fxbot.config.storage.ConfigStorage.write") as write,
                     self.assertRaises(HTTPException) as raised,
                 ):
                     await config_routes.update_config(payload)

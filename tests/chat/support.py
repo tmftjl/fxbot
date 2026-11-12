@@ -22,7 +22,7 @@ class ReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
     """隔离回复生成和发送链；Planner 调度由独立会话测试覆盖。"""
 
     def run(self, result=None):
-        from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
+        from fxbot.chat.service import ChatService
 
         original = ChatService._process_with_provider
 
@@ -44,7 +44,7 @@ class RouterUnitTests(unittest.IsolatedAsyncioTestCase):
     def run(self, result=None):
         from types import SimpleNamespace
 
-        from src.plugins.nonebot_plugin_fxbot.chat.router import normal_scheduler
+        from fxbot.chat.router import normal_scheduler
 
         async def submit(service, request, runtime):
             if isinstance(service, SimpleNamespace):

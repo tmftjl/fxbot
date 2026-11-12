@@ -1,4 +1,4 @@
-"""nonebot-plugin-fxbot 启动编排。"""
+"""fxbot 启动编排。"""
 
 from __future__ import annotations
 

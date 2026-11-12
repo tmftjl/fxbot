@@ -6,10 +6,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import conversation
-from src.plugins.nonebot_plugin_fxbot.chat.memory.inject import _jargon_hits, context_user_texts
+from fxbot.chat import service as service_module
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.heart_flow import conversation
+from fxbot.chat.memory.inject import _jargon_hits, context_user_texts
 
 
 class LearningStageTests(unittest.IsolatedAsyncioTestCase):

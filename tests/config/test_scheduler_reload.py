@@ -11,12 +11,13 @@ from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from src.plugins.nonebot_plugin_fxbot.chat import emoji
-from src.plugins.nonebot_plugin_fxbot.membership import tasks as membership_tasks
-from src.plugins.nonebot_plugin_fxbot.chat.memory import tasks as memory_tasks
-from src.plugins.nonebot_plugin_fxbot.utils.cache import cache
-from src.plugins.nonebot_plugin_fxbot.config.manager import ConfigManager
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS
+
+from fxbot.chat import emoji
+from fxbot.membership import tasks as membership_tasks
+from fxbot.chat.memory import tasks as memory_tasks
+from fxbot.utils.cache import cache
+from fxbot.config.manager import ConfigManager
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS
 
 
 class SchedulerReloadTests(unittest.IsolatedAsyncioTestCase):
@@ -113,7 +114,7 @@ class SchedulerReloadTests(unittest.IsolatedAsyncioTestCase):
         self.config["membership"]["schedule_time"] = "09:14"
         with (
             patch.object(memory_tasks, "setup_memory_tasks", side_effect=RuntimeError("scheduler unavailable")),
-            patch("src.plugins.nonebot_plugin_fxbot.config.manager.logger.warning") as warning,
+            patch("fxbot.config.manager.logger.warning") as warning,
         ):
             self.manager.save_console_configs({"system": self.config})
         warning.assert_called_once()

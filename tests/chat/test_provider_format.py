@@ -12,14 +12,14 @@ if importlib.util.find_spec("anthropic") is None:
     # 只是验证转换函数，不需要真实 SDK
     sys.modules["anthropic"] = types.SimpleNamespace(AsyncAnthropic=object)
 
-from src.plugins.nonebot_plugin_fxbot.chat.providers.base import local_http_client
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.openai import (
+from fxbot.chat.providers.base import local_http_client
+from fxbot.chat.providers.entities import LLMResponse
+from fxbot.chat.providers.sources.openai import (
     EMBED_BATCH_LIMIT,
     OpenAIEmbeddingProvider,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.vertex import VertexAIProvider
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.anthropic import AnthropicProvider
+from fxbot.chat.providers.sources.vertex import VertexAIProvider
+from fxbot.chat.providers.sources.anthropic import AnthropicProvider
 
 MESSAGES = [
     {"role": "system", "content": "人格：猫娘"},

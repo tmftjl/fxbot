@@ -9,13 +9,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatMessage, ChatRecallTombstone
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import history
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import PendingBatch
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+
+from fxbot.db import base_models
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import state, migrate
+from fxbot.chat.memory.models import ChatMessage, ChatRecallTombstone
+from fxbot.chat.message_receive import history
+from fxbot.chat.behavior.debounce import PendingBatch
+from fxbot.chat.memory.repository import chat_repository
 
 
 class RecallTombstoneTests(unittest.IsolatedAsyncioTestCase):

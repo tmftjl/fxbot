@@ -10,17 +10,17 @@ from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state as memory_state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse, routing, provider_manager
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import conversation
-from src.plugins.nonebot_plugin_fxbot.chat.session_hooks import SessionPolicy
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS
+from fxbot.db import base_models
+from fxbot.chat import service as service_module
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import state as memory_state, migrate
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse, routing, provider_manager
+from fxbot.chat.heart_flow import conversation
+from fxbot.chat.session_hooks import SessionPolicy
+from fxbot.chat.memory.repository import chat_repository
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS
 
 
 def call(name: str, **arguments) -> dict:

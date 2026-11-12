@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 from uuid import uuid4
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import migrate
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import (
+from fxbot.db import base_models
+from fxbot.chat.memory import migrate
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.memory.models import (
     ChatTurn,
     ChatEmoji,
     ChatStyle,
@@ -19,7 +19,7 @@ from src.plugins.nonebot_plugin_fxbot.chat.memory.models import (
     ChatSessionState,
     utc_now_naive,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.memory.repository import chat_repository
 
 
 class SessionDigestTests(unittest.IsolatedAsyncioTestCase):

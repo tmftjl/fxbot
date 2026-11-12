@@ -8,13 +8,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import router
-from src.plugins.nonebot_plugin_fxbot.chat.types import MentionRef, ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import debounce
-from src.plugins.nonebot_plugin_fxbot.chat.session_hooks import SessionPolicy, register_session_policy
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import (
+from fxbot.chat import router
+from fxbot.chat.types import MentionRef, ChatRequest
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.behavior import debounce
+from fxbot.chat.session_hooks import SessionPolicy, register_session_policy
+from fxbot.chat.behavior.debounce import (
     BATCH_MAX_SECONDS,
     BATCH_MAX_MESSAGES,
     PendingBatch,

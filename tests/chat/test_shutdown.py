@@ -10,14 +10,14 @@ from pathlib import Path
 from contextlib import ExitStack
 from unittest.mock import Mock, AsyncMock, patch
 
-from src.plugins import nonebot_plugin_fxbot as plugin
-from src.plugins.nonebot_plugin_fxbot.chat.focus import manager as focus_module
-from src.plugins.nonebot_plugin_fxbot.chat.tools import subagent
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.tools.types import ToolError, ToolContext
-from src.plugins.nonebot_plugin_fxbot.chat.focus.context import FocusEntry, FocusCheckpointStore
-from src.plugins.nonebot_plugin_fxbot.chat.focus.manager import FocusModeManager
-from src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime import FocusMember, FocusGroupRuntime
+import fxbot as plugin
+from fxbot.chat.focus import manager as focus_module
+from fxbot.chat.tools import subagent
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.tools.types import ToolError, ToolContext
+from fxbot.chat.focus.context import FocusEntry, FocusCheckpointStore
+from fxbot.chat.focus.manager import FocusModeManager
+from fxbot.chat.focus.group_runtime import FocusMember, FocusGroupRuntime
 
 
 class ShutdownTests(unittest.IsolatedAsyncioTestCase):
@@ -50,14 +50,14 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(list(reversed(hooks)), [plugin._fxbot_shutdown, stats, early])
 
     async def test_cleanup_order_and_each_failure_is_logged(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat import audit
-        from src.plugins.nonebot_plugin_fxbot.utils import http
-        from src.plugins.nonebot_plugin_fxbot.chat.focus import focus_mode_manager
-        from src.plugins.nonebot_plugin_fxbot.chat.providers import provider_manager
-        from src.plugins.nonebot_plugin_fxbot.chat.continuation import reply_scheduler
-        from src.plugins.nonebot_plugin_fxbot.console.chat_channel import console_chat
-        from src.plugins.nonebot_plugin_fxbot.chat.amemorix.runtime import amemorix_runtime
-        from src.plugins.nonebot_plugin_fxbot.chat.amemorix.writeback import chat_writeback
+        from fxbot.chat import audit
+        from fxbot.utils import http
+        from fxbot.chat.focus import focus_mode_manager
+        from fxbot.chat.providers import provider_manager
+        from fxbot.chat.continuation import reply_scheduler
+        from fxbot.console.chat_channel import console_chat
+        from fxbot.chat.amemorix.runtime import amemorix_runtime
+        from fxbot.chat.amemorix.writeback import chat_writeback
 
         steps = [
             (console_chat, "stop"),

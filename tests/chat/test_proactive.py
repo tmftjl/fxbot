@@ -9,24 +9,24 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import router, service as service_module, commands, message_adapter
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import generator
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import debounce, reply_gate
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import FORCED_FLUSH_SECONDS, PendingBatch
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.reply_gate import (
+from fxbot.chat import router, service as service_module, commands, message_adapter
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.replyer import generator
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.behavior import debounce, reply_gate
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.message_receive import sender as sender_module
+from fxbot.chat.behavior.debounce import FORCED_FLUSH_SECONDS, PendingBatch
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.chat.behavior.reply_gate import (
     ReplyGate,
     IdleBackoff,
     talk_value_for,
     proactive_switch,
     set_proactive_switch,
 )
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
+from fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
 
 from .support import RouterUnitTests
 

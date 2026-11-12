@@ -7,11 +7,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.tools import forward
-from src.plugins.nonebot_plugin_fxbot.chat.tools.types import ToolError, ToolContext
-from src.plugins.nonebot_plugin_fxbot.chat.tools.runtime import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.message_adapter import message_text
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot11 import _parse_forward_nodes
+from fxbot.chat.tools import forward
+from fxbot.chat.tools.types import ToolError, ToolContext
+from fxbot.chat.tools.runtime import ToolRuntime
+from fxbot.chat.message_adapter import message_text
+from fxbot.adapter.platforms.onebot11 import _parse_forward_nodes
 
 _NODES = {
     "fw1": [

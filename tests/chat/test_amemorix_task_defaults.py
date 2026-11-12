@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host import llm
+from fxbot.chat.amemorix._host import llm
 
 
 class MemoryTaskDefaultsTests(unittest.IsolatedAsyncioTestCase):

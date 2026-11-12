@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, router
+from fxbot.chat import hooks, router
 
 
 class IngressDecisionTests(unittest.IsolatedAsyncioTestCase):

@@ -8,14 +8,14 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock, AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, router, service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.focus import manager as focus_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.session_hooks import SessionPolicy, register_session_policy
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender, history
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.chat import hooks, router, service as service_module
+from fxbot.chat.focus import manager as focus_module
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.session_hooks import SessionPolicy, register_session_policy
+from fxbot.chat.message_receive import sender, history
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
 
 
 class DirectLLMTests(unittest.IsolatedAsyncioTestCase):
@@ -95,7 +95,7 @@ class DirectLLMTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.end.await_args.args[6], [response.text])
 
     async def test_infinite_gen2_toggle_controls_complete_direct_system_prompt(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.plugins.infinite_gen2 import integration
+        from fxbot.plugins.infinite_gen2 import integration
 
         integration.install()
         integration.install()
@@ -432,8 +432,8 @@ class DirectConfigTests(unittest.TestCase):
     """开关由无限二代插件提供，核心只保留会话策略。"""
 
     def test_defaults_and_validation(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.plugins.infinite_gen2.config import validate_config
-        from src.plugins.nonebot_plugin_fxbot.plugins.infinite_gen2.ui_schema import DEFAULTS
+        from fxbot.plugins.infinite_gen2.config import validate_config
+        from fxbot.plugins.infinite_gen2.ui_schema import DEFAULTS
 
         self.assertNotIn("direct_llm", SYSTEM_DEFAULTS["chat"])
         validate_system_config({"chat": {}})
@@ -445,7 +445,7 @@ class DirectConfigTests(unittest.TestCase):
                 validate_config({"direct_llm": value})
 
     def test_console_exposes_switch_in_plugin_card(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.console.routes.config import _chat_config_tab, _plugin_config_tabs
+        from fxbot.console.routes.config import _chat_config_tab, _plugin_config_tabs
 
         chat_card = next(card for card in _chat_config_tab()["cards"] if card["key"] == "chat")
         self.assertFalse(any(field["field"] == "direct_llm" for field in chat_card["schemas"]))

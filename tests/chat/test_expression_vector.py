@@ -8,14 +8,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.memory import (
+from fxbot.chat.memory import (
     config as memory_config,
     expression as expression_module,
     expression_vector as vector_module,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatExpression
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.memory.models import ChatExpression
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )

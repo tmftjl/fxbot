@@ -8,8 +8,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow.attachments import tool_media, resolve_pictures
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.heart_flow.attachments import tool_media, resolve_pictures
 
 
 class ToolMediaTests(unittest.IsolatedAsyncioTestCase):
@@ -77,7 +77,7 @@ class ToolMediaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_attachment_schema_does_not_accept_previous_string_form(self) -> None:
         with patch(
-            "src.plugins.nonebot_plugin_fxbot.chat.heart_flow.attachments.chat_repository.message_by_identity",
+            "fxbot.chat.heart_flow.attachments.chat_repository.message_by_identity",
             AsyncMock(),
         ) as lookup:
             with self.assertRaises(ValueError):

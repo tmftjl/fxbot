@@ -11,18 +11,18 @@ from datetime import datetime
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import work_schedule as schedule
-from src.plugins.nonebot_plugin_fxbot.utils.tz import SHANGHAI_TZ
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.utils.cache import cache
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import turn_scheduler
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import conversation
-from src.plugins.nonebot_plugin_fxbot.chat.session_hooks import SessionPolicy, register_session_policy
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import validate_system_config
-from src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime import FocusEntry, FocusGroupRuntime
+from fxbot.chat import work_schedule as schedule
+from fxbot.utils.tz import SHANGHAI_TZ
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.utils.cache import cache
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.behavior import turn_scheduler
+from fxbot.chat.heart_flow import conversation
+from fxbot.chat.session_hooks import SessionPolicy, register_session_policy
+from fxbot.chat.message_receive import sender
+from fxbot.config.system_defaults import validate_system_config
+from fxbot.chat.focus.group_runtime import FocusEntry, FocusGroupRuntime
 
 
 def config(**values) -> dict:
@@ -117,7 +117,7 @@ class WorkTimeTests(unittest.TestCase):
         self.assertNotEqual(schedule.work_life_prompt(config(), session_id="normal"), "")
 
     def test_console_exposes_exact_requested_fields(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.console.routes.config import _chat_config_tab
+        from fxbot.console.routes.config import _chat_config_tab
 
         card = next(card for card in _chat_config_tab()["cards"] if card["key"] == "chat")
         fields = {entry["field"]: entry for entry in card["schemas"]}
@@ -140,7 +140,7 @@ class WorkLifePromptTests(unittest.TestCase):
         self.assertLess(len(prompt), 120)
 
     def test_normal_planner_and_replyer_follow_switch_and_hot_reload(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.replyer.prompt import build_persona_text
+        from fxbot.chat.replyer.prompt import build_persona_text
 
         for group_id in ("group", None):
             for metadata in ({"planner_loop": True}, {"planner_loop": True, "planner_reply": True}):
@@ -167,7 +167,7 @@ class WorkLifePromptTests(unittest.TestCase):
                     self.assertNotIn("[日常作息]", disabled)
 
     def test_focus_planner_follows_same_switch(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.focus import group_runtime
+        from fxbot.chat.focus import group_runtime
 
         chat = {**config(), "persona": "小鱼"}
         manager = SimpleNamespace(get_system=lambda: {"chat": chat})
@@ -257,7 +257,7 @@ class SchedulePipelineTests(unittest.IsolatedAsyncioTestCase):
         service.queue_message.assert_not_awaited()
 
     async def test_service_skips_model_during_rest(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat import service as service_module
+        from fxbot.chat import service as service_module
 
         service = ChatService(ChatSessionStore())
         request = ChatRequest("tenant", "user", None, "你好", "turn", "msg", "private")
@@ -284,7 +284,7 @@ class SchedulePipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(check.call_args.kwargs["session_id"], "tenant")
 
     async def test_service_rest_check_receives_session_id(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat import service as service_module
+        from fxbot.chat import service as service_module
 
         service = ChatService(ChatSessionStore())
         request = ChatRequest("tenant", "user", None, "你好", "turn", "msg", "private")
@@ -337,7 +337,7 @@ class SchedulePipelineTests(unittest.IsolatedAsyncioTestCase):
         matcher.send.assert_not_awaited()
 
     async def test_focus_closed_window_consumes_pending_and_waits(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.focus import group_runtime
+        from fxbot.chat.focus import group_runtime
 
         group = FocusGroupRuntime("work-schedule")
         group.members["tenant"] = object()

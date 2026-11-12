@@ -6,9 +6,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.openai import _reasoning_of, _inline_reasoning
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.openai_responses import (
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.providers.sources.openai import _reasoning_of, _inline_reasoning
+from fxbot.chat.providers.sources.openai_responses import (
     OpenAIResponsesProvider,
     _input_items,
     _parse_response,

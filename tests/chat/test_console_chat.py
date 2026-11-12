@@ -13,17 +13,18 @@ from unittest.mock import Mock, AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, service as service_module, session_hooks
-from src.plugins.nonebot_plugin_fxbot.config import SYSTEM_DEFAULTS
-from src.plugins.nonebot_plugin_fxbot.console import auth, chat_channel
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolSpec, ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.console.routes import local_chat
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import conversation
-from src.plugins.nonebot_plugin_fxbot.chat.tools.executor import execute_tool, tool_allowed
-from src.plugins.nonebot_plugin_fxbot.chat.tools.registry import ToolRegistry
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender
+
+from fxbot.chat import hooks, service as service_module, session_hooks
+from fxbot.config import SYSTEM_DEFAULTS
+from fxbot.console import auth, chat_channel
+from fxbot.chat.tools import ToolSpec, ToolRuntime
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse
+from fxbot.console.routes import local_chat
+from fxbot.chat.heart_flow import conversation
+from fxbot.chat.tools.executor import execute_tool, tool_allowed
+from fxbot.chat.tools.registry import ToolRegistry
+from fxbot.chat.message_receive import sender
 
 
 class ChannelTests(unittest.IsolatedAsyncioTestCase):
@@ -213,7 +214,7 @@ class ChannelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.channel.snapshot(uuid4()))["items"], [])
 
     async def test_new_runtime_restores_existing_database_history_for_same_webui_identity(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+        from fxbot.chat.memory.repository import chat_repository
 
         history = [
             {"role": "user", "content": "上次的问题", "_sender_id": self.conversation.hex},
@@ -453,7 +454,7 @@ class TransportToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await tool_allowed(spec, runtime, session_id="webui"))
         registry = ToolRegistry()
         registry.register(spec)
-        from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolContext
+        from fxbot.chat.tools import ToolContext
 
         result = await execute_tool(
             "unsafe", {}, ToolContext(session_id="webui"), runtime, allowed_names={"unsafe"}, registry=registry

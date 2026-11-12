@@ -11,17 +11,17 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, session_hooks
-from src.plugins.nonebot_plugin_fxbot.plugins import server_admin as plugin
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolError, ToolContext, ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.permission import checker as permission_checker
-from src.plugins.nonebot_plugin_fxbot.utils.cache import cache
-from src.plugins.nonebot_plugin_fxbot.chat.bindings import PERSONA, get_binding, set_binding
-from src.plugins.nonebot_plugin_fxbot.config.manager import ConfigManager
-from src.plugins.nonebot_plugin_fxbot.plugins.server_admin import store, access, config as plugin_config
+from fxbot.chat import hooks, session_hooks
+from fxbot.plugins import server_admin as plugin
+from fxbot.chat.tools import ToolError, ToolContext, ToolRuntime
+from fxbot.chat.types import ChatRequest
+from fxbot.permission import checker as permission_checker
+from fxbot.utils.cache import cache
+from fxbot.chat.bindings import PERSONA, get_binding, set_binding
+from fxbot.config.manager import ConfigManager
+from fxbot.plugins.server_admin import store, access, config as plugin_config
 
-execution = importlib.import_module("src.plugins.nonebot_plugin_fxbot.plugins.server_admin.executor")
+execution = importlib.import_module("fxbot.plugins.server_admin.executor")
 
 BASE = "onebot11:bot:private:admin"
 SERVER = "onebot11:bot#server:private:admin"
@@ -132,19 +132,11 @@ class ModeTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name)
         manager = ConfigManager()
         self.enterContext(patch.object(store, "get_manager", return_value=manager))
+        self.enterContext(patch("fxbot.config.storage.config_dir", side_effect=lambda name: self.folder(name)))
+        self.enterContext(patch("fxbot.chat.bindings.config_dir", side_effect=lambda name: self.folder(name)))
         self.enterContext(
             patch(
-                "src.plugins.nonebot_plugin_fxbot.config.storage.config_dir", side_effect=lambda name: self.folder(name)
-            )
-        )
-        self.enterContext(
-            patch(
-                "src.plugins.nonebot_plugin_fxbot.chat.bindings.config_dir", side_effect=lambda name: self.folder(name)
-            )
-        )
-        self.enterContext(
-            patch(
-                "src.plugins.nonebot_plugin_fxbot.chat.personas.get_personas_dir",
+                "fxbot.chat.personas.get_personas_dir",
                 side_effect=lambda: self.folder("personas"),
             )
         )
@@ -430,7 +422,7 @@ class PolicySwitchTests(unittest.TestCase):
             )
 
     def test_server_session_ignores_rest_time(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat import work_schedule
+        from fxbot.chat import work_schedule
 
         flags = {"allow_sharing": True, "allow_debounce": True, "allow_typing": True, "allow_split": True}
         with (

@@ -9,15 +9,15 @@ from typing import Any
 from functools import partial
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import service as service_module, context_summary as summary_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.replyer.prompt import assemble_messages
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+from fxbot.chat import service as service_module, context_summary as summary_module
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.replyer.prompt import assemble_messages
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import LLMResponse
+from fxbot.chat.providers.entities import LLMResponse
 
 TENANT = "test:context-summary"
 _STATE = {
@@ -205,7 +205,7 @@ class CompactTests(unittest.IsolatedAsyncioTestCase):
                         patch.object(summary_module, "logger"),
                         patch.object(service_module.memory_state, "is_ready", return_value=False),
                         patch(
-                            "src.plugins.nonebot_plugin_fxbot.chat.focus.focus_mode_manager.clear_context",
+                            "fxbot.chat.focus.focus_mode_manager.clear_context",
                             AsyncMock(),
                         ),
                     ):

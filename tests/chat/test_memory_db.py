@@ -10,10 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.utils.tz import as_shanghai, as_shanghai_local
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import (
+
+from fxbot.db import base_models
+from fxbot.utils.tz import as_shanghai, as_shanghai_local
+from fxbot.chat.memory import state, migrate
+from fxbot.chat.memory.models import (
     ChatTurn,
     ChatMessage,
     ChatTurnItem,

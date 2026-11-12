@@ -6,11 +6,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import router
-from src.plugins.nonebot_plugin_fxbot.chat.types import MentionRef, ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import mentions as mentions_module
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.mentions import split_mentions
+from fxbot.chat import router
+from fxbot.chat.types import MentionRef, ChatRequest
+from fxbot.chat.behavior import mentions as mentions_module
+from fxbot.chat.message_receive import sender as sender_module
+from fxbot.chat.behavior.mentions import split_mentions
 
 
 def _request(**values: object) -> ChatRequest:

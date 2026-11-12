@@ -11,16 +11,17 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state as memory_state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse, provider_manager
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatTurn, ChatPlannerSample
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+
+from fxbot.db import base_models
+from fxbot.chat import service as service_module
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.memory import state as memory_state, migrate
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse, provider_manager
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.memory.models import ChatTurn, ChatPlannerSample
+from fxbot.chat.memory.repository import chat_repository
 
 
 class _FakeConfig:

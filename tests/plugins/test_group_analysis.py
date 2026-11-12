@@ -19,47 +19,47 @@ except ValueError:
     _test_dir = tempfile.mkdtemp(prefix="fxbot-group-analysis-tests-")
     nonebot.init(fxbot_data_dir=_test_dir, fxbot_config_dir=_test_dir)
 
-nonebot.load_plugin("src.plugins.nonebot_plugin_fxbot.plugins.group_analysis")
+nonebot.load_plugin("fxbot.plugins.group_analysis")
 
-from src.plugins.nonebot_plugin_fxbot.config.proxy import ConfigProxy  # noqa: E402
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis import analyzers  # noqa: E402
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import (  # noqa: E402
+from fxbot.config.proxy import ConfigProxy  # noqa: E402
+from fxbot.plugins.group_analysis import analyzers  # noqa: E402
+from fxbot.chat.providers.entities import (  # noqa: E402
     TokenUsage,
     LLMResponse,
     JSONResponse,
     JSONResponseError,
     token_usage_of,
 )
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot11 import (  # noqa: E402
+from fxbot.adapter.platforms.onebot11 import (  # noqa: E402
     OneBotV11MessageAdapter,
     _cq_text,
     _history_message,
 )
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.atri import build_atri_html  # noqa: E402
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.config import (  # noqa: E402
+from fxbot.plugins.group_analysis.atri import build_atri_html  # noqa: E402
+from fxbot.plugins.group_analysis.config import (  # noqa: E402
     DEFAULTS,
     bounded_days,
     validate_config,
 )
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.history import (  # noqa: E402
+from fxbot.plugins.group_analysis.history import (  # noqa: E402
     HistoryMessage,
     build_stats,
     build_user_stats,
     build_analysis_messages,
 )
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.renderer import _build_html  # noqa: E402
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.analyzers import runner  # noqa: E402
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.ui_schema import get_ui_schema  # noqa: E402
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.analyzers.quote import (  # noqa: E402
+from fxbot.plugins.group_analysis.renderer import _build_html  # noqa: E402
+from fxbot.plugins.group_analysis.analyzers import runner  # noqa: E402
+from fxbot.plugins.group_analysis.ui_schema import get_ui_schema  # noqa: E402
+from fxbot.plugins.group_analysis.analyzers.quote import (  # noqa: E402
     GoldenQuoteAnalyzer,
 )
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.analyzers.title import (  # noqa: E402
+from fxbot.plugins.group_analysis.analyzers.title import (  # noqa: E402
     UserTitleAnalyzer,
 )
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.analyzers.topic import (  # noqa: E402
+from fxbot.plugins.group_analysis.analyzers.topic import (  # noqa: E402
     TopicAnalyzer,
 )
-from src.plugins.nonebot_plugin_fxbot.plugins.group_analysis.analyzers.quality import (  # noqa: E402
+from fxbot.plugins.group_analysis.analyzers.quality import (  # noqa: E402
     ChatQualityAnalyzer,
 )
 

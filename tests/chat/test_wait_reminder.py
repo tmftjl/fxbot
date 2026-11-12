@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import plan_flow
+from fxbot.chat.heart_flow import plan_flow
 
 
 class WaitReminderTests(unittest.TestCase):

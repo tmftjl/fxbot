@@ -7,13 +7,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, session_hooks
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.utils.cache import cache
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import prompt
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import prompts as planner_prompts
-from src.plugins.nonebot_plugin_fxbot.plugins.infinite_gen2 import config, integration
-from src.plugins.nonebot_plugin_fxbot.plugins.infinite_gen2.ui_schema import DEFAULTS, get_ui_schema
+from fxbot.chat import hooks, session_hooks
+from fxbot.chat.types import ChatRequest
+from fxbot.utils.cache import cache
+from fxbot.chat.replyer import prompt
+from fxbot.chat.heart_flow import prompts as planner_prompts
+from fxbot.plugins.infinite_gen2 import config, integration
+from fxbot.plugins.infinite_gen2.ui_schema import DEFAULTS, get_ui_schema
 
 
 class InfiniteGen2Tests(unittest.TestCase):

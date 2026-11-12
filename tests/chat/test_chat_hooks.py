@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from dataclasses import FrozenInstanceError
 from unittest.mock import Mock, AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.tools import (
+from fxbot.chat import hooks, service as service_module
+from fxbot.chat.tools import (
     ToolSpec,
     ToolContext,
     ToolRuntime,
@@ -17,11 +17,11 @@ from src.plugins.nonebot_plugin_fxbot.chat.tools import (
     search as search_module,
     executor,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import prompt
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.replyer import prompt
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.message_receive import sender
 
 
 class ChatHooksTests(unittest.IsolatedAsyncioTestCase):
@@ -108,7 +108,7 @@ class ChatHooksTests(unittest.IsolatedAsyncioTestCase):
 
     def test_persona_name_override_loads_corresponding_text(self) -> None:
         self.register("persona", lambda *args: hooks.PersonaOverride(name="运维"))
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.personas.get_persona_text", return_value="新人格"):
+        with patch("fxbot.chat.personas.get_persona_text", return_value="新人格"):
             self.assertEqual(hooks.resolve_persona(self.context, "原名", "原文"), ("运维", "新人格"))
 
     def test_persona_and_prompt_are_wired_without_changing_identity(self) -> None:
@@ -220,7 +220,7 @@ class ChatHooksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persist.await_args.args[2].content, "redacted")
 
     async def test_focus_shared_planner_guard_blocks_provider(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.focus import group_runtime
+        from fxbot.chat.focus import group_runtime
 
         self.register("request_guard", lambda *args: False)
         group = group_runtime.FocusGroupRuntime("hook-test")

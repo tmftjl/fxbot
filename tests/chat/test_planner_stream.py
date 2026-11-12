@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.openai import OpenAIProvider
+from fxbot.chat.providers.sources.openai import OpenAIProvider
 
 
 class PlannerStreamTests(unittest.IsolatedAsyncioTestCase):

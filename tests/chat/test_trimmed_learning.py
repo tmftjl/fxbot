@@ -6,8 +6,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.memory import trimmed
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatMessage
+from fxbot.chat.memory import trimmed
+from fxbot.chat.memory.models import ChatMessage
 
 
 class TrimmedLearningTests(unittest.IsolatedAsyncioTestCase):

@@ -8,9 +8,9 @@ from uuid import uuid4
 from types import SimpleNamespace
 from unittest.mock import Mock, AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import turn_scheduler as scheduler_module
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.reply_gate import ReplyGate
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.behavior import turn_scheduler as scheduler_module
+from fxbot.chat.behavior.reply_gate import ReplyGate
 
 
 class TurnSchedulerTests(unittest.IsolatedAsyncioTestCase):

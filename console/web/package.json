@@ -1,5 +1,5 @@
 {
-  "name": "nonebot-plugin-fxbot-console",
+  "name": "fxbot-console",
   "version": "2.0.0",
   "type": "module",
   "scripts": {

@@ -6,9 +6,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.providers import routing
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host import llm
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host.person_db import person_scope
+from fxbot.chat.providers import routing
+from fxbot.chat.amemorix._host import llm
+from fxbot.chat.amemorix._host.person_db import person_scope
 
 
 class _ConfigManager:
@@ -180,7 +180,7 @@ class HostSessionBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([session for _, session in seen], ["explicit"])
 
     async def test_heuristic_impression_uses_tenant(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.amemorix import inject
+        from fxbot.chat.amemorix import inject
 
         context = inject._RecallContext(tenant="group-session", platform="onebot11", group_id="1", user_id="2")
         with patch.object(inject, "LLMServiceClient") as client_cls:

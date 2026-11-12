@@ -9,18 +9,18 @@ from types import SimpleNamespace
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import migrate, lifecycle
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import plan_flow
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatTurn, ChatMessage, ChatTurnItem
-from src.plugins.nonebot_plugin_fxbot.chat.replyer.prompt import protocol_history, assemble_messages
-from src.plugins.nonebot_plugin_fxbot.chat.message_context import render_message, message_metadata, restore_reference
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import PendingBatch
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive.history import hydrate
+from fxbot.db import base_models
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import migrate, lifecycle
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.heart_flow import plan_flow
+from fxbot.chat.memory.models import ChatTurn, ChatMessage, ChatTurnItem
+from fxbot.chat.replyer.prompt import protocol_history, assemble_messages
+from fxbot.chat.message_context import render_message, message_metadata, restore_reference
+from fxbot.chat.behavior.debounce import PendingBatch
+from fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.message_receive.history import hydrate
 
 
 def request(identity: str = "new", **values) -> ChatRequest:
@@ -109,7 +109,7 @@ class MessageContextTests(unittest.TestCase):
         self.assertIn("时间：2026-11-03 08:00:00", str(messages))
 
     def test_restore_notice_matches_upstream_offline_intervals(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat import message_context
+        from fxbot.chat import message_context
 
         for seconds, expected in [
             (60, "短暂重启"),
@@ -155,7 +155,7 @@ class ContextLifecycleTests(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             patch.object(chat_repository, "get_recent_messages", AsyncMock(return_value=history)) as load,
-            patch("src.plugins.nonebot_plugin_fxbot.chat.memory.state.is_ready", return_value=True),
+            patch("fxbot.chat.memory.state.is_ready", return_value=True),
         ):
             await hydrate(service, self.tenant, 100)
             await hydrate(service, self.tenant, 100)
@@ -178,9 +178,7 @@ class ContextLifecycleTests(unittest.IsolatedAsyncioTestCase):
             request=old, entry=None, limit=100, persona_text="", memory_block="", current_content="旧问题"
         )
         turn_id = old.turn_id
-        with patch(
-            "src.plugins.nonebot_plugin_fxbot.chat.service._memory_block", AsyncMock(return_value="新发言人的参考")
-        ):
+        with patch("fxbot.chat.service._memory_block", AsyncMock(return_value="新发言人的参考")):
             messages = await plan_flow.rebuild_messages(service, context)
         self.assertEqual(old.turn_id, turn_id)
         self.assertEqual(old.message_id, "new")

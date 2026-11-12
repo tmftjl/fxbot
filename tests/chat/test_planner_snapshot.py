@@ -8,10 +8,10 @@ from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import context_summary as summaries
-from src.plugins.nonebot_plugin_fxbot.chat.providers.base import ChatProvider
-from src.plugins.nonebot_plugin_fxbot.chat.providers.manager import ProviderManager
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import LLMResponse
+from fxbot.chat import context_summary as summaries
+from fxbot.chat.providers.base import ChatProvider
+from fxbot.chat.providers.manager import ProviderManager
+from fxbot.chat.providers.entities import LLMResponse
 
 
 class PlannerSnapshotTests(unittest.IsolatedAsyncioTestCase):

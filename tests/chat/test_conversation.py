@@ -10,11 +10,11 @@ from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.trace import TurnTrace
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import conversation
+from fxbot.chat.trace import TurnTrace
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.heart_flow import conversation
 
 
 def call(name: str, **arguments: object) -> dict:
@@ -269,7 +269,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             return LLMResponse(tool_calls=[call("stop")])
 
         self.provider.chat.side_effect = generate
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.context_summary.compact_messages", AsyncMock()) as compact:
+        with patch("fxbot.chat.context_summary.compact_messages", AsyncMock()) as compact:
             await conversation.run(self.service, self.context)
         compact.assert_awaited_once()
 

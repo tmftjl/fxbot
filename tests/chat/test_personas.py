@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 from uuid import uuid4
 
-from src.plugins.nonebot_plugin_fxbot.chat.bindings import PERSONA, get_binding, set_binding
-from src.plugins.nonebot_plugin_fxbot.chat.personas import (
+from fxbot.chat.bindings import PERSONA, get_binding, set_binding
+from fxbot.chat.personas import (
     delete_persona,
     get_personas_dir,
     save_persona_text,
@@ -97,7 +97,7 @@ class ConsolePersonaRouteTests(unittest.IsolatedAsyncioTestCase):
     """控制台只能修改已存在的人格，不再顺带创建。"""
 
     async def test_update_missing_persona_is_rejected(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.console.routes import meta
+        from fxbot.console.routes import meta
 
         result = await meta.update_ai_persona(f"missing-{uuid4().hex}", {"desc": "内容"})
 
@@ -106,8 +106,8 @@ class ConsolePersonaRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_bypasses_cached_persona_list(self) -> None:
         """磁盘上新增的人格默认走缓存看不到，refresh=true 才重新扫描。"""
-        from src.plugins.nonebot_plugin_fxbot.console.routes import meta
-        from src.plugins.nonebot_plugin_fxbot.chat.personas import get_personas_dir, reload_personas
+        from fxbot.chat.personas import reload_personas, get_personas_dir
+        from fxbot.console.routes import meta
 
         reload_personas()
         name = f"disk-{uuid4().hex}"

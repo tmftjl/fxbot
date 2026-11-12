@@ -6,9 +6,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import types as chat_types
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+from fxbot.chat import types as chat_types
+from fxbot.chat.message_receive import sender
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )

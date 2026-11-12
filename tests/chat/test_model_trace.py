@@ -9,11 +9,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import model_trace
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.trace_context import bind_turn, unbind_turn
-from src.plugins.nonebot_plugin_fxbot.chat.providers.usage import usage_repository
-from src.plugins.nonebot_plugin_fxbot.chat.providers.routing import TaskProvider
+from fxbot.chat import model_trace
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.trace_context import bind_turn, unbind_turn
+from fxbot.chat.providers.usage import usage_repository
+from fxbot.chat.providers.routing import TaskProvider
 
 
 def _cleanup(session_id: str) -> None:
@@ -363,7 +363,7 @@ class SnapshotCancellationTests(unittest.IsolatedAsyncioTestCase):
         provider._provider = SimpleNamespace(provider_id="p", get_model=lambda: "m", chat=pending)
         with (
             patch.object(usage_repository, "record", AsyncMock()),
-            patch("src.plugins.nonebot_plugin_fxbot.chat.providers.routing.record_model_call") as record,
+            patch("fxbot.chat.providers.routing.record_model_call") as record,
         ):
             with self.assertRaises(TimeoutError):
                 await asyncio.wait_for(provider.chat(messages=[]), timeout=0.05)
@@ -388,7 +388,7 @@ class SnapshotCancellationTests(unittest.IsolatedAsyncioTestCase):
         provider._provider = SimpleNamespace(provider_id="p", get_model=lambda: "m", chat_stream=stream)
         with (
             patch.object(usage_repository, "record", AsyncMock()),
-            patch("src.plugins.nonebot_plugin_fxbot.chat.providers.routing.record_model_call") as record,
+            patch("fxbot.chat.providers.routing.record_model_call") as record,
         ):
             responses = provider.chat_stream(messages=[])
             await anext(responses)
@@ -420,7 +420,7 @@ class SnapshotCancellationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 with (
                     patch.object(usage_repository, "record", AsyncMock()),
-                    patch("src.plugins.nonebot_plugin_fxbot.chat.providers.routing.record_model_call") as record,
+                    patch("fxbot.chat.providers.routing.record_model_call") as record,
                 ):
                     with self.assertRaises(asyncio.CancelledError):
                         if method == "chat_stream":

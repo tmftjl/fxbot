@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.plugins.nonebot_plugin_fxbot.chat.memory.learning import (
+from fxbot.chat.memory.learning import (
     TenantTarget,
     share_targets,
     share_tenants,
@@ -13,7 +13,7 @@ from src.plugins.nonebot_plugin_fxbot.chat.memory.learning import (
     target_matches,
     find_learning_item,
 )
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
 
 GROUP_TARGET = TenantTarget(platform="onebot11", item_id="100", is_group=True, namespace="onebot11:bot")
 

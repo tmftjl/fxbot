@@ -10,26 +10,27 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 from sqlalchemy import update
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import (
+
+from fxbot.db import base_models
+from fxbot.chat.memory import (
     state as memory_state,
     config as config_module,
     migrate,
 )
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.memory.style import (
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.memory.style import (
     StyleJargon,
     StyleResult,
     StyleExample,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.memory.inject import _STYLE_CHARS, learning_context
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import (
+from fxbot.chat.memory.inject import _STYLE_CHARS, learning_context
+from fxbot.chat.memory.models import (
     ChatStyle,
     ChatJargon,
     ChatMessage,
     utc_now_naive,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.memory.repository import chat_repository
 
 U1 = "40001"
 U2 = "40002"

@@ -8,9 +8,9 @@ from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.providers import routing
-from src.plugins.nonebot_plugin_fxbot.chat.providers.base import ChatProvider
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import (
+from fxbot.chat.providers import routing
+from fxbot.chat.providers.base import ChatProvider
+from fxbot.chat.providers.entities import (
     TokenUsage,
     LLMResponse,
     JSONResponse,
@@ -18,19 +18,19 @@ from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import (
     JSONResponseError,
     token_usage_of,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.openai import OpenAIProvider
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.vertex import VertexAIProvider
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.openai_responses import OpenAIResponsesProvider
+from fxbot.chat.providers.sources.openai import OpenAIProvider
+from fxbot.chat.providers.sources.vertex import VertexAIProvider
+from fxbot.chat.providers.sources.openai_responses import OpenAIResponsesProvider
 
 try:
-    from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.gemini import GeminiProvider
+    from fxbot.chat.providers.sources.gemini import GeminiProvider
 except ModuleNotFoundError as exc:
     if exc.name not in {"google", "google.genai"}:
         raise
     GeminiProvider = None
 
 try:
-    from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.anthropic import AnthropicProvider
+    from fxbot.chat.providers.sources.anthropic import AnthropicProvider
 except ModuleNotFoundError as exc:
     if exc.name != "anthropic":
         raise
@@ -115,7 +115,7 @@ class ProviderJSONTests(unittest.IsolatedAsyncioTestCase):
                         post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda: None, json=lambda: raw))
                     )
                     with patch(
-                        "src.plugins.nonebot_plugin_fxbot.chat.providers.sources.vertex.get_shared_async_client",
+                        "fxbot.chat.providers.sources.vertex.get_shared_async_client",
                         AsyncMock(return_value=http),
                     ):
                         if text == "not json":
@@ -276,7 +276,7 @@ class StreamResponseTests(unittest.IsolatedAsyncioTestCase):
         provider.timeout = 1
         client = SimpleNamespace(stream=response)
         with patch(
-            "src.plugins.nonebot_plugin_fxbot.chat.providers.sources.vertex.get_shared_async_client",
+            "fxbot.chat.providers.sources.vertex.get_shared_async_client",
             AsyncMock(return_value=client),
         ):
             responses = [response async for response in provider.chat_stream([])]

@@ -6,7 +6,7 @@ import copy
 import unittest
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.console.routes import ai_providers
+from fxbot.console.routes import ai_providers
 
 
 class _Chat:

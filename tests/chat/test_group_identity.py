@@ -8,15 +8,15 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot import adapter
-from src.plugins.nonebot_plugin_fxbot.chat.focus import group_runtime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.utils.cache import cache
-from src.plugins.nonebot_plugin_fxbot.chat.group_identity import group_identity_prompt
-from src.plugins.nonebot_plugin_fxbot.chat.replyer.prompt import build_persona_text
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
+from fxbot import adapter
+from fxbot.chat.focus import group_runtime
+from fxbot.chat.types import ChatRequest
+from fxbot.utils.cache import cache
+from fxbot.chat.group_identity import group_identity_prompt
+from fxbot.chat.replyer.prompt import build_persona_text
+from fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
+from fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
+from fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
 
 
 def request(group_id: str | None = "101", role: str | None = None) -> ChatRequest:

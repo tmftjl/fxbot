@@ -12,23 +12,23 @@ from pathlib import Path
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.focus import (
+from fxbot.chat import hooks, service as service_module
+from fxbot.chat.focus import (
     tools as tools_module,
     context as context_module,
     manager as manager_module,
     group_runtime as group_runtime_module,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolSpec, executor as executor_module, default_registry
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.focus.tools import FocusToolRouter
-from src.plugins.nonebot_plugin_fxbot.chat.focus.context import FocusEntry, FocusCheckpointStore
-from src.plugins.nonebot_plugin_fxbot.chat.focus.manager import FocusModeManager, _scope_key
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
-from src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime import FocusMember, FocusMatcher, FocusGroupRuntime
+from fxbot.chat.tools import ToolSpec, executor as executor_module, default_registry
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.focus.tools import FocusToolRouter
+from fxbot.chat.focus.context import FocusEntry, FocusCheckpointStore
+from fxbot.chat.focus.manager import FocusModeManager, _scope_key
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.chat.focus.group_runtime import FocusMember, FocusMatcher, FocusGroupRuntime
 
 SESSION = "test:bot:group:g1"
 OTHER = "test:bot:group:g2"
@@ -77,8 +77,8 @@ class FocusTraceContextTests(unittest.IsolatedAsyncioTestCase):
     """共享规划绑定组身份和参与成员，成功、失败与取消后都恢复外层上下文。"""
 
     async def test_group_context_is_bound_and_restored(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-        from src.plugins.nonebot_plugin_fxbot.chat.trace_context import bind_turn, unbind_turn, current_turn
+        from fxbot.chat.providers import LLMResponse
+        from fxbot.chat.trace_context import bind_turn, unbind_turn, current_turn
 
         for failure in (None, RuntimeError("failed"), asyncio.CancelledError()):
             with self.subTest(failure=failure):
@@ -121,7 +121,7 @@ class FocusSystemPromptTests(unittest.IsolatedAsyncioTestCase):
     """共享规划只贡献一次系统段，参考资料不混入系统指令。"""
 
     async def test_shared_request_has_one_group_scoped_section(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import prompts
+        from fxbot.chat.heart_flow import prompts
 
         seen = []
 
@@ -388,7 +388,7 @@ class GroupRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_at_waits_for_quiet_window(self) -> None:
         request = _request(message_id="2", dedupe_key="msg:2")
         self.group.add_member(_member(request))
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime.quiet_wait", lambda same: 0.0):
+        with patch("fxbot.chat.focus.group_runtime.quiet_wait", lambda same: 0.0):
             await self.group.register(_member(request), request, is_at=False)
             await asyncio.sleep(0.01)
         self.assertIn(SESSION, self.group._ready)
@@ -756,7 +756,7 @@ class FocusReplyValidityTests(unittest.IsolatedAsyncioTestCase):
                 await self.assert_reply_rejected()
 
     async def test_matcher_rechecks_member_after_send_is_queued(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot import adapter
+        from fxbot import adapter
 
         async def send_parts(request, response, runtime, matcher):
             await self.group.remove_member(SESSION, clear_context=True)
@@ -838,8 +838,8 @@ class FocusReplyValidityTests(unittest.IsolatedAsyncioTestCase):
         self.process.assert_not_awaited()
 
     async def test_focus_exposes_same_attachment_schema_as_normal_planner(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import conversation
-        from src.plugins.nonebot_plugin_fxbot.chat.focus.tools import _control_definitions
+        from fxbot.chat.heart_flow import conversation
+        from fxbot.chat.focus.tools import _control_definitions
 
         with patch.object(conversation, "emoji_config", return_value={"use_new_send_logic": True}):
             definitions = _control_definitions([SESSION])

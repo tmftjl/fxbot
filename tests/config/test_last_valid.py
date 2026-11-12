@@ -10,9 +10,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.utils.cache import cache
-from src.plugins.nonebot_plugin_fxbot.config.manager import ConfigManager
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.utils.cache import cache
+from fxbot.config.manager import ConfigManager
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
 
 
 class LastValidSystemConfigTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class LastValidSystemConfigTests(unittest.TestCase):
         self.proxy.save(self.valid)
         self.assertEqual(self.manager.get_system(), self.valid)
         self._write_bad('{"membership": {"enabled": false}, "chat": {"max_context_size": -1}}')
-        with patch("src.plugins.nonebot_plugin_fxbot.config.proxy.logger.warning") as warning:
+        with patch("fxbot.config.proxy.logger.warning") as warning:
             self.assertEqual(self.manager.get_system(), self.valid)
         self.assertIn("max_context_size", warning.call_args.args[0])
         self.assertIn("上一份有效配置", warning.call_args.args[0])
@@ -167,7 +167,7 @@ class LastValidSystemConfigTests(unittest.TestCase):
     def test_failed_atomic_replace_preserves_previous_file(self) -> None:
         self.proxy.save(self.valid)
         with (
-            patch("src.plugins.nonebot_plugin_fxbot.config.storage.os.replace", side_effect=OSError("disk error")),
+            patch("fxbot.config.storage.os.replace", side_effect=OSError("disk error")),
             self.assertRaises(OSError),
         ):
             self.proxy.save(SYSTEM_DEFAULTS)
@@ -182,8 +182,8 @@ class LastValidSystemConfigTests(unittest.TestCase):
         updated["membership"]["enabled"] = False
         self._write_bad(json.dumps(updated))
         with (
-            patch("src.plugins.nonebot_plugin_fxbot.config.storage.os.replace", side_effect=OSError("disk error")),
-            patch("src.plugins.nonebot_plugin_fxbot.config.proxy.logger.warning") as warning,
+            patch("fxbot.config.storage.os.replace", side_effect=OSError("disk error")),
+            patch("fxbot.config.proxy.logger.warning") as warning,
             self.assertRaises(OSError),
         ):
             self.manager.get_system()

@@ -9,14 +9,14 @@ from datetime import datetime, timezone
 from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import router, message_adapter
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.adapter.core.bot import PlatformAdapter
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import PendingBatch, DebounceRegistry
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
+from fxbot.chat import router, message_adapter
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.session import ChatSessionStore
+from fxbot.adapter.core.bot import PlatformAdapter
+from fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
+from fxbot.chat.behavior.debounce import PendingBatch, DebounceRegistry
+from fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
+from fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
 
 from .support import RouterUnitTests
 
@@ -182,7 +182,7 @@ class SessionDedupeTests(unittest.TestCase):
 
     def test_reclaimed_session_removes_seen_keys(self) -> None:
         store = ChatSessionStore()
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.session._MAX_SESSIONS", 1):
+        with patch("fxbot.chat.session._MAX_SESSIONS", 1):
             store.mark_seen("old", "msg:1")
             store.mark_seen("new", "msg:1")
             self.assertNotIn("old", store._seen)

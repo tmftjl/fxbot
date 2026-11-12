@@ -8,15 +8,15 @@ from types import SimpleNamespace
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import typo as typo_module, service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.typo import TypoText, apply_typo
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.session_hooks import SessionPolicy
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+from fxbot.chat import typo as typo_module, service as service_module
+from fxbot.chat.typo import TypoText, apply_typo
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.session_hooks import SessionPolicy
+from fxbot.chat.message_receive import sender as sender_module
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )

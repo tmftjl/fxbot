@@ -9,17 +9,17 @@ from uuid import uuid4
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, service as service_module
-from src.plugins.nonebot_plugin_fxbot.config import SYSTEM_DEFAULTS
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import migrate
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import prompt
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatTurn, ChatMessage, ChatTurnItem
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import history as history_module
+from fxbot.db import base_models
+from fxbot.chat import hooks, service as service_module
+from fxbot.config import SYSTEM_DEFAULTS
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import migrate
+from fxbot.chat.replyer import prompt
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.memory.models import ChatTurn, ChatMessage, ChatTurnItem
+from fxbot.chat.message_receive import history as history_module
 
 
 class ContinuationPipelineTests(unittest.IsolatedAsyncioTestCase):

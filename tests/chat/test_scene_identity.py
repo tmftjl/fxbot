@@ -6,13 +6,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import inject
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import prompt
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix import inject as recall
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import prompts
-from src.plugins.nonebot_plugin_fxbot.chat.work_schedule import work_life_prompt
-from src.plugins.nonebot_plugin_fxbot.chat.memory.prompts import learning_prompt
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import inject
+from fxbot.chat.replyer import prompt
+from fxbot.chat.amemorix import inject as recall
+from fxbot.chat.heart_flow import prompts
+from fxbot.chat.work_schedule import work_life_prompt
+from fxbot.chat.memory.prompts import learning_prompt
 
 
 class ScenePromptTests(unittest.TestCase):

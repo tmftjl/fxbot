@@ -9,8 +9,8 @@ from weakref import WeakSet
 from contextvars import ContextVar
 from unittest.mock import Mock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import audit, hooks, extensions
-from src.plugins.nonebot_plugin_fxbot.chat.hook_registry import CallbackRegistry, ordered_callbacks, register_callback
+from fxbot.chat import audit, hooks, extensions
+from fxbot.chat.hook_registry import CallbackRegistry, ordered_callbacks, register_callback
 
 
 class RegistryTests(unittest.TestCase):

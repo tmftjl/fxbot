@@ -8,14 +8,14 @@ from types import SimpleNamespace
 from dataclasses import replace
 from unittest.mock import Mock, AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks, access, extensions, continuation, session_hooks
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import expression, write_hooks
-from src.plugins.nonebot_plugin_fxbot.chat.stages import execute_stage
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import generator
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
+from fxbot.chat import hooks, access, extensions, continuation, session_hooks
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import expression, write_hooks
+from fxbot.chat.stages import execute_stage
+from fxbot.chat.replyer import generator
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse
 
 
 class ExtensionTests(unittest.IsolatedAsyncioTestCase):
@@ -178,7 +178,7 @@ class ExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["style"] for item in seen], ["候选说法"])
 
     async def test_focus_planning_stage_does_not_borrow_member_identity(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime import FocusGroupRuntime
+        from fxbot.chat.focus.group_runtime import FocusGroupRuntime
 
         seen = []
 
@@ -195,8 +195,8 @@ class ExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [hooks.ChatHookContext("scope", phase="focus_planner")])
 
     async def test_shared_timeline_records_only_sent_parts_and_deduplicates(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.focus.manager import FocusModeManager
-        from src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime import FocusGroupRuntime
+        from fxbot.chat.focus.manager import FocusModeManager
+        from fxbot.chat.focus.group_runtime import FocusGroupRuntime
 
         manager = FocusModeManager()
         group = FocusGroupRuntime("scope", store=SimpleNamespace())
@@ -215,7 +215,7 @@ class ExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(group._ready, set())
 
     async def test_ingress_guard_receives_only_snapshot_and_can_reject(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat import router
+        from fxbot.chat import router
 
         seen = []
 
@@ -279,7 +279,7 @@ class ContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.scheduler.tasks, {})
 
     async def test_continuation_runtime_rejects_file_tool_before_any_filesystem_write(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.chat.tools import (
+        from fxbot.chat.tools import (
             ToolContext,
             file as file_tools,
             executor,
@@ -374,7 +374,7 @@ class ContinuationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_membership_recheck_does_not_use_original_admin(self) -> None:
         binding = replace(self.scheduler.bindings[self.context.session_id], context=replace(self.context, group_id="g"))
-        from src.plugins.nonebot_plugin_fxbot.membership.guard import membership_guard
+        from fxbot.membership.guard import membership_guard
 
         # 直接使用保存的真实实现，避免测试替身掩盖门禁调用参数。
         config = SimpleNamespace(

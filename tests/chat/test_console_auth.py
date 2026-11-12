@@ -9,8 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from src.plugins.nonebot_plugin_fxbot.console import account
-from src.plugins.nonebot_plugin_fxbot.console.routes import auth as auth_routes
+
+from fxbot.console import account
+from fxbot.console.routes import auth as auth_routes
 
 
 class AccountTests(unittest.TestCase):

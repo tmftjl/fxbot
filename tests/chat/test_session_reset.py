@@ -8,11 +8,11 @@ import unittest
 from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state as memory_state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import (
+from fxbot.db import base_models
+from fxbot.chat.memory import state as memory_state, migrate
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.memory.models import (
     ChatTurn,
     ChatEmoji,
     ChatStyle,
@@ -26,13 +26,13 @@ from src.plugins.nonebot_plugin_fxbot.chat.memory.models import (
     ChatPlannerSample,
     ChatRecallTombstone,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.models import ChatPerson
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.service import (
+from fxbot.chat.amemorix.models import ChatPerson
+from fxbot.chat.amemorix.service import (
     _delete_tenant_records,
     _tenant_paragraph_hashes,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.core.storage.metadata_store import MetadataStore
+from fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.amemorix.core.storage.metadata_store import MetadataStore
 
 from .support import ReplyPipelineTests
 
@@ -138,11 +138,9 @@ class SessionResetTests(ReplyPipelineTests):
         wipe = AsyncMock(return_value={"success": True})
         forget = MagicMock()
         with (
-            patch("src.plugins.nonebot_plugin_fxbot.chat.amemorix.service.wipe_tenant", wipe),
-            patch("src.plugins.nonebot_plugin_fxbot.chat.amemorix.writeback.chat_writeback.forget_session", forget),
-            patch(
-                "src.plugins.nonebot_plugin_fxbot.chat.amemorix.image_writeback.image_writeback.forget_session", forget
-            ),
+            patch("fxbot.chat.amemorix.service.wipe_tenant", wipe),
+            patch("fxbot.chat.amemorix.writeback.chat_writeback.forget_session", forget),
+            patch("fxbot.chat.amemorix.image_writeback.image_writeback.forget_session", forget),
         ):
             cleared = await service.reset_session(self.tenant)
 
@@ -157,11 +155,11 @@ class SessionResetTests(ReplyPipelineTests):
         service = ChatService(ChatSessionStore())
         with (
             patch(
-                "src.plugins.nonebot_plugin_fxbot.chat.amemorix.service.wipe_tenant",
+                "fxbot.chat.amemorix.service.wipe_tenant",
                 AsyncMock(return_value={"success": False, "error": "boom"}),
             ),
-            patch("src.plugins.nonebot_plugin_fxbot.chat.amemorix.writeback.chat_writeback.forget_session"),
-            patch("src.plugins.nonebot_plugin_fxbot.chat.amemorix.image_writeback.image_writeback.forget_session"),
+            patch("fxbot.chat.amemorix.writeback.chat_writeback.forget_session"),
+            patch("fxbot.chat.amemorix.image_writeback.image_writeback.forget_session"),
         ):
             cleared = await service.reset_session(self.tenant)
 
@@ -174,7 +172,7 @@ class SessionResetTests(ReplyPipelineTests):
 
     async def test_soft_clear_keeps_learned_rows(self) -> None:
         service = ChatService(ChatSessionStore())
-        with patch("src.plugins.nonebot_plugin_fxbot.chat.amemorix.service.wipe_tenant") as wipe:
+        with patch("fxbot.chat.amemorix.service.wipe_tenant") as wipe:
             await service.clear_session(self.tenant)
 
         wipe.assert_not_called()

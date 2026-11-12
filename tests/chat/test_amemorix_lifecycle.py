@@ -10,12 +10,12 @@ from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.tools import amemorix as memory_tools
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix import inject as memory_inject, runtime, service, writeback
-from src.plugins.nonebot_plugin_fxbot.chat.tools.types import ToolContext
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.core.runtime import sdk_memory_kernel as kernel_module
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.core.runtime.models import KernelSearchRequest
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host.amemorix_config import AMemorixConfig
+from fxbot.chat.tools import amemorix as memory_tools
+from fxbot.chat.amemorix import inject as memory_inject, runtime, service, writeback
+from fxbot.chat.tools.types import ToolContext
+from fxbot.chat.amemorix.core.runtime import sdk_memory_kernel as kernel_module
+from fxbot.chat.amemorix.core.runtime.models import KernelSearchRequest
+from fxbot.chat.amemorix._host.amemorix_config import AMemorixConfig
 
 
 class KernelResourceTests(unittest.IsolatedAsyncioTestCase):

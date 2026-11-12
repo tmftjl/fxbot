@@ -8,18 +8,18 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import service as service_module, capabilities as capabilities_module
-from src.plugins.nonebot_plugin_fxbot.chat.focus import focus_mode_manager
-from src.plugins.nonebot_plugin_fxbot.chat.tools import result as result_module, subagent
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import generator
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.tools.store import ToolResultStore
-from src.plugins.nonebot_plugin_fxbot.chat.tools.types import ToolError, ToolContext
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+from fxbot.chat import service as service_module, capabilities as capabilities_module
+from fxbot.chat.focus import focus_mode_manager
+from fxbot.chat.tools import result as result_module, subagent
+from fxbot.chat.replyer import generator
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.tools.store import ToolResultStore
+from fxbot.chat.tools.types import ToolError, ToolContext
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import LLMResponse
+from fxbot.chat.providers.entities import LLMResponse
 
 
 def _caps(**overrides: object) -> dict[str, object]:

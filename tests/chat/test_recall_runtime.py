@@ -8,15 +8,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import context_summary as summary_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import lifecycle as lifecycle_module
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.focus.context import FocusEntry, FocusCheckpointStore, restore_entries
-from src.plugins.nonebot_plugin_fxbot.chat.replyer.prompt import assemble_messages
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import DebounceRegistry
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime import FocusGroupRuntime
+from fxbot.chat import context_summary as summary_module
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import lifecycle as lifecycle_module
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.focus.context import FocusEntry, FocusCheckpointStore, restore_entries
+from fxbot.chat.replyer.prompt import assemble_messages
+from fxbot.chat.behavior.debounce import DebounceRegistry
+from fxbot.chat.providers.entities import LLMResponse
+from fxbot.chat.focus.group_runtime import FocusGroupRuntime
 
 TENANT = "test:recall-runtime"
 
@@ -62,7 +62,7 @@ class DebounceDiscardTests(unittest.TestCase):
     """撤回消息从待合并批次里去掉；触发消息被撤回时整批取消。"""
 
     def setUp(self) -> None:
-        patcher = patch("src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce._mode", return_value="natural")
+        patcher = patch("fxbot.chat.behavior.debounce._mode", return_value="natural")
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -171,7 +171,7 @@ class RecallLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(lifecycle_module.chat_repository, "invalidate_message", AsyncMock(return_value=result)),
             patch.object(lifecycle_module.chat_repository, "invalidate_generation", AsyncMock(return_value=1)),
             patch(
-                "src.plugins.nonebot_plugin_fxbot.chat.focus.focus_mode_manager.discard_message",
+                "fxbot.chat.focus.focus_mode_manager.discard_message",
                 AsyncMock(return_value=False),
             ),
         ):

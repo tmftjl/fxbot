@@ -8,12 +8,12 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.adapter import UnsupportedCapability
-from src.plugins.nonebot_plugin_fxbot.chat.tools import file as send_file
-from src.plugins.nonebot_plugin_fxbot.chat.tools.types import ToolError, ToolContext
-from src.plugins.nonebot_plugin_fxbot.chat.tools.runtime import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.tools.registry import default_registry
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
+from fxbot.adapter import UnsupportedCapability
+from fxbot.chat.tools import file as send_file
+from fxbot.chat.tools.types import ToolError, ToolContext
+from fxbot.chat.tools.runtime import ToolRuntime
+from fxbot.chat.tools.registry import default_registry
+from fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
 
 
 def _runtime(event=None) -> ToolRuntime:

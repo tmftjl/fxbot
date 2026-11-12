@@ -16,24 +16,25 @@ from unittest.mock import AsyncMock, patch
 from sqlmodel import select
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import (
+
+from fxbot.db import base_models
+from fxbot.chat import (
     typo as typo_module,
     router,
     service as service_module,
     session as session_module,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state as memory_state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.behavior import response as response_module
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse, provider_manager
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatTurn, ChatTrace, ChatMessage, ChatTurnItem
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module, history as history_module
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.debounce import PendingBatch
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import ChatRepository, chat_repository
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.memory import state as memory_state, migrate
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.behavior import response as response_module
+from fxbot.chat.providers import LLMResponse, provider_manager
+from fxbot.chat.memory.models import ChatTurn, ChatTrace, ChatMessage, ChatTurnItem
+from fxbot.chat.message_receive import sender as sender_module, history as history_module
+from fxbot.chat.behavior.debounce import PendingBatch
+from fxbot.chat.memory.repository import ChatRepository, chat_repository
 
 from .support import RouterUnitTests, ReplyPipelineTests
 

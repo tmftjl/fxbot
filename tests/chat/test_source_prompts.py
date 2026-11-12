@@ -7,10 +7,10 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import generator
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import prompts
-from src.plugins.nonebot_plugin_fxbot.chat.focus.tools import _prefix_local_refs, _control_definitions
+from fxbot.chat.replyer import generator
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.heart_flow import prompts
+from fxbot.chat.focus.tools import _prefix_local_refs, _control_definitions
 
 
 class SourcePromptTests(unittest.TestCase):

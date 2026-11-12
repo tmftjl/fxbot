@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.heart_flow import emoji_tools
+from fxbot.chat.heart_flow import emoji_tools
 
 
 class EmojiPlannerTests(unittest.IsolatedAsyncioTestCase):

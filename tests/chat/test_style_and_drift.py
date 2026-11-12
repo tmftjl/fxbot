@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import prompt
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.replyer import prompt
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
 
 
 def _request(*, group: bool = True, platform: str = "OneBot V11") -> ChatRequest:

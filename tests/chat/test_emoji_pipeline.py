@@ -10,11 +10,11 @@ from pathlib import Path
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import emoji as emoji_module
-from src.plugins.nonebot_plugin_fxbot.chat.memory import migrate
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import utc_now_naive
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+from fxbot.db import base_models
+from fxbot.chat import emoji as emoji_module
+from fxbot.chat.memory import migrate
+from fxbot.chat.memory.models import utc_now_naive
+from fxbot.chat.memory.repository import chat_repository
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"emoji-image"
 
@@ -270,17 +270,17 @@ class EmojiConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         from copy import deepcopy
 
-        from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS
+        from fxbot.config.system_defaults import SYSTEM_DEFAULTS
 
         self.data = deepcopy(SYSTEM_DEFAULTS)
 
     def test_defaults_pass(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.config.system_defaults import validate_system_config
+        from fxbot.config.system_defaults import validate_system_config
 
         validate_system_config(self.data)
 
     def test_invalid_values_rejected(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.config.system_defaults import validate_system_config
+        from fxbot.config.system_defaults import validate_system_config
 
         cases = [
             ("emoji_send_num", 0),
@@ -299,7 +299,7 @@ class EmojiConfigTests(unittest.TestCase):
                     validate_system_config(data)
 
     def test_cleanup_validation(self) -> None:
-        from src.plugins.nonebot_plugin_fxbot.config.system_defaults import validate_system_config
+        from fxbot.config.system_defaults import validate_system_config
 
         for key, value in (
             ("check_interval_hours", 0),

@@ -13,17 +13,18 @@ from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 from fastapi import HTTPException
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import emoji as emoji_module
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.memory import migrate
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.console.routes import chat as chat_routes
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+
+from fxbot.db import base_models
+from fxbot.chat import emoji as emoji_module
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.memory import migrate
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.console.routes import chat as chat_routes
+from fxbot.chat.message_receive import sender as sender_module
+from fxbot.chat.memory.repository import chat_repository
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )

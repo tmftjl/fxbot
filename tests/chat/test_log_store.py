@@ -7,7 +7,7 @@ import unittest
 from uuid import uuid4
 from typing import Any
 
-from src.plugins.nonebot_plugin_fxbot.console import log_store
+from fxbot.console import log_store
 
 
 def _record(text: str, level: str = "INFO", ts_ms: int | None = None) -> dict[str, Any]:

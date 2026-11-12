@@ -7,13 +7,13 @@ from datetime import timezone, timedelta
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state as memory_state
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse, provider_manager
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.postprocess import postprocess_reply
+from fxbot.chat import service as service_module
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import state as memory_state
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.providers import LLMResponse, provider_manager
+from fxbot.chat.behavior.postprocess import postprocess_reply
 
 from .support import ReplyPipelineTests
 

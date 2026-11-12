@@ -7,11 +7,11 @@ from uuid import uuid4
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import migrate
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix import writeback
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatMessage
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+from fxbot.db import base_models
+from fxbot.chat.memory import migrate
+from fxbot.chat.amemorix import writeback
+from fxbot.chat.memory.models import ChatMessage
+from fxbot.chat.memory.repository import chat_repository
 
 
 class PersonFactEvidenceTests(unittest.IsolatedAsyncioTestCase):

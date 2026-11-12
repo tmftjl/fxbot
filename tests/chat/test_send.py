@@ -8,13 +8,13 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest.mock import Mock, AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import service as service_module
-from src.plugins.nonebot_plugin_fxbot.chat.tools import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest, ChatResponse
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.session_hooks import SessionPolicy
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import sender as sender_module
-from src.plugins.nonebot_plugin_fxbot.chat.behavior.response import (
+from fxbot.chat import service as service_module
+from fxbot.chat.tools import ToolRuntime
+from fxbot.chat.types import ChatRequest, ChatResponse
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.session_hooks import SessionPolicy
+from fxbot.chat.message_receive import sender as sender_module
+from fxbot.chat.behavior.response import (
     ProcessedResponseSegment,
     typing_time,
     protect_kaomoji,
@@ -104,7 +104,7 @@ class ResponsePipelineTests(unittest.TestCase):
 
     def test_typing_speed_zero_skips_wait(self) -> None:
         config = patch(
-            "src.plugins.nonebot_plugin_fxbot.chat.behavior.response.response_config",
+            "fxbot.chat.behavior.response.response_config",
             return_value=({"typing_speed": 0}, {}),
         )
         with config:
@@ -116,7 +116,7 @@ class ResponsePipelineTests(unittest.TestCase):
 
     def test_typing_speed_one_keeps_timing(self) -> None:
         config = patch(
-            "src.plugins.nonebot_plugin_fxbot.chat.behavior.response.response_config",
+            "fxbot.chat.behavior.response.response_config",
             return_value=({"typing_speed": 1}, {}),
         )
         with config:
@@ -144,7 +144,7 @@ class AsyncResponsePipelineTests(unittest.IsolatedAsyncioTestCase):
         text = "一。二。三。四。五。六。七。八。九。"
         pieces = [(word, "。") for word in "一二三四五六七八九"]
         with patch(
-            "src.plugins.nonebot_plugin_fxbot.chat.behavior.response.split_text_with_llm",
+            "fxbot.chat.behavior.response.split_text_with_llm",
             AsyncMock(return_value=pieces),
         ):
             result = await process_response_async(

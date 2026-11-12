@@ -6,9 +6,9 @@ import shutil
 import unittest
 from uuid import uuid4
 
-from src.plugins.nonebot_plugin_fxbot.config import SYSTEM_DEFAULTS
-from src.plugins.nonebot_plugin_fxbot.config.proxy import ConfigProxy
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import validate_system_config
+from fxbot.config import SYSTEM_DEFAULTS
+from fxbot.config.proxy import ConfigProxy
+from fxbot.config.system_defaults import validate_system_config
 
 
 class SystemConfigValidationTests(unittest.TestCase):

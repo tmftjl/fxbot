@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.focus import group_runtime
-from src.plugins.nonebot_plugin_fxbot.chat.focus.context import CHECKPOINT_VERSION, FocusEntry, FocusCheckpointStore
-from src.plugins.nonebot_plugin_fxbot.chat.memory.trimmed import trimmed_learning
+from fxbot.chat.focus import group_runtime
+from fxbot.chat.focus.context import CHECKPOINT_VERSION, FocusEntry, FocusCheckpointStore
+from fxbot.chat.memory.trimmed import trimmed_learning
 
 
 class FocusCheckpointTests(unittest.IsolatedAsyncioTestCase):

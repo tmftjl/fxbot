@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import Mock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import hooks
+from fxbot.chat import hooks
 
 
 class SystemPromptSectionTests(unittest.TestCase):

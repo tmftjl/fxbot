@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive.reactions import reaction_block
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.chat.message_receive.reactions import reaction_block
 
 
 def _cfg(**settings: object) -> dict[str, object]:

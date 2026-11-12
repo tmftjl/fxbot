@@ -7,13 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock, AsyncMock, patch
 
 from nonebot.adapters.onebot.v11 import PrivateMessageEvent
-from src.plugins.nonebot_plugin_fxbot.chat import session_hooks as hooks, message_adapter
-from src.plugins.nonebot_plugin_fxbot.chat.focus import manager as focus_module
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
-from src.plugins.nonebot_plugin_fxbot.chat.memory.learning import share_tenants, tenant_target
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
+
+from fxbot.chat import session_hooks as hooks, message_adapter
+from fxbot.chat.focus import manager as focus_module
+from fxbot.chat.types import ChatRequest
+from fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
+from fxbot.chat.memory.learning import share_tenants, tenant_target
+from fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
+from fxbot.adapter.platforms.onebot12 import OneBotV12MessageAdapter
 
 BASE = "onebot11:bot:private:user"
 ISOLATED = "onebot11:bot#isolated:private:user"

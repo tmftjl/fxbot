@@ -6,12 +6,12 @@ import json
 import asyncio
 import unittest
 
-from src.plugins.nonebot_plugin_fxbot.chat.tools import tool, default_registry
-from src.plugins.nonebot_plugin_fxbot.chat.replyer import generator
-from src.plugins.nonebot_plugin_fxbot.chat.tools.types import ToolError, ToolContext
-from src.plugins.nonebot_plugin_fxbot.chat.tools.search import tool_search_tool
-from src.plugins.nonebot_plugin_fxbot.chat.tools.runtime import ToolRuntime
-from src.plugins.nonebot_plugin_fxbot.chat.tools.discovery import sync_discovered, deferred_reminder
+from fxbot.chat.tools import tool, default_registry
+from fxbot.chat.replyer import generator
+from fxbot.chat.tools.types import ToolError, ToolContext
+from fxbot.chat.tools.search import tool_search_tool
+from fxbot.chat.tools.runtime import ToolRuntime
+from fxbot.chat.tools.discovery import sync_discovered, deferred_reminder
 
 _DEFERRED = "test_deferred_mute"
 _VISIBLE = "test_visible_ping"

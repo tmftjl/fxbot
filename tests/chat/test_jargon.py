@@ -8,11 +8,11 @@ from uuid import uuid4
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state, jargon, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.providers import LLMResponse
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatMessage
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
+from fxbot.db import base_models
+from fxbot.chat.memory import state, jargon, migrate
+from fxbot.chat.providers import LLMResponse
+from fxbot.chat.memory.models import ChatMessage
+from fxbot.chat.memory.repository import chat_repository
 
 
 class JargonTests(unittest.IsolatedAsyncioTestCase):

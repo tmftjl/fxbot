@@ -1,4 +1,4 @@
-"""nonebot-plugin-fxbot 插件入口。"""
+"""fxbot 插件入口。"""
 
 from __future__ import annotations
 

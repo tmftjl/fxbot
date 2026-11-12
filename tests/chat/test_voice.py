@@ -7,15 +7,15 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import voice
-from src.plugins.nonebot_plugin_fxbot.chat.providers import ProviderType
-from src.plugins.nonebot_plugin_fxbot.chat.providers.base import STTProvider
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import (
+from fxbot.chat import voice
+from fxbot.chat.providers import ProviderType
+from fxbot.chat.providers.base import STTProvider
+from fxbot.config.system_defaults import (
     SYSTEM_DEFAULTS,
     validate_system_config,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.providers.register import provider_registry
-from src.plugins.nonebot_plugin_fxbot.chat.providers.sources.openai import OpenAISTTProvider
+from fxbot.chat.providers.register import provider_registry
+from fxbot.chat.providers.sources.openai import OpenAISTTProvider
 
 
 class _Config:

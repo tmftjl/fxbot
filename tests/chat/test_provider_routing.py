@@ -8,9 +8,9 @@ from typing import Any
 from contextlib import asynccontextmanager
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat.providers import routing
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS
-from src.plugins.nonebot_plugin_fxbot.chat.providers.entities import LLMResponse, JSONResponse
+from fxbot.chat.providers import routing
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS
+from fxbot.chat.providers.entities import LLMResponse, JSONResponse
 
 
 class _FakeConfigManager:

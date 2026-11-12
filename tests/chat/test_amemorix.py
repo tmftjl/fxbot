@@ -8,19 +8,20 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from sqlmodel import select
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state as memory_state
-from src.plugins.nonebot_plugin_fxbot.chat.memory.models import ChatTurn, ChatMessage, ChatTurnItem
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.models import ChatPerson
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix.people import remember_person
-from src.plugins.nonebot_plugin_fxbot.chat.message_receive import history as history_module
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host.person_db import (
+
+from fxbot.db import base_models
+from fxbot.chat.memory import state as memory_state
+from fxbot.chat.memory.models import ChatTurn, ChatMessage, ChatTurnItem
+from fxbot.chat.amemorix.models import ChatPerson
+from fxbot.chat.amemorix.people import remember_person
+from fxbot.chat.message_receive import history as history_module
+from fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.amemorix._host.person_db import (
     person_scope,
     make_person_id,
     resolve_person_identifier,
 )
-from src.plugins.nonebot_plugin_fxbot.chat.amemorix._host.message_service import (
+from fxbot.chat.amemorix._host.message_service import (
     _strip_speaker_prefix,
     get_messages_by_time_in_chat,
 )

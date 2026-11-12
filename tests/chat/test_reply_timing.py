@@ -6,8 +6,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.plugins.nonebot_plugin_fxbot.chat import router
-from src.plugins.nonebot_plugin_fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
+from fxbot.chat import router
+from fxbot.config.system_defaults import SYSTEM_DEFAULTS, validate_system_config
 
 
 def _bot() -> SimpleNamespace:

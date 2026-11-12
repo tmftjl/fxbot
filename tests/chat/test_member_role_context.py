@@ -8,19 +8,19 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
-from src.plugins.nonebot_plugin_fxbot import adapter
-from src.plugins.nonebot_plugin_fxbot.db import base_models
-from src.plugins.nonebot_plugin_fxbot.chat import message_adapter
-from src.plugins.nonebot_plugin_fxbot.chat.types import ChatRequest
-from src.plugins.nonebot_plugin_fxbot.chat.memory import state, migrate
-from src.plugins.nonebot_plugin_fxbot.chat.service import ChatService
-from src.plugins.nonebot_plugin_fxbot.chat.session import ChatSessionStore
-from src.plugins.nonebot_plugin_fxbot.chat.replyer.prompt import assemble_messages
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
-from src.plugins.nonebot_plugin_fxbot.chat.message_context import render_message, message_metadata
-from src.plugins.nonebot_plugin_fxbot.chat.memory.repository import chat_repository
-from src.plugins.nonebot_plugin_fxbot.chat.focus.group_runtime import FocusGroupRuntime
-from src.plugins.nonebot_plugin_fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
+from fxbot import adapter
+from fxbot.db import base_models
+from fxbot.chat import message_adapter
+from fxbot.chat.types import ChatRequest
+from fxbot.chat.memory import state, migrate
+from fxbot.chat.service import ChatService
+from fxbot.chat.session import ChatSessionStore
+from fxbot.chat.replyer.prompt import assemble_messages
+from fxbot.adapter.platforms.qq import QQOfficialMessageAdapter
+from fxbot.chat.message_context import render_message, message_metadata
+from fxbot.chat.memory.repository import chat_repository
+from fxbot.chat.focus.group_runtime import FocusGroupRuntime
+from fxbot.adapter.platforms.onebot11 import OneBotV11MessageAdapter
 
 
 def entry(role: str | None, name: str = "张三") -> dict:
@@ -128,7 +128,7 @@ class MemberRolePersistenceTests(unittest.IsolatedAsyncioTestCase):
         service = ChatService(ChatSessionStore())
         with (
             patch.object(state, "is_ready", return_value=True),
-            patch("src.plugins.nonebot_plugin_fxbot.chat.message_receive.history._track_message", AsyncMock()),
+            patch("fxbot.chat.message_receive.history._track_message", AsyncMock()),
         ):
             await service.record_group_message(
                 tenant, "999", "张三", "你好", is_group=True, message_id="m1", dedupe_key="msg:m1", sender_role="admin"
