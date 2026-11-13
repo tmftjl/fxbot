@@ -10,10 +10,10 @@ from typing import Any
 
 import numpy as np
 from PIL import Image, ImageSequence
-from nonebot import logger
+from loguru import logger
 
+from .media import load_images
 from .memory.prompts import learning_prompt
-from .message_adapter import load_images
 
 _MAX_IMAGE_DESC_CHARS = 200
 

@@ -1,190 +1,144 @@
-"""B 站直播状态检查与开播推送。"""
+"""B 站直播轮询、启动状态校准和逐订阅目标交付。"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Callable, Awaitable
 
-from nonebot import logger, get_bots, get_driver
+from loguru import logger
 
-from .store import (
-    get_room_state,
-    set_room_state,
-    get_room_records,
-    get_room_subscriptions,
-)
+from .store import LiveStore
+from ...core import Message, SessionTarget, MessageSegment
 from .client import LiveRoomSnapshot, BilibiliLiveError, fetch_room
-from ...adapter import build_message, build_message_segment, send_message_to_target
+from ...runtime.notifications import NotificationService
 
-_startup_hook_registered = False
-_background_task: asyncio.Task[None] | None = None
-_calibration_task: asyncio.Task[None] | None = None
 CHECK_INTERVAL_SECONDS = 60
 MAX_CONCURRENCY = 4
-STARTUP_CALIBRATION_DELAY_SECONDS = 5
-
-
-def _room_id(record: dict[str, Any]) -> int:
-    """从持久化记录中读取有效房间号。"""
-    try:
-        return int(record.get("room_id") or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-async def _fetch_record(record: dict[str, Any], semaphore: asyncio.Semaphore) -> LiveRoomSnapshot | None:
-    """查询单个订阅记录，失败时保留原状态。"""
-    room_id = _room_id(record)
-    if room_id <= 0:
-        return None
-    async with semaphore:
-        try:
-            return await fetch_room(room_id, known_name=str(record.get("name") or ""))
-        except BilibiliLiveError as exc:
-            logger.warning(f"[bilibili_live] 直播间 {room_id} 查询失败：{exc}")
-            return None
-
-
-async def _fetch_all_rooms() -> list[LiveRoomSnapshot]:
-    """并发查询全部已订阅直播间。"""
-    records = get_room_records()
-    if not records:
-        return []
-    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-    results = await asyncio.gather(*(_fetch_record(record, semaphore) for record in records))
-    return [result for result in results if result is not None]
+RoomFetcher = Callable[..., Awaitable[LiveRoomSnapshot]]
 
 
 def _push_text(room: LiveRoomSnapshot) -> str:
-    """构造开播通知文本。"""
-    lines = [
-        f"[B站直播] {room.name} 开播了",
-        f"标题：{room.title}",
-        f"分区：{room.area}",
-    ]
+    lines = [f"[B站直播] {room.name} 开播了", f"标题：{room.title}", f"分区：{room.area}"]
     if room.live_time and room.live_time != "0000-00-00 00:00:00":
         lines.append(f"开播时间：{room.live_time}")
     lines.append(room.url)
     return "\n".join(lines)
 
 
-async def _send_to_subscription(subscription: dict[str, Any], room: LiveRoomSnapshot) -> bool:
-    """使用可用 Bot 向一个持久化目标发送通知。"""
-    target = subscription.get("target")
-    if not isinstance(target, dict):
-        return False
-    for bot in get_bots().values():
-        try:
-            segments = [build_message_segment(bot, "text", _push_text(room))]
-            if room.cover:
-                segments.append(build_message_segment(bot, "image", room.cover))
-            await send_message_to_target(bot, target, build_message(bot, *segments))
-            return True
-        except Exception:
-            continue
-    return False
+class LivePoller:
+    """同一实例串行校准与轮询，不按平台动作失败猜测其他 Bot。"""
 
+    def __init__(
+        self, store: LiveStore, notifications: NotificationService | None = None, fetcher: RoomFetcher = fetch_room
+    ) -> None:
+        self.store = store
+        self.notifications = notifications
+        self.fetcher = fetcher
+        self._lock = asyncio.Lock()
+        self._calibrated = False
 
-async def _push_room(room: LiveRoomSnapshot) -> int:
-    """向所有订阅该直播间的会话推送开播通知。"""
-    subscriptions = get_room_subscriptions(room.room_id)
-    pushed = 0
-    for subscription in subscriptions:
-        if await _send_to_subscription(subscription, room):
-            pushed += 1
-    logger.info(f"[bilibili_live] 直播间 {room.room_id} 开播推送完成：{pushed}/{len(subscriptions)} 个目标")
-    return pushed
+    async def _fetch_all(self) -> list[LiveRoomSnapshot]:
+        semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
+        async def fetch(record: LiveRoomSnapshot) -> LiveRoomSnapshot | None:
+            async with semaphore:
+                try:
+                    result = await self.fetcher(record.room_id, known_name=record.name)
+                except BilibiliLiveError as exc:
+                    logger.warning("[bilibili_live] 直播间 {} 查询失败：{}", record.room_id, exc)
+                    return None
+                if result.room_id != record.room_id:
+                    raise ValueError("直播轮询返回了不同房间")
+                return result
 
-async def calibrate_room_states() -> None:
-    """启动时记录当前状态，不推送已经在播的直播间。"""
-    rooms = await _fetch_all_rooms()
-    for room in rooms:
-        set_room_state(room.room_id, room.is_live)
-    if rooms:
-        logger.info(f"[bilibili_live] 已校准 {len(rooms)} 个直播间状态")
+        results = await asyncio.gather(*(fetch(record) for record in self.store.rooms()), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return [room for room in results if room is not None]
 
-
-async def check_and_push() -> int:
-    """检查直播状态，只推送离线到开播的变化。"""
-    pushed = 0
-    for room in await _fetch_all_rooms():
-        previous = get_room_state(room.room_id)
-        if previous is False and room.is_live:
-            sent = await _push_room(room)
-            pushed += sent
-            if sent == 0:
+    async def _calibrate(self) -> None:
+        for room in await self._fetch_all():
+            subscriptions = self.store.subscriptions(room.room_id)
+            if not subscriptions:
                 continue
-        set_room_state(room.room_id, room.is_live)
-    return pushed
+            previous = self.store.room_state(room.room_id)
+            delivered = (
+                previous.delivered
+                if previous is not None and previous.is_live and room.is_live
+                else frozenset(sub.target.key() for sub in subscriptions)
+                if room.is_live
+                else frozenset()
+            )
+            self.store.record_state(room.room_id, room.is_live, delivered)
+        self._calibrated = True
 
+    async def calibrate(self) -> None:
+        """启动时建立基线，不补发停机期间开始的直播。"""
+        async with self._lock:
+            await self._calibrate()
 
-async def _scheduled_check() -> None:
-    """执行定时检查并隔离单轮异常。"""
-    try:
-        await check_and_push()
-    except Exception:
-        logger.opt(exception=True).warning("[bilibili_live] 直播状态检查失败")
+    async def check(self, notifications: NotificationService, *, initial: bool = False) -> int:
+        """每次应用首次运行只校准状态；通知服务由本次执行显式提供。"""
+        return await self.check_and_push(notifications, initial=initial)
 
+    def _subscribed(self, target: SessionTarget, room_id: int) -> bool:
+        subscription = self.store.subscription(target)
+        return subscription is not None and room_id in subscription.rooms
 
-async def _background_loop() -> None:
-    """在插件自身任务中按固定间隔检查直播状态。"""
-    while True:
-        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
-        await _scheduled_check()
+    def _pending(self, target: SessionTarget, room_id: int, generation: int) -> bool:
+        status = self.store.room_state(room_id)
+        return (
+            self._subscribed(target, room_id)
+            and status is not None
+            and status.is_live
+            and status.generation == generation
+            and target.key() not in status.delivered
+        )
 
-
-async def _startup_calibrate() -> None:
-    """执行启动状态校准。"""
-    try:
-        await calibrate_room_states()
-    except Exception:
-        logger.opt(exception=True).warning("[bilibili_live] 启动状态校准失败")
-
-
-async def _delayed_startup_calibrate() -> None:
-    """等待 Bot 完成启动后再执行网络校准，避免抢占启动阶段资源。"""
-    await asyncio.sleep(STARTUP_CALIBRATION_DELAY_SECONDS)
-    await _startup_calibrate()
-
-
-async def _startup_task() -> None:
-    """创建后台任务，不阻塞 NoneBot 启动流程。"""
-    global _background_task, _calibration_task
-    if _calibration_task is None or _calibration_task.done():
-        _calibration_task = asyncio.create_task(_delayed_startup_calibrate())
-    if _background_task is None or _background_task.done():
-        _background_task = asyncio.create_task(_background_loop())
-        logger.info(f"[bilibili_live] 后台检查任务已启动：每 {CHECK_INTERVAL_SECONDS} 秒检查一次")
-
-
-async def _shutdown_task() -> None:
-    """关闭插件后台检查任务。"""
-    global _background_task, _calibration_task
-    task = _background_task
-    _background_task = None
-    if task is not None and not task.done():
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    calibration_task = _calibration_task
-    _calibration_task = None
-    if calibration_task is not None and not calibration_task.done():
-        calibration_task.cancel()
-        try:
-            await calibration_task
-        except asyncio.CancelledError:
-            pass
-
-
-def setup_bilibili_live_tasks() -> None:
-    """注册直播轮询启动和关闭钩子。"""
-    global _startup_hook_registered
-    if not _startup_hook_registered:
-        driver = get_driver()
-        driver.on_startup(_startup_task)
-        driver.on_shutdown(_shutdown_task)
-        _startup_hook_registered = True
-    logger.info("[bilibili_live] 已注册直播状态后台检查任务")
+    async def check_and_push(self, notifications: NotificationService | None = None, *, initial: bool = False) -> int:
+        """离线目标保留待交付状态，其他目标成功不能替它确认交付。"""
+        async with self._lock:
+            if initial or not self._calibrated:
+                await self._calibrate()
+                return 0
+            pushed = 0
+            for room in await self._fetch_all():
+                subscriptions = self.store.subscriptions(room.room_id)
+                if not subscriptions:
+                    continue
+                previous = self.store.room_state(room.room_id)
+                if not room.is_live:
+                    self.store.record_state(room.room_id, False, frozenset())
+                    continue
+                if previous is None:
+                    self.store.record_state(room.room_id, True, frozenset(sub.target.key() for sub in subscriptions))
+                    continue
+                if not previous.is_live:
+                    self.store.record_state(room.room_id, True, frozenset())
+                generation = self.store.room_state(room.room_id).generation
+                segments = [MessageSegment.text(_push_text(room))]
+                if room.cover:
+                    segments.append(MessageSegment.image(room.cover))
+                for sub in subscriptions:
+                    status = self.store.room_state(room.room_id)
+                    if status is None or not status.is_live or status.generation != generation:
+                        break
+                    if sub.target.key() in status.delivered:
+                        continue
+                    sender = notifications if notifications is not None else self.notifications
+                    if sender is None:
+                        raise ValueError("直播推送缺少通知服务")
+                    sent = await sender.send(
+                        "bilibili_live",
+                        sub.target,
+                        Message(segments),
+                        valid=lambda target=sub.target, rid=room.room_id, generation=status.generation: self._pending(
+                            target, rid, generation
+                        ),
+                    )
+                    if sent:
+                        pushed += 1
+                        if self._subscribed(sub.target, room.room_id):
+                            self.store.mark_delivered(room.room_id, sub.target, generation=status.generation)
+            return pushed

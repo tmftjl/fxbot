@@ -9,7 +9,7 @@ from typing import Any
 from dataclasses import dataclass
 from collections.abc import AsyncIterator
 
-from nonebot import logger
+from loguru import logger
 
 from ..chat.hooks import ChatHookContext, guard, notify
 from ..chat.tools import ToolRuntime
@@ -260,7 +260,7 @@ class ConsoleChatChannel:
             )
             request.metadata.update({"history_recorded": True, "history_appended": True})
             await turn.queue.put({"type": "accepted", "id": request.message_id, "content": request.text})
-            runtime = ToolRuntime(matcher=_WebSender(turn, self.service), allowed_tools=CHANNEL_TOOLS)
+            runtime = ToolRuntime(sender=_WebSender(turn, self.service), allowed_tools=CHANNEL_TOOLS)
             sent = await asyncio.wait_for(self.service.process_and_send(request, runtime), TURN_TIMEOUT)
             if not sent:
                 await turn.queue.put({"type": "status", "content": "本轮没有发送回复"})
@@ -331,6 +331,12 @@ class ConsoleChatChannel:
         """框架退出时在模型和共享资源释放前取消网页对话。"""
         self.stopping = True
         await asyncio.gather(*(self.release(turn) for turn in tuple(self.active.values())))
+
+    def start(self) -> None:
+        """开放网页输入前要求旧轮次已取消。"""
+        if self.active or self.clearing:
+            raise RuntimeError("网页聊天仍有未完成的轮次")
+        self.stopping = False
 
 
 console_chat = ConsoleChatChannel()

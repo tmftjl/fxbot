@@ -8,7 +8,7 @@ from typing import Any
 from datetime import datetime
 from dataclasses import field, replace, dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from ..types import ChatRequest
 from .debounce import PendingBatch, DebounceRegistry, default_debounce_registry
@@ -51,6 +51,12 @@ class NormalChatScheduler:
     def __init__(self) -> None:
         self.chats: dict[str, ScheduledChat] = {}
         self.debounce = DebounceRegistry()
+        self.stopping = False
+
+    def start(self) -> None:
+        """在没有遗留工作任务时开放新消息。"""
+        if self.chats:
+            raise RuntimeError("聊天调度器仍有活动会话")
         self.stopping = False
 
     async def submit(self, service: Any, request: ChatRequest, runtime: Any) -> None:

@@ -7,9 +7,7 @@ from datetime import datetime, timezone
 from sqlmodel import Field
 from sqlalchemy import UniqueConstraint
 
-from ..db import BaseIDModel, exec_list
-
-exec_list.extend([])
+from ..db import BaseIDModel
 
 
 def utc_now() -> datetime:

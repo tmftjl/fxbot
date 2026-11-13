@@ -4,44 +4,35 @@ from __future__ import annotations
 
 from typing import Any
 
-from nonebot import logger
-
 from .types import ToolError, ToolContext
+from ...core import BotClient, Capability, UnsupportedCapability
 from .runtime import ToolRuntime
 from .registry import tool
-from ...adapter import (
-    UnsupportedCapability,
-    event_message,
-    extract_forward_ids,
-    get_forward_messages,
-    get_platform_adapter,
-)
+from ...runtime.actions import ActionFailed
+from ..memory.repository import chat_repository
 
 MAX_NODES = 100
 MAX_CHARS = 4000
 
 
-def _forward_ids(payload: Any) -> list[str]:
-    """从 get_msg 结果或消息段列表里读转发 ID。"""
-    message = payload.get("message") if isinstance(payload, dict) else payload
-    return extract_forward_ids(message)
-
-
-async def _root_id(runtime: ToolRuntime, msg_id: str) -> str:
-    """定位要展开的转发；省略 msg_id 时用当前消息。"""
-    bot = runtime.require_bot()
-    if msg_id:
-        try:
-            ids = _forward_ids(await get_platform_adapter(bot).get_message(bot, msg_id))
-        except UnsupportedCapability:
-            return msg_id
-        except Exception:
-            logger.opt(exception=True).debug("[Chat] 读取消息失败，按转发 ID 直接展开")
-            return msg_id
-        return ids[0] if ids else msg_id
-    ids = extract_forward_ids(event_message(runtime.require_event()))
+async def _root_id(context: ToolContext, runtime: ToolRuntime, msg_id: str) -> str:
+    """只允许读取当前消息、当前引用或本会话已记录消息中的转发。"""
+    bot, event = runtime.require_bot(), runtime.require_event()
+    if Capability.FORWARD not in bot.capabilities:
+        raise ToolError("当前平台不支持读取合并转发消息。")
+    if msg_id and msg_id != event.message_id:
+        if event.reply is None or msg_id != event.reply.message_id:
+            if not context.session_id or await chat_repository.message_by_identity(context.session_id, msg_id) is None:
+                raise ToolError("只能读取当前会话内已记录的消息。")
+        ids = await bot.get_forward_ids(msg_id)
+    else:
+        ids = [
+            segment.data["id"]
+            for segment in (event.original_message or event.message).segments
+            if segment.type == "forward"
+        ]
     if not ids:
-        raise ToolError("当前消息里没有合并转发；合并转发通常以卡片形式单独发送。")
+        raise ToolError("指定消息里没有合并转发。")
     return ids[0]
 
 
@@ -59,16 +50,16 @@ def _path(value: Any) -> list[int]:
     return steps
 
 
-async def _nodes_at(bot: Any, root_id: str, path: list[int]) -> list[dict[str, Any]]:
+async def _nodes_at(bot: BotClient, root_id: str, path: list[int]) -> list[dict[str, Any]]:
     """按 path 逐层展开，返回目标层的节点。"""
-    nodes = await get_forward_messages(bot, root_id)
+    nodes = await bot.get_forward_messages(root_id)
     for depth, step in enumerate(path):
         if step >= len(nodes):
             raise ToolError(f"path 第 {depth + 1} 个序号 {step} 超出范围，当前层共 {len(nodes)} 条。")
         nested = nodes[step].get("forwards") or []
         if not nested:
             raise ToolError(f"path 第 {depth + 1} 个序号指向的不是嵌套转发。")
-        nodes = await get_forward_messages(bot, nested[0])
+        nodes = await bot.get_forward_messages(nested[0])
     return nodes
 
 
@@ -124,17 +115,15 @@ async def view_forward_message_tool(
     path: Any = None,
 ) -> str:
     """展开转发的顶层节点，或按 path 展开嵌套层。"""
-    del context
     steps = _path(path)
-    root_id = await _root_id(runtime, str(msg_id or "").strip())
+    root_id = await _root_id(context, runtime, str(msg_id or "").strip())
     try:
         nodes = await _nodes_at(runtime.require_bot(), root_id, steps)
     except ToolError:
         raise
     except UnsupportedCapability:
         raise ToolError("当前平台不支持读取合并转发消息。")
-    except Exception:
-        logger.opt(exception=True).warning("[Chat] 读取合并转发失败")
+    except (ActionFailed, TimeoutError, OSError):
         raise ToolError("读取合并转发消息失败，可能是转发已过期。")
     if not nodes:
         raise ToolError("这条合并转发里没有消息。")

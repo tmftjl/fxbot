@@ -10,7 +10,7 @@ from html import escape
 from typing import Any
 from pathlib import Path
 
-from ..message_adapter import load_image_bytes
+from ..media import load_image_bytes
 from ..memory.repository import chat_repository
 
 MEDIA_TYPES = {"image", "audio", "resource_link", "resource", "binary"}

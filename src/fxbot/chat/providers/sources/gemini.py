@@ -8,19 +8,13 @@ from typing import Any
 from collections.abc import AsyncGenerator
 
 from google import genai
-from nonebot import logger
+from loguru import logger
 from google.genai import types
 
 from ..base import ChatProvider, EmbeddingProvider
-from ..entities import LLMResponse, JSONResponse, ProviderType, LLMResponseError
-from ..register import register_provider
+from ..entities import LLMResponse, JSONResponse, LLMResponseError
 
 
-@register_provider(
-    "gemini_chat",
-    "Google Gemini API",
-    default_config={"base_url": "https://generativelanguage.googleapis.com", "timeout": 60},
-)
 class GeminiProvider(ChatProvider):
     """Gemini 对话 Provider。"""
 
@@ -262,12 +256,6 @@ class GeminiProvider(ChatProvider):
             return []
 
 
-@register_provider(
-    "gemini_embedding",
-    "Google Gemini Embedding",
-    provider_type=ProviderType.EMBEDDING,
-    default_config={"base_url": "https://generativelanguage.googleapis.com", "timeout": 60, "embedding_dim": 768},
-)
 class GeminiEmbeddingProvider(EmbeddingProvider):
     """Gemini 嵌入 Provider。"""
 

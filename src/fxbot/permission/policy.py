@@ -102,3 +102,36 @@ class PolicyChain:
             if result.decision == Decision.ALLOW and isinstance(policy, WhitelistPolicy):
                 return result
         return PolicyResult.allow()
+
+
+class FeaturePolicy:
+    """统一评估全局、插件和命令三层策略，不读取事件或宿主。"""
+
+    def __init__(self) -> None:
+        """共享一条普通策略链及主人豁免前的黑名单检查。"""
+        self._chain = PolicyChain()
+        self._blacklist = BlacklistPolicy()
+
+    @staticmethod
+    def entries(config: dict[str, Any], feature: str) -> list[dict[str, Any]]:
+        """明确取出当前功能实际受影响的策略层。"""
+        plugin, separator, command = feature.partition(":")
+        plugins = config.get("sub_plugins", {})
+        node = plugins.get(plugin, {})
+        layers = [config.get("top"), node.get("top"), node.get("commands", {}).get(command) if separator else None]
+        return [entry for entry in layers if entry is not None]
+
+    async def evaluate(self, config: dict[str, Any], feature: str, context: PermContext) -> bool:
+        """开关和黑名单优先于主人，普通用户必须通过全部策略层。"""
+        entries = self.entries(config, feature)
+        if any(not entry.get("enabled", True) for entry in entries):
+            return False
+        for entry in entries:
+            if (await self._blacklist.evaluate(entry, context)).decision is Decision.DENY:
+                return False
+        if context.user_level is PermLevel.SUPERUSER:
+            return True
+        for entry in entries:
+            if (await self._chain.evaluate(entry, context)).decision is Decision.DENY:
+                return False
+        return True

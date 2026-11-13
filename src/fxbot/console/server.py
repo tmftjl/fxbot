@@ -1,91 +1,33 @@
-"""FastAPI 挂载和路由注册。"""
+"""接收显式 ASGI 应用与功能路由的控制台装配。"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Sequence
 
-from fastapi import APIRouter
-from nonebot import logger, get_app
+from fastapi import FastAPI, APIRouter
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import account
-from .routes import (
-    auth as account_routes,
-    bots,
-    chat,
-    logs,
-    meta,
-    cache as cache_routes,
-    config,
-    system as system_routes,
-    amemorix,
-    local_chat,
-    membership,
-    permissions,
-    ai_providers,
-)
 
-_mounted = False
-
-
-def mount_console() -> None:
-    """挂载控制台后端和已构建静态资源。"""
-    global _mounted
-    if _mounted:
-        return
-
-    app = get_app()
-    prefix = "/fxbot"
-    router = APIRouter(prefix=prefix)
-    try:
-        # 首次启动创建 root 账户，随机初始密码只在这个时刻打到日志
-        account.ensure_account()
-    except Exception:
-        logger.opt(exception=True).error("[FxBot] 初始化控制台账户失败")
-    router.include_router(account_routes.public_router)
-    router.include_router(account_routes.router)
-    router.include_router(membership.router)
-    router.include_router(permissions.router)
-    router.include_router(config.router)
-    router.include_router(bots.router)
-    router.include_router(meta.router)
-    router.include_router(system_routes.router)
-    router.include_router(ai_providers.router)
-    router.include_router(logs.router)
-    router.include_router(cache_routes.router)
-    router.include_router(chat.router)
-    router.include_router(chat.image_router)
-    router.include_router(local_chat.router)
-    router.include_router(amemorix.router)
-    router.include_router(amemorix.file_router)
+def mount_console(app: FastAPI, features: Sequence[APIRouter]) -> None:
+    """挂载给定功能与前端产物，不查询宿主或自行加载业务。"""
+    router = APIRouter(prefix="/fxbot")
+    for feature in features:
+        router.include_router(feature)
 
     @router.get("/health")
     async def health() -> dict[str, bool]:
-        """控制台健康检查。"""
+        """公开的控制台健康检查不返回身份和配置。"""
         return {"ok": True}
 
-    dist_dir = Path(__file__).parent / "web" / "dist"
-    index_file = dist_dir / "index.html"
-    has_frontend = index_file.exists()
-    if has_frontend:
+    assets = Path(__file__).parent / "web/dist"
+    index_file = assets / "index.html"
 
-        @router.get("")
-        async def index() -> FileResponse:
-            """返回控制台首页。"""
-            # 外壳引用的产物名带内容哈希，外壳一旦被缓存住就会一直加载旧包。
-            response = FileResponse(index_file, media_type="text/html")
-            response.headers["Cache-Control"] = "no-cache"
-            return response
-    else:
-        logger.warning("[FxBot] 控制台前端 dist 不存在，仅挂载 API，不执行前端构建")
+    @router.get("")
+    async def index() -> FileResponse:
+        """首页不缓存，静态资源使用自身带哈希的文件名。"""
+        return FileResponse(index_file, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
     app.include_router(router)
-    if has_frontend:
-        app.mount(
-            prefix,
-            StaticFiles(directory=str(dist_dir), html=True),
-            name="fxbot_console",
-        )
-    _mounted = True
-    logger.info(f"[FxBot] 控制台已挂载: {prefix}")
+    app.mount("/fxbot", StaticFiles(directory=assets, html=True), name="fxbot_console")

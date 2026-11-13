@@ -7,21 +7,39 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 
-from fxbot.core.application import Application
+from fxbot.core.application import ApplicationState, DuplicateBotError
 
-from .onebot11 import OneBotConnection
 from .settings import Settings
-from ..bootstrap import create_application
+from ..bootstrap import Runtime, create_runtime
+from .connection import WireProtocol, ProtocolConnection
+from ..console.routes import (
+    auth,
+    bots,
+    chat,
+    logs,
+    meta,
+    cache,
+    config,
+    amemorix,
+    local_chat,
+    membership,
+    permissions,
+    ai_providers,
+)
+from ..console.server import mount_console
+from ..platforms.onebot11.protocol import OneBot11Protocol
+from ..platforms.onebot12.protocol import OneBot12Protocol
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings, application: Application | None = None) -> FastAPI:
+def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
     """创建独立实例，不加载旧应用、数据库或业务插件。"""
-    runtime = application if application is not None else create_application()
-    connections: set[OneBotConnection] = set()
+    services = services if services is not None else create_runtime(settings)
+    runtime = services.application
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -30,52 +48,106 @@ def create_app(settings: Settings, application: Application | None = None) -> Fa
         try:
             yield
         finally:
-            for connection in tuple(connections):
-                await connection.close()
             await runtime.stop()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.runtime = runtime
+    app.state.services = services
+
+    @app.exception_handler(Exception)
+    async def server_error(request: Request, error: Exception) -> JSONResponse:
+        """HTTP 边界集中记录未知故障，响应不携带内部异常。"""
+        logger.error("HTTP 请求失败", exc_info=(type(error), error, error.__traceback__))
+        return JSONResponse(status_code=500, content={"detail": "服务暂时不可用"})
 
     @app.get("/health")
     async def health() -> dict[str, bool]:
         """仅返回实例是否就绪。"""
-        return {"ok": runtime.state == "running"}
+        return {"ok": runtime.state is ApplicationState.RUNNING}
+
+    @app.post("/qq/webhook")
+    async def qq_webhook(request: Request):
+        return await services.qq.handle(request)
 
     @app.websocket("/onebot/v11/ws")
     async def onebot(websocket: WebSocket) -> None:
         """只接受通过令牌和身份校验的全双工连接。"""
-        authorization = websocket.headers.get("authorization", "")
         bot_id = websocket.headers.get("x-self-id", "")
+        if websocket.headers.get("x-client-role", "").lower() != "universal":
+            await websocket.close(code=1008)
+            return
+        implementation = settings.onebot11_implementations.get(bot_id, "standard")
+        await serve_connection(websocket, OneBot11Protocol(implementation), bot_id)
+
+    @app.websocket("/onebot/v12/{platform}/{bot_id}/ws")
+    async def onebot12(websocket: WebSocket, platform: str, bot_id: str) -> None:
+        """V12 使用标准子协议协商，身份从明确配置的连接路径绑定。"""
+        protocols = websocket.scope.get("subprotocols", [])
+        selected = next((value for value in protocols if value.startswith("12.") and len(value) > 3), None)
+        if selected is None:
+            await websocket.close(code=1008)
+            return
+        await serve_connection(websocket, OneBot12Protocol(platform), bot_id, selected)
+
+    async def serve_connection(
+        websocket: WebSocket,
+        protocol: WireProtocol,
+        bot_id: str,
+        subprotocol: str | None = None,
+    ) -> None:
+        """认证和连接所有权共用一套流程，协议差异由协议对象处理。"""
+        authorization = websocket.headers.get("authorization", "")
         if (
             not hmac.compare_digest(authorization.encode(), f"Bearer {settings.token}".encode())
-            or bot_id not in settings.bot_ids
-            or websocket.headers.get("x-client-role", "").lower() != "universal"
-            or runtime.state != "running"
+            or not settings.allows(protocol.platform, bot_id)
+            or runtime.state is not ApplicationState.RUNNING
         ):
             await websocket.close(code=1008)
             return
-        connection = OneBotConnection(runtime, bot_id, settings, websocket.send_json)
+        disconnected = False
+
+        async def close_transport(code: int) -> None:
+            """对端已断开时不再发送关闭帧。"""
+            if not disconnected:
+                await websocket.close(code=code)
+
+        connection = ProtocolConnection(runtime, protocol, bot_id, settings, websocket.send_json, close_transport)
         try:
             connection.start()
-        except ValueError:
+        except DuplicateBotError:
             await websocket.close(code=1008)
             return
-        connections.add(connection)
+        close_code = 1011
         try:
-            await websocket.accept()
+            await websocket.accept(subprotocol=subprotocol)
             while True:
                 connection.receive(await websocket.receive_json())
         except WebSocketDisconnect:
-            pass
+            disconnected = True
         except (ValueError, asyncio.QueueFull):
             logger.warning("OneBot 连接协议无效或事件队列过载")
-            await websocket.close(code=1008)
-        except Exception:
-            logger.exception("OneBot 连接处理失败")
-            await websocket.close(code=1011)
+            close_code = 1008
         finally:
-            connections.discard(connection)
-            await connection.close()
+            await connection.close(close_code)
 
+    mount_console(
+        app,
+        (
+            auth.public_router,
+            auth.router,
+            bots.router,
+            logs.router,
+            config.router,
+            membership.router,
+            permissions.router,
+            ai_providers.router,
+            chat.router,
+            chat.image_router,
+            amemorix.router,
+            amemorix.file_router,
+            local_chat.router,
+            cache.router,
+            meta.router,
+        ),
+    )
     return app

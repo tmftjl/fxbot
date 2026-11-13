@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nonebot import logger
+from loguru import logger
 
 _ready = False
 _degraded_reason = ""

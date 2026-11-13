@@ -7,27 +7,17 @@ import shutil
 import asyncio
 import hashlib
 from pathlib import Path
+from contextlib import AsyncExitStack
 from urllib.parse import urlsplit
 
 import httpx
-import curl_cffi
 
 from .types import VideoResult
 from .config import cfg_general, cfg_network
+from ...utils.http import ensure_public_http_url
 from ...utils.paths import cache_dir
 
 CACHE_DIR = cache_dir("video_parser")
-LEGACY_MEDIA_SUFFIXES = {
-    ".gif",
-    ".jpg",
-    ".jpeg",
-    ".m4a",
-    ".m4s",
-    ".mp4",
-    ".png",
-    ".webp",
-}
-_legacy_cache_cleaned = False
 
 
 class DownloadError(RuntimeError):
@@ -54,24 +44,9 @@ def cleanup_download_dir(directory: Path) -> None:
     resolved_cache = CACHE_DIR.resolve()
     resolved_directory = directory.resolve()
     if resolved_directory == resolved_cache or resolved_cache not in resolved_directory.parents:
-        return
-    shutil.rmtree(resolved_directory, ignore_errors=True)
-
-
-def cleanup_legacy_cache() -> None:
-    """清理旧版本直接留在缓存根目录的媒体文件。"""
-    global _legacy_cache_cleaned
-    if _legacy_cache_cleaned:
-        return
-    _legacy_cache_cleaned = True
-    if not CACHE_DIR.exists():
-        return
-    for path in CACHE_DIR.iterdir():
-        if path.is_file() and path.suffix.lower() in LEGACY_MEDIA_SUFFIXES:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                continue
+        raise ValueError("不能清理本任务缓存目录以外的路径")
+    if resolved_directory.exists():
+        shutil.rmtree(resolved_directory)
 
 
 def _cache_path(url: str, suffix: str, *, directory: Path) -> Path:
@@ -109,58 +84,39 @@ async def download_file(
     headers = headers or {}
     try:
         return await _download_file_httpx(url, file_path=file_path, headers=headers)
-    except DownloadError:
-        if file_path.exists():
-            file_path.unlink(missing_ok=True)
+    except (DownloadError, httpx.HTTPError, ValueError) as exc:
+        file_path.unlink(missing_ok=True)
+        raise DownloadError("媒体下载失败") from exc
+    except BaseException:
+        file_path.unlink(missing_ok=True)
         raise
-    except httpx.HTTPError:
-        if file_path.exists():
-            file_path.unlink(missing_ok=True)
-        try:
-            return await _download_file_curl(url, file_path=file_path, headers=headers)
-        except Exception as exc:
-            if file_path.exists():
-                file_path.unlink(missing_ok=True)
-            raise DownloadError("媒体下载失败") from exc
 
 
 async def _download_file_httpx(url: str, *, file_path: Path, headers: dict[str, str]) -> Path:
     """使用 httpx 下载文件。"""
     max_bytes = int(cfg_general().get("max_file_mb", 80)) * 1024 * 1024
     total = 0
-    async with (
-        httpx.AsyncClient(timeout=_timeout(), proxy=_proxy(), follow_redirects=True, verify=False) as client,
-        client.stream("GET", url, headers=headers) as response,
-    ):
-        response.raise_for_status()
-        _check_content_length(response.headers.get("Content-Length"), max_bytes)
-        with file_path.open("wb") as file:
-            async for chunk in response.aiter_bytes(1024 * 1024):
-                total += len(chunk)
-                _check_total_size(total, max_bytes)
-                file.write(chunk)
-    return _ensure_downloaded(file_path)
-
-
-async def _download_file_curl(url: str, *, file_path: Path, headers: dict[str, str]) -> Path:
-    """使用 curl_cffi 下载文件。"""
-    max_bytes = int(cfg_general().get("max_file_mb", 80)) * 1024 * 1024
-    total = 0
-    async with curl_cffi.AsyncSession(allow_redirects=True) as session:
-        response = await session.get(
-            url,
-            headers=headers,
-            timeout=float(cfg_general().get("request_timeout_seconds", 20)),
-            stream=True,
-        )
-        response.raise_for_status()
-        _check_content_length(response.headers.get("Content-Length"), max_bytes)
-        with file_path.open("wb") as file:
-            async for chunk in response.aiter_content(chunk_size=1024 * 1024):
-                total += len(chunk)
-                _check_total_size(total, max_bytes)
-                file.write(chunk)
-    return _ensure_downloaded(file_path)
+    async with httpx.AsyncClient(timeout=_timeout(), proxy=_proxy(), follow_redirects=False) as client:
+        current = url
+        for _ in range(4):
+            await ensure_public_http_url(current)
+            async with AsyncExitStack() as stack:
+                response = await stack.enter_async_context(client.stream("GET", current, headers=headers))
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise DownloadError("媒体重定向缺少地址")
+                    current = str(response.url.join(location))
+                    continue
+                response.raise_for_status()
+                _check_content_length(response.headers.get("Content-Length"), max_bytes)
+                with file_path.open("wb") as file:
+                    async for chunk in response.aiter_bytes(1024 * 1024):
+                        total += len(chunk)
+                        _check_total_size(total, max_bytes)
+                        file.write(chunk)
+                return _ensure_downloaded(file_path)
+        raise DownloadError("媒体重定向次数超出限制")
 
 
 def _check_content_length(content_length: str | None, max_bytes: int) -> None:
@@ -210,7 +166,12 @@ async def _merge_av(video_path: Path, audio_path: Path, output_path: Path) -> Pa
         )
     except FileNotFoundError as exc:
         raise DownloadError("服务器未安装 FFmpeg，暂时无法处理该视频") from exc
-    code = await process.wait()
+    try:
+        code = await process.wait()
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
     if code != 0 or not output_path.exists() or output_path.stat().st_size == 0:
         raise DownloadError("ffmpeg 合并音视频失败")
     return output_path
@@ -227,10 +188,15 @@ async def download_video(result: VideoResult, *, directory: Path | None = None) 
     if not result.audio_url:
         return await download_file(result.video_url, suffix=".mp4", headers=result.headers, directory=directory)
 
-    video_path, audio_path = await asyncio.gather(
+    downloads = await asyncio.gather(
         download_file(result.video_url, suffix=".m4s", headers=result.headers, directory=directory),
         download_file(result.audio_url, suffix=".m4a", headers=result.headers, directory=directory),
+        return_exceptions=True,
     )
+    for result_or_error in downloads:
+        if isinstance(result_or_error, BaseException):
+            raise result_or_error
+    video_path, audio_path = downloads
     output_dir = directory or CACHE_DIR
     output = output_dir / f"{hashlib.sha1((result.video_url + result.audio_url).encode('utf-8')).hexdigest()}.mp4"
     return await _merge_av(video_path, audio_path, output)
@@ -240,31 +206,14 @@ async def download_images(result: VideoResult, *, directory: Path | None = None)
     """下载解析结果中的图片。"""
     if not result.image_urls:
         raise DownloadError("解析结果没有图片")
-    tasks = [_download_image(url, headers=result.headers, directory=directory) for url in result.image_urls]
-    paths = [path for path in await asyncio.gather(*tasks) if path is not None]
+    tasks = [
+        download_file(url, suffix=".jpg", headers=result.headers, directory=directory) for url in result.image_urls
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result_or_error in results:
+        if isinstance(result_or_error, BaseException):
+            raise result_or_error
+    paths = [path for path in results if path is not None]
     if not paths:
         raise DownloadError("图片下载失败")
     return paths
-
-
-async def _download_image(url: str, *, headers: dict[str, str], directory: Path | None = None) -> Path | None:
-    """下载图片，失败时尝试常见无样式原图地址。"""
-    for candidate in _url_candidates(url):
-        try:
-            return await download_file(candidate, suffix=".jpg", headers=headers, directory=directory)
-        except DownloadError:
-            continue
-    return None
-
-
-def _url_candidates(url: str) -> tuple[str, ...]:
-    """生成媒体下载候选 URL。"""
-    candidates = [url]
-    if url.startswith("http://"):
-        candidates.append("https://" + url[7:])
-    base = url.split("!", 1)[0]
-    if base != url:
-        candidates.append(base)
-        if base.startswith("http://"):
-            candidates.append("https://" + base[7:])
-    return tuple(dict.fromkeys(candidates))

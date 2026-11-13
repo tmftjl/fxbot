@@ -13,7 +13,7 @@ import hashlib
 from typing import Any
 from datetime import datetime, timezone
 
-from nonebot import logger
+from loguru import logger
 from json_repair import repair_json
 
 from .people import session_parts, remember_person
@@ -64,19 +64,7 @@ class ChatWriteback:
         _drop_tenant(self._fact_queue, tenant)
 
     async def start(self) -> None:
-        if self._stopping:
-            return
-        from ..memory.trimmed import trimmed_learning
-        from .image_writeback import image_writeback
-
-        trimmed_learning.stopping = False
-        from ..behavior.turn_scheduler import normal_scheduler
-
-        normal_scheduler.stopping = False
-        from ..continuation import reply_scheduler
-
-        reply_scheduler.stopping = False
-        await image_writeback.start()
+        self._stopping = False
         if self._summary_task is None or self._summary_task.done():
             self._summary_task = asyncio.create_task(self._summary_loop(), name="amemorix_summary_writeback")
         if self._fact_task is None or self._fact_task.done():
@@ -84,24 +72,19 @@ class ChatWriteback:
 
     async def stop(self) -> None:
         self._stopping = True
-        from ..memory.trimmed import trimmed_learning
-        from .image_writeback import image_writeback
-        from ..behavior.turn_scheduler import normal_scheduler
-
-        await normal_scheduler.stop()
-        await trimmed_learning.stop()
-        await image_writeback.stop()
-        for task in (self._summary_task, self._fact_task):
-            if task is None:
-                continue
+        tasks = [task for task in (self._summary_task, self._fact_task) if task is not None]
+        for task in tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         self._summary_task = None
         self._fact_task = None
-        self._stopping = False
+        self._summary_queue = asyncio.Queue(maxsize=256)
+        self._fact_queue = asyncio.Queue(maxsize=64)
+        self._states.clear()
+        self._epochs.clear()
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                raise result
 
     def on_message(
         self,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from nonebot import logger
+from loguru import logger
 
 from .types import ToolError, ToolContext
 from .runtime import ToolRuntime

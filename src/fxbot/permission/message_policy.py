@@ -1,33 +1,20 @@
-"""消息处理准入策略。"""
+"""消息准入：忽略明确配置的其他机器人提及。"""
 
 from __future__ import annotations
 
-from typing import Any
-
-from nonebot.message import event_preprocessor
-from nonebot.adapters import Bot, Event
-from nonebot.exception import IgnoredException
-
-from ..config import get_manager as get_config_manager
-from ..adapter import selfBot, bind_bot, event_message
+from ..core import Event, SessionTarget
+from ..config import ConfigManager
 
 
-def should_process_fxbot_message(bot: Bot, event: Event) -> bool:
-    return True
+class MessagePolicy:
+    """按连接命名空间匹配提及，不复用不同平台的裸 ID。"""
 
+    def __init__(self, configuration: ConfigManager) -> None:
+        self.configuration = configuration
 
-def _ignored_mention_bot_ids() -> set[str]:
-    value: Any = get_config_manager().get_system()["system"]["ignored_mention_bot_ids"]
-    if not isinstance(value, (list, tuple, set)):
-        return set()
-    return {str(item).strip() for item in value if item is not None and str(item).strip()}
-
-
-@event_preprocessor
-async def _ignore_configured_bot_mentions(bot: Bot, event: Event) -> None:
-    bind_bot(bot)
-    if not should_process_fxbot_message(bot, event):
-        return
-    ignored_ids = _ignored_mention_bot_ids()
-    if ignored_ids and set(selfBot.mention_targets(event_message(event))) & ignored_ids:
-        raise IgnoredException("ignored_configured_bot_mention")
+    async def __call__(self, event: Event) -> bool:
+        ignored = self.configuration.get_system()["system"]["ignored_mention_bot_ids"]
+        mentions = (event.original_message or event.message).mentions()
+        return not any(
+            SessionTarget(event.platform, event.bot_id, "private", user_id).key() in ignored for user_id in mentions
+        )

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import base64
 import asyncio
-from typing import Any
 
-from nonebot import logger
+import httpx
+from loguru import logger
 
+from ..core import Event, BotClient, MessageSegment, UnsupportedCapability
 from ..config import get_manager as get_config_manager
-from ..adapter import event_message, extract_raw_audio_sources
 from .providers import provider_manager
 from ..utils.http import read_limited, ensure_public_http_url, get_shared_async_client
 from .providers.usage import track_model_task_usage
+from ..runtime.actions import ActionFailed
 
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
 MAX_REDIRECTS = 3
@@ -21,30 +22,18 @@ VOICE_FAILED = "[语音消息，转录失败]"
 
 
 def asr_enabled() -> bool:
-    """读取语音识别开关；配置异常时按关闭处理。"""
-    try:
-        voice = get_config_manager().get_system()["chat"].get("voice") or {}
-    except Exception:
-        return False
-    return bool(isinstance(voice, dict) and voice.get("enable_asr"))
+    """读取已校验的语音识别开关。"""
+    return get_config_manager().get_system()["chat"]["voice"]["enable_asr"]
 
 
 def tts_enabled() -> bool:
-    """读取语音合成开关；配置异常时按关闭处理。"""
-    try:
-        settings = get_config_manager().get_system()["chat"].get("voice") or {}
-    except Exception:
-        return False
-    return bool(isinstance(settings, dict) and settings.get("enable_tts"))
+    """读取已校验的语音合成开关。"""
+    return get_config_manager().get_system()["chat"]["voice"]["enable_tts"]
 
 
 def _routing_name(key: str) -> str:
     """读取任务路由里的 Provider 名称。"""
-    try:
-        routing = get_config_manager().get_system()["chat"].get("model_routing") or {}
-    except Exception:
-        return ""
-    return str(routing.get(key) or "").strip() if isinstance(routing, dict) else ""
+    return get_config_manager().get_system()["chat"]["model_routing"][key]
 
 
 def voice_routing_name() -> str:
@@ -57,12 +46,10 @@ def tts_routing_name() -> str:
     return _routing_name("tts")
 
 
-def audio_sources_for_event(event: Any) -> list[str | bytes]:
-    """提取消息里的语音源；不加锁也不下载。"""
-    try:
-        return list(dict.fromkeys(source for source in extract_raw_audio_sources(event_message(event)) if source))
-    except Exception:
-        return []
+def audio_segments(event: Event) -> list[MessageSegment]:
+    """从规范事件中读取语音及音频段，不猜测平台字段。"""
+    message = event.original_message if event.original_message is not None else event.message
+    return [segment for segment in message.segments if segment.type in {"voice", "audio"}]
 
 
 def _audio_filename(data: bytes) -> str:
@@ -83,7 +70,7 @@ def _audio_filename(data: bytes) -> str:
         return "voice.amr"
     if data.startswith(b"#!SILK"):
         return "voice.silk"
-    return "voice.mp3"
+    raise ValueError("不支持此语音文件格式")
 
 
 async def _download_audio(url: str) -> bytes:
@@ -110,9 +97,9 @@ async def _load_audio(source: str | bytes) -> bytes:
     else:
         value = str(source or "").strip()
         if value.startswith("base64://"):
-            data = base64.b64decode(value[9:])
+            data = base64.b64decode(value[9:], validate=True)
         elif value.startswith("data:") and ";base64," in value:
-            data = base64.b64decode(value.split(";base64,", 1)[1])
+            data = base64.b64decode(value.split(";base64,", 1)[1], validate=True)
         elif value.startswith(("http://", "https://")):
             data = await _download_audio(value)
         else:
@@ -123,54 +110,38 @@ async def _load_audio(source: str | bytes) -> bytes:
 
 
 async def transcribe(data: bytes) -> str | None:
-    """调用语音识别 Provider；未配置或失败时返回 None。"""
-    name = voice_routing_name()
-    try:
-        provider = await provider_manager.get_stt_provider(name)
-    except Exception as exc:
-        logger.warning(f"[Chat] 语音识别 Provider 不可用: {exc}")
-        return None
-    timeout = float(provider.config.get("timeout") or 60)
-    try:
+    """通过租约识别语音，SDK 或实现错误直接交给调用边界。"""
+    async with provider_manager.lease(voice_routing_name(), capability="stt") as provider:
+        timeout = float(provider.config["timeout"])
         async with track_model_task_usage("voice", provider):
             text = await asyncio.wait_for(provider.transcribe(data, _audio_filename(data)), timeout=timeout)
-    except Exception:
-        logger.opt(exception=True).warning("[Chat] 语音转写失败")
-        return None
-    return str(text or "").strip()
+    return text.strip() if text else None
 
 
 async def synthesize(text: str) -> bytes | None:
-    """调用语音合成 Provider；未配置、结果为空或失败时返回 None。"""
-    value = str(text or "").strip()
-    if not value:
+    """通过租约生成语音，不在热重载时关闭在途客户端。"""
+    text = text.strip()
+    if not text:
         return None
-    try:
-        provider = await provider_manager.get_tts_provider(tts_routing_name())
-    except Exception as exc:
-        logger.warning(f"[Chat] 语音合成 Provider 不可用: {exc}")
-        return None
-    timeout = float(provider.config.get("timeout") or 60)
-    try:
+    async with provider_manager.lease(tts_routing_name(), capability="tts") as provider:
+        timeout = float(provider.config["timeout"])
         async with track_model_task_usage("tts", provider):
-            audio = await asyncio.wait_for(provider.synthesize(value), timeout=timeout)
-    except Exception:
-        logger.opt(exception=True).warning("[Chat] 语音合成失败")
-        return None
-    return audio or None
+            audio = await asyncio.wait_for(provider.synthesize(text), timeout=timeout)
+            return audio or None
 
 
-async def transcribe_event(event: Any) -> str:
-    """把消息里的语音转成 [语音: 文本]；没有语音返回空串，多条语音取第一条。"""
-    sources = audio_sources_for_event(event)
-    if not sources:
+async def transcribe_event(bot: BotClient, event: Event) -> str:
+    """从平台客户端解析媒体引用，输入或传输失败返回固定标记。"""
+    segments = audio_segments(event)
+    if not segments:
         return ""
     if not asr_enabled():
         return VOICE_DISABLED
     try:
-        data = await _load_audio(sources[0])
+        source = await bot.resolve_media(segments[0])
+        data = await _load_audio(source)
         text = await transcribe(data)
-    except Exception:
-        logger.opt(exception=True).warning("[Chat] 语音消息处理失败")
-        text = None
+    except (OSError, ValueError, asyncio.TimeoutError, httpx.HTTPError, UnsupportedCapability, ActionFailed):
+        logger.opt(exception=True).warning("语音消息读取或处理失败")
+        return VOICE_FAILED
     return f"[语音: {text}]" if text else VOICE_FAILED

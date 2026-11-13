@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 from .base import BaseAnalyzer
 from .prompts import QUALITY_PROMPT, render

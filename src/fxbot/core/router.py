@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 import logging
 from typing import Any
-from dataclasses import dataclass
-from collections.abc import Callable, Awaitable
+from dataclasses import field, dataclass
+from collections.abc import Mapping, Callable, Awaitable
 
 from .types import Event, Message, BotClient
 from .context import bind_event, reset_event
@@ -26,6 +26,13 @@ class HandlerContext:
     bot: BotClient
     event: Event
     arguments: str
+    services: Mapping[str, Any] = field(default_factory=dict)
+    runtime: Any = None
+
+    def service(self, factory):
+        from .services import resolve_service
+
+        return resolve_service(self, factory)
 
     async def send(self, message: Message | str) -> Any:
         """通过捕获的目标发送，不依赖全局当前 Bot。"""
@@ -136,6 +143,10 @@ class Router:
             return result.group(0) if result is not None else None
 
         self.add(name, handler, match=match, **options)
+
+    def event(self, name: str, event_type: str, handler: Handler, **options: Any) -> None:
+        """按规范化事件类型注册通知处理器。"""
+        self.add(name, handler, match=lambda event: "" if event.event_type == event_type else None, **options)
 
     async def dispatch(self, bot: BotClient, event: Event) -> DispatchResult:
         """分发单条事件，异常闭锁、取消传播，并在全部退出路径恢复上下文。"""

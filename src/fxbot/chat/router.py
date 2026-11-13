@@ -1,4 +1,4 @@
-"""AI 兜底路由，必须在加载内置子插件前导入。"""
+"""显式注册的 AI 兜底、群聊上下文与 Focus 分发。"""
 
 from __future__ import annotations
 
@@ -7,33 +7,19 @@ import asyncio
 from typing import Any
 from contextvars import ContextVar
 
-from nonebot import logger, on_message
-from nonebot.rule import Rule
-from nonebot.matcher import Matcher
-from nonebot.adapters import Bot, Event
+from loguru import logger
 
 from . import emoji as emoji_module
+from ..core import Event, BotClient, ReplySender, HandlerContext, current_runtime
 from .focus import focus_mode_manager
 from .hooks import ChatHookContext, guard, notify, has_chat_hooks
+from .tools import ToolRuntime
 from .types import ChatRequest, TriggerKind
-from .voice import transcribe_event, audio_sources_for_event
+from .voice import audio_segments, transcribe_event
 from .access import id_allowlist as _id_allowlist
 from ..config import get_manager as get_config_manager
 from .service import chat_service, history_limit
-from ..adapter import (
-    normalize_id,
-    event_is_tome,
-    event_message,
-    event_user_id,
-    event_group_id,
-    event_user_name,
-    event_plain_text,
-    event_sender_role,
-    extract_message_target,
-    extract_raw_image_sources,
-)
 from .personas import effective_persona_name
-from .tool_runtime import default_runtime_factory
 from .session_hooks import direct_reply_mode
 from .work_schedule import can_reply
 from .behavior.quote import quote_counter
@@ -50,23 +36,18 @@ from .message_adapter import (
     session_id_for_event,
     image_sources_for_event,
 )
+from ..core.application import Application
 from .behavior.debounce import default_debounce_registry as default_debounce_registry
-from .behavior.reply_gate import proactive_switch, default_reply_gate_registry
-from .focus.group_runtime import FocusMember, FocusMatcher
+from .focus.group_runtime import FocusMember, FocusSender
 from .behavior.turn_scheduler import normal_scheduler
-from ..permission.message_policy import should_process_fxbot_message
+from ..permission.authorization import Authorizer
 
 
-def _is_to_me(event: Any) -> bool:
-    """判断消息是否 @bot。"""
-    return event_is_tome(event)
-
-
-def _persona_trigger(cfg: dict[str, Any], bot: Any, event: Any) -> str:
-    """消息以当前人格名或别名开头时返回命中的名字，用于免 @ 叫醒 Bot。"""
-    if not event_group_id(event):
+def _persona_trigger(cfg: dict[str, Any], bot: BotClient, event: Event) -> str:
+    """消息以当前人格名或别名开头时返回命中的名字，用于免 @ 叫醒 BotClient。"""
+    if not event.is_group:
         return ""
-    text = event_plain_text(event).lstrip()
+    text = event.message.plain_text().lstrip()
     if not text:
         return ""
     behavior = cfg.get("behavior")
@@ -85,124 +66,86 @@ def _chat_cfg() -> dict[str, Any]:
     return cfg["chat"]
 
 
-def _has_image(event: Any) -> bool:
-    """判断消息是否携带图片，用于放行纯图片消息。"""
-    try:
-        return bool(extract_raw_image_sources(event_message(event)))
-    except Exception:
-        return False
+def _has_image(event: Event) -> bool:
+    """检测规范化后的图片段。"""
+    return any(segment.type == "image" for segment in (event.original_message or event.message).segments)
 
 
-def _has_voice(event: Any) -> bool:
+def _has_voice(event: Event) -> bool:
     """判断消息是否携带语音，用于放行纯语音消息；转写在适配阶段完成。"""
-    return bool(audio_sources_for_event(event))
+    return bool(audio_segments(event))
 
 
-_PROACTIVE_ATTR = "_fxbot_proactive_pass"
-
-
-async def _proactive_gate(bot: Any, event: Any, *, text: str, has_image: bool, has_voice: bool = False) -> bool:
-    """普通群消息只采样一次；群级开关开启时才可能转为主动回复。"""
-    identity = event_identity(bot, event)
-    if direct_reply_mode(identity.session_id):
-        return False
-    gate = default_reply_gate_registry.get(identity.session_id)
-    sample = text or ("[图片]" if has_image else "[语音]" if has_voice else "")
-    has_at_bot, at_other = mention_flags(bot, event)
-    observation = gate.observe_message([identity.dedupe_key], [sample], has_at_bot=has_at_bot, at_other=at_other)
-    if await proactive_switch(identity.session_id) is False:
-        gate.reset_pending()
-        return False
-    if not observation.would_trigger or gate.backoff_delay() > 0:
-        return False
-    gate.mark_triggered()
-    return True
-
-
-def _allowed_group_id(cfg: dict[str, Any], event: Any) -> str | None:
+def _allowed_group_id(cfg: dict[str, Any], event: Event) -> str | None:
     """返回允许使用 AI 的群 ID，不在白名单内时返回 None。"""
-    group_id = event_group_id(event)
+    group_id = event.target.target_id if event.is_group else None
     if not group_id:
         return None
     allowlist = _id_allowlist(cfg, "group_allowlist")
-    return group_id if not allowlist or group_id in allowlist else None
+    return group_id if not allowlist or event.target.key() in allowlist else None
 
 
-def _message_filtered(cfg: dict[str, Any], event: Any) -> bool:
+def _message_filtered(cfg: dict[str, Any], event: Event) -> bool:
     """命中屏蔽词或正则的消息既不进入 AI，也不写历史。"""
-    text = event_plain_text(event)
+    text = event.message.plain_text()
     if not text:
         return False
-    settings = cfg.get("message_receive")
-    if not isinstance(settings, dict):
-        return False
-    words = settings.get("ban_words") or []
-    if any(word and word in text for word in words if isinstance(word, str)):
-        return True
-    for pattern in settings.get("ban_msgs_regex") or []:
-        try:
-            if isinstance(pattern, str) and pattern and re.search(pattern, text):
-                return True
-        except re.error:
-            continue
-    return False
+    settings = cfg["message_receive"]
+    return any(word and word in text for word in settings["ban_words"]) or any(
+        pattern and re.search(pattern, text) is not None for pattern in settings["ban_msgs_regex"]
+    )
 
 
 def _reply_timing(cfg: dict[str, Any]) -> dict[str, Any]:
     """回复时机配置；缺失时按默认值。"""
-    value = cfg.get("reply_timing")
-    return value if isinstance(value, dict) else {}
+    return cfg["reply_timing"]
 
 
-def _match_context(cfg: dict[str, Any], bot: Any, event: Any) -> bool:
+def _match_context(cfg: dict[str, Any], bot: BotClient, event: Event) -> bool:
     """按会话类型判断是否允许进入 AI 兜底；关闭的必回复项交给上下文记录。"""
-    if event_group_id(event):
+    if event.is_group:
         if not _allowed_group_id(cfg, event):
             return False
         timing = _reply_timing(cfg)
-        if _is_to_me(event):
-            return bool(timing.get("inevitable_at_reply", True))
+        if event.to_me:
+            return bool(timing["inevitable_at_reply"])
         if _persona_trigger(cfg, bot, event):
-            return bool(timing.get("mentioned_bot_reply", True))
+            return bool(timing["mentioned_bot_reply"])
         return False
     if not bool(cfg["private_enabled"]):
         return False
     allowlist = _id_allowlist(cfg, "private_allowlist")
-    if allowlist and event_user_id(event) not in allowlist:
+    if allowlist and event.target.key() not in allowlist:
         return False
     return True
 
 
-def _should_record_context(cfg: dict[str, Any], bot: Any, event: Any) -> bool:
+def _should_record_context(cfg: dict[str, Any], bot: BotClient, event: Event) -> bool:
     """不能进入 AI 回复的普通群消息写历史，包括关闭必回复的提及。"""
-    if event_group_id(event):
+    if event.is_group:
         if not _allowed_group_id(cfg, event):
             return False
         timing = _reply_timing(cfg)
-        if _is_to_me(event) and timing.get("inevitable_at_reply", True):
+        if event.to_me and timing["inevitable_at_reply"]:
             return False
-        if _persona_trigger(cfg, bot, event) and timing.get("mentioned_bot_reply", True):
+        if _persona_trigger(cfg, bot, event) and timing["mentioned_bot_reply"]:
             return False
         return True
     if not bool(cfg["private_enabled"]):
         return False
     allowlist = _id_allowlist(cfg, "private_allowlist")
-    if allowlist and event_user_id(event) not in allowlist:
+    if allowlist and event.target.key() not in allowlist:
         return False
     return False
 
 
-async def _ai_fallback_rule(bot: Bot, event: Event) -> bool:
+async def _ai_fallback_rule(bot: BotClient, event: Event) -> bool:
     """AI 兜底匹配规则。"""
-    if not should_process_fxbot_message(bot, event):
-        return False
     cfg = _chat_cfg()
     session_id = session_id_for_event(bot, event)
     if not can_reply(cfg, session_id=session_id) or _message_filtered(cfg, event):
         return False
-    if direct_reply_mode(session_id) and getattr(event, _PROACTIVE_ATTR, False):
-        return False
-    if not getattr(event, _PROACTIVE_ATTR, False) and not _match_context(cfg, bot, event):
+    if not _match_context(cfg, bot, event):
         return False
     text = message_text(event)
     if not text and not _has_image(event) and not _has_voice(event):
@@ -210,12 +153,10 @@ async def _ai_fallback_rule(bot: Bot, event: Event) -> bool:
     return await _ingress_allowed(bot, event, path="reply")
 
 
-async def _context_rule(bot: Bot, event: Event) -> bool:
+async def _context_rule(bot: BotClient, event: Event) -> bool:
     """记录无需回复的群聊或私聊消息，作为后续对话的上下文。"""
-    if not should_process_fxbot_message(bot, event):
-        return False
     cfg = _chat_cfg()
-    if not bool(cfg["enabled"]) or history_limit(cfg, bool(event_group_id(event))) <= 0:
+    if not bool(cfg["enabled"]) or history_limit(cfg, event.is_group) <= 0:
         return False
     if _message_filtered(cfg, event):
         return False
@@ -229,22 +170,18 @@ async def _context_rule(bot: Bot, event: Event) -> bool:
     return await _ingress_allowed(bot, event, path="context")
 
 
-async def _ingress_allowed(bot: Bot, event: Event, *, path: str) -> bool:
+async def _ingress_allowed(bot: BotClient, event: Event, *, path: str) -> bool:
     """同一事件与会话只判定一次，首个路由路径确定通知语义，后续询问复用结果。"""
-    decisions = getattr(event, _INGRESS_ATTR, None)
+    decisions = event.metadata.get(_INGRESS_ATTR)
     hooks_enabled = has_chat_hooks("ingress_guard", "observer")
     if not hooks_enabled and not isinstance(decisions, dict):
         return True
     session_id = session_id_for_event(bot, event)
     platform = platform_for_bot(bot)
-    key = (platform, str(getattr(bot, "self_id", "")), session_id)
+    key = (platform, bot.bot_id, session_id)
     if not isinstance(decisions, dict):
         decisions = {}
-        try:
-            object.__setattr__(event, _INGRESS_ATTR, decisions)
-        except (AttributeError, TypeError):
-            logger.opt(exception=True).warning("[Chat] 无法保存入站判定，拒绝接收")
-            return False
+        event.metadata[_INGRESS_ATTR] = decisions
     existing = decisions.get(key)
     pending_key = (id(event), key)
     if isinstance(existing, asyncio.Future):
@@ -260,8 +197,8 @@ async def _ingress_allowed(bot: Bot, event: Event, *, path: str) -> bool:
     try:
         context = ChatHookContext(
             session_id,
-            normalize_id(event_user_id(event)) or "",
-            normalize_id(event_group_id(event)),
+            event.user_id or "",
+            (event.target.target_id if event.is_group else None),
             platform=platform,
             phase="ingress",
         )
@@ -282,36 +219,32 @@ _INGRESS_PENDING: ContextVar[frozenset[tuple[int, tuple[str, str, str]]]] = Cont
 )
 
 
-# 优先级高于 AI 兜底：先记录群聊上下文，再由兜底决定是否回复
-context_router = on_message(rule=Rule(_context_rule), priority=98, block=False)
-ai_router = on_message(rule=Rule(_ai_fallback_rule), priority=99, block=True)
-
-
-@context_router.handle()
-async def _handle_context(bot: Bot, event: Event) -> None:
+async def _handle_context(bot: BotClient, event: Event, application: Application, authorizer: Authorizer) -> None:
     """把群聊或私聊的上下文消息写入 AI 会话历史。"""
     identity = event_identity(bot, event)
     if direct_reply_mode(identity.session_id):
         return
     if not chat_service.session_store.mark_seen(identity.session_id, identity.dedupe_key):
         return
-    quote_counter(identity.session_id).record(identity.message_id or "", normalize_id(event_user_id(event)) or "")
-    emoji_module.collect_in_background(identity.session_id, event)
+    quote_counter(identity.session_id).record(identity.message_id or "", event.user_id or "")
+    emoji_module.collect_in_background(identity.session_id, bot, event, application)
     has_image = _has_image(event)
     text = message_text(event)
-    user_id = normalize_id(event_user_id(event)) or ""
+    user_id = event.user_id or ""
     if not text and not has_image and _has_voice(event):
         # 纯语音先转写再入历史，转写失败时留占位
-        text = await transcribe_event(event)
-    images = image_sources_for_event(event) if has_image else []
+        text = await transcribe_event(bot, event)
+    images = await image_sources_for_event(bot, event) if has_image else []
     # 上下文消息只做廉价提取：昵称取消息段里现成的，不额外查成员接口
-    mentions = await collect_mentions(bot, event, event_group_id(event), resolve_names=False)
+    mentions = await collect_mentions(
+        bot, event, (event.target.target_id if event.is_group else None), resolve_names=False
+    )
     await chat_service.record_group_message(
         identity.session_id,
         user_id,
-        event_user_name(event, user_id),
+        event.user_name,
         text,
-        is_group=bool(event_group_id(event)),
+        is_group=bool((event.target.target_id if event.is_group else None)),
         images=images,
         has_image=has_image,
         mentions=mentions,
@@ -320,10 +253,10 @@ async def _handle_context(bot: Bot, event: Event) -> None:
         event_id=identity.event_id,
         message_id=identity.message_id,
         reply_to_message_id=identity.reply_to_message_id,
-        memory_images=memory_image_sources(event),
+        memory_images=await memory_image_sources(bot, event),
         has_at_bot=mention_flags(bot, event)[0],
         occurred_at=message_occurred_at(event),
-        sender_role=event_sender_role(bot, event),
+        sender_role=event.metadata.get("sender_role"),
         quote_snapshot=await read_quote_snapshot(bot, event),
     )
     if not can_reply(_chat_cfg(), session_id=identity.session_id):
@@ -332,62 +265,68 @@ async def _handle_context(bot: Bot, event: Event) -> None:
         focus_request = await adapt_message_event(bot, event, trigger_kind="mention")
         # 这条消息刚由 record_group_message 写入历史，Focus 回复时不能再写一遍
         focus_request.metadata["history_recorded"] = True
-        await _focus_or_detach(bot, event, focus_request, is_at=not focus_request.is_group)
+        await _focus_or_detach(bot, event, focus_request, application, authorizer, is_at=not focus_request.is_group)
         if focus_mode_manager.is_enabled_for_request(focus_request):
             return
-    if event_group_id(event):
+    if event.is_group:
         request = await adapt_message_event(bot, event, trigger_kind="proactive")
         request.accepted_epoch = chat_service.session_store.epoch(identity.session_id)
         request.activity_seq = chat_service.session_store.activity(identity.session_id)
         request.metadata.update({"history_recorded": True, "history_appended": True})
         has_at_bot, at_other = mention_flags(bot, event)
         request.metadata.update({"has_at_bot": has_at_bot, "at_other": at_other})
-        matcher = FocusMatcher(bot, extract_message_target(event))
-        runtime = default_runtime_factory.create(bot=bot, event=event, matcher=matcher)
+        sender = FocusSender(bot, event.target)
+        runtime = ToolRuntime(bot=bot, event=event, sender=sender, application=application, authorizer=authorizer)
         await normal_scheduler.submit(chat_service, request, runtime)
 
 
-async def _register_focus(bot: Bot, event: Event, request: ChatRequest, *, is_at: bool) -> None:
+async def _register_focus(
+    bot: BotClient, event: Event, request: ChatRequest, application: Application, authorizer: Authorizer, *, is_at: bool
+) -> None:
     """把入站消息交给共享组；是否回复由共享规划器统一决定。"""
     member = FocusMember(
         session_id=request.session_id,
         bot=bot,
         event=event,
-        target=extract_message_target(event),
+        target=event.target,
         request=request,
         is_group=request.is_group,
+        application=application,
+        authorizer=authorizer,
     )
     await focus_mode_manager.register(member, request, is_at=is_at)
 
 
-async def _focus_or_detach(bot: Bot, event: Event, request: ChatRequest, *, is_at: bool) -> bool:
+async def _focus_or_detach(
+    bot: BotClient, event: Event, request: ChatRequest, application: Application, authorizer: Authorizer, *, is_at: bool
+) -> bool:
     """Focus 接管时登记并返回 True；已不满足配置时让该聊天退回普通对话。"""
     if focus_mode_manager.is_enabled_for_request(request):
-        await _register_focus(bot, event, request, is_at=is_at)
+        await _register_focus(bot, event, request, application, authorizer, is_at=is_at)
         return True
     if focus_mode_manager.attached(request.session_id):
         await focus_mode_manager.detach(request.session_id)
     return False
 
 
-@ai_router.handle()
-async def _handle_ai_fallback(bot: Bot, event: Event, matcher: Matcher) -> None:
+async def _handle_ai_fallback(
+    bot: BotClient, event: Event, sender: ReplySender, application: Application, authorizer: Authorizer
+) -> None:
     """处理 AI 兜底消息；首个触发消息等完防抖窗口后统一生成一轮。"""
     identity = event_identity(bot, event)
     direct = direct_reply_mode(identity.session_id)
     if not chat_service.session_store.mark_seen(identity.session_id, identity.dedupe_key):
         logger.debug("[Chat] 忽略重复投递的 AI 消息")
         return
-    quote_counter(identity.session_id).record(identity.message_id or "", normalize_id(event_user_id(event)) or "")
+    quote_counter(identity.session_id).record(identity.message_id or "", event.user_id or "")
     if not direct:
-        emoji_module.collect_in_background(identity.session_id, event)
-    if getattr(event, _PROACTIVE_ATTR, False):
-        trigger_kind: TriggerKind = "proactive"
-    else:
-        trigger_kind = "private" if not event_group_id(event) else "mention" if _is_to_me(event) else "persona"
+        emoji_module.collect_in_background(identity.session_id, bot, event, application)
+    trigger_kind: TriggerKind = "private" if not event.is_group else "mention" if event.to_me else "persona"
     # 序号按到达顺序分配：适配会下载图片、转写语音，放到适配之后会让慢消息拿到更新的序号
-    await chat_service.ensure_hydrated(identity.session_id, is_group=bool(event_group_id(event)))
-    seq_owner = "\0proactive" if trigger_kind == "proactive" else normalize_id(event_user_id(event)) or ""
+    await chat_service.ensure_hydrated(
+        identity.session_id, is_group=bool((event.target.target_id if event.is_group else None))
+    )
+    seq_owner = "\0proactive" if trigger_kind == "proactive" else event.user_id or ""
     trigger_seq = chat_service.session_store.next_seq(identity.session_id, seq_owner)
     accepted_epoch = chat_service.session_store.epoch(identity.session_id)
     activity_seq = chat_service.session_store.activity(identity.session_id)
@@ -395,7 +334,9 @@ async def _handle_ai_fallback(bot: Bot, event: Event, matcher: Matcher) -> None:
         request = await adapt_message_event(bot, event, trigger_kind=trigger_kind, include_quote=False)
     else:
         request = await adapt_message_event(bot, event, trigger_kind=trigger_kind)
-    if await _focus_or_detach(bot, event, request, is_at=trigger_kind in {"mention", "persona", "private"}):
+    if await _focus_or_detach(
+        bot, event, request, application, authorizer, is_at=trigger_kind in {"mention", "persona", "private"}
+    ):
         # 共享组自己负责防抖、规划与发送，这里不再走普通轮次
         return
     if not request.text.strip() and not request.images:
@@ -406,12 +347,9 @@ async def _handle_ai_fallback(bot: Bot, event: Event, matcher: Matcher) -> None:
     request.trigger_owner = seq_owner
     request.accepted_epoch = accepted_epoch
     request.activity_seq = activity_seq
-    runtime = default_runtime_factory.create(bot=bot, event=event, matcher=matcher)
+    runtime = ToolRuntime(bot=bot, event=event, sender=sender, application=application, authorizer=authorizer)
     if direct:
-        try:
-            await chat_service.process_and_send(request, runtime)
-        except Exception:
-            logger.opt(exception=True).warning("[Chat] 纯人格直聊生成或发送失败")
+        await chat_service.process_and_send(request, runtime)
         return
     await chat_service.record_group_message(
         request.session_id,
@@ -437,3 +375,22 @@ async def _handle_ai_fallback(bot: Bot, event: Event, matcher: Matcher) -> None:
     has_at_bot, at_other = mention_flags(bot, event)
     request.metadata.update({"has_at_bot": has_at_bot, "at_other": at_other})
     await normal_scheduler.submit(chat_service, request, runtime)
+
+
+def install(application: Application, authorizer: Authorizer) -> None:
+    """显式安装群上下文和 AI 兜底路由，保留防抖与 Focus 调度。"""
+
+    async def context_rule(event: Event) -> bool:
+        return await authorizer.check("chat", event) and await _context_rule(current_runtime().bot, event)
+
+    async def reply_rule(event: Event) -> bool:
+        return await authorizer.check("chat", event) and await _ai_fallback_rule(current_runtime().bot, event)
+
+    async def context(context: HandlerContext) -> None:
+        await _handle_context(context.bot, context.event, application, authorizer)
+
+    async def reply(context: HandlerContext) -> None:
+        await _handle_ai_fallback(context.bot, context.event, context, application, authorizer)
+
+    application.router.message("chat:context", context, rule=context_rule, priority=98, block=False)
+    application.router.message("chat:reply", reply, rule=reply_rule, priority=99)

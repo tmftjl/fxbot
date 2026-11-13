@@ -34,6 +34,6 @@ async def update_password(payload: dict[str, Any]) -> dict[str, Any]:
     """修改密码并换发新的访问 Token，旧 Token 立即失效。"""
     try:
         account.change_password(str(payload.get("old_password") or ""), str(payload.get("new_password") or ""))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except account.PasswordChangeRejected as error:
+        raise HTTPException(status_code=400, detail=error.reason.value) from None
     return {"token": rotate_console_token(), **account.profile()}

@@ -11,12 +11,12 @@ from typing import Any
 from pathlib import Path
 from datetime import timezone
 
-from nonebot import logger
+from loguru import logger
 
+from ..media import load_image_bytes
 from .runtime import amemorix_runtime
 from ...utils.paths import data_dir
 from .image_journal import ImageWritebackJournal
-from ..message_adapter import load_image_bytes
 from ..memory.repository import chat_repository
 from .core.image.component_paths import build_chat_external_ref
 

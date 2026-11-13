@@ -1,53 +1,20 @@
-"""权限系统导出。"""
+"""核心权限系统导出。"""
 
-from .types import (
-    Decision,
-    PermLevel,
-    PermScene,
-    PermContext,
-    PolicyResult,
-    perm_entry_default,
-)
+from .types import Decision, PermLevel, PermScene, PermContext, PolicyResult, perm_entry_default
 from .policy import PolicyChain
 from .helpers import upsert_plugin_defaults, upsert_command_defaults
-from .storage import PermissionStorage, get_storage, scan_plugins_for_permissions
-
-_CHECKER_EXPORTS = {
-    "is_superuser",
-    "PermissionChecker",
-    "check_permission",
-    "permission_for",
-    "permission_for_cmd",
-    "permission_for_plugin",
-}
-
-
-def __getattr__(name: str):
-    """懒加载依赖 NoneBot 的 checker 导出。"""
-    if name in _CHECKER_EXPORTS:
-        from . import checker
-
-        return getattr(checker, name)
-    raise AttributeError(name)
-
+from .storage import PermissionStorage, get_storage
 
 __all__ = [
-    "is_superuser",
     "Decision",
     "PermContext",
     "PermLevel",
     "PermScene",
-    "PermissionChecker",
     "PermissionStorage",
     "PolicyChain",
     "PolicyResult",
-    "check_permission",
     "get_storage",
-    "permission_for",
-    "permission_for_cmd",
-    "permission_for_plugin",
     "perm_entry_default",
-    "scan_plugins_for_permissions",
     "upsert_command_defaults",
     "upsert_plugin_defaults",
 ]

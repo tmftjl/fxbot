@@ -7,19 +7,13 @@ from typing import Any
 from collections.abc import AsyncGenerator
 
 import httpx
-from nonebot import logger
+from loguru import logger
 
 from ..base import ChatProvider
 from ..entities import LLMResponse, JSONResponse, LLMResponseError
-from ..register import register_provider
 from ....utils.http import get_shared_async_client
 
 
-@register_provider(
-    "vertex_chat",
-    "Google Vertex AI REST API",
-    default_config={"base_url": "", "timeout": 60},
-)
 class VertexAIProvider(ChatProvider):
     """使用 REST API 调用 Vertex AI 的 Gemini 模型。"""
 

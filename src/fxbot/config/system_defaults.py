@@ -22,6 +22,7 @@ SYSTEM_DEFAULTS = {
     },
     "system": {
         "token": "",
+        "superusers": [],
         "ignored_mention_bot_ids": [],
         "bot_admins": [],
     },
@@ -248,6 +249,12 @@ def validate_system_config(data: dict[str, Any]) -> None:
     """校验对话相关配置；非法值直接抛出，由调用方决定拒绝保存或回退默认。"""
     if not isinstance(data, dict):
         raise ValueError("配置必须是对象")
+    system = data.get("system", {})
+    if not isinstance(system, dict):
+        raise ValueError("system 必须是对象")
+    owners = system.get("superusers", [])
+    if not isinstance(owners, list) or not all(isinstance(value, str) and value for value in owners):
+        raise ValueError("system.superusers 必须是身份字符串数组")
 
     chat = data.get("chat", {})
     if not isinstance(chat, dict):

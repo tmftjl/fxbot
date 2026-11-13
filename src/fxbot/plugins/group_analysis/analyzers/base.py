@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 from .schemas import JSONObject, wrap_array
 from .json_utils import parse_json_response

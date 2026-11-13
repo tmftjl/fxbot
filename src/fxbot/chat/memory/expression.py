@@ -9,7 +9,7 @@ from typing import Any
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from nonebot import logger
+from loguru import logger
 from json_repair import repair_json
 
 from .state import is_ready

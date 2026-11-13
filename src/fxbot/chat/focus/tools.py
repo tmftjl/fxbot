@@ -6,7 +6,7 @@ import copy
 import json
 from typing import TYPE_CHECKING, Any
 
-from nonebot import logger
+from loguru import logger
 
 from ..tools import ToolSpec, ToolContext, execute_tool, tool_visible, default_registry, prepare_tool_result_content
 from ..tools.discovery import sync_discovered

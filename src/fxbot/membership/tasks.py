@@ -1,171 +1,108 @@
-"""到期检查、自动退群和缓存刷新任务。"""
+"""应用拥有的会员到期处理与任务重排。"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-from datetime import datetime, timezone
+from datetime import timezone
 from dataclasses import dataclass
 
-from nonebot import logger, get_bots
-from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
+from sqlalchemy.exc import SQLAlchemyError
 
-from ..db import with_session
-from .guard import membership_guard
+from ..core import Message, SessionTarget
+from .guard import MembershipGuard
 from .models import MembershipGroup, utc_now
-from ..config import get_manager as get_config_manager
+from ..config import ConfigManager
 from .contact import renewal_contact_text, format_membership_expiry
-from .service import membership_service
-from ..adapter import bind_bot
+from .service import MembershipService
+from ..core.scheduler import Job, Daily, Scheduler
+from ..runtime.actions import ActionFailed
+from ..core.application import Application
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class MembershipTaskResult:
-    """会员任务执行结果。"""
+    """本轮到期和成功退群的数量。"""
 
     left: int = 0
     expired: int = 0
 
 
-class _MembershipTaskStore:
-    """会员定时任务数据库操作。"""
+class MembershipMaintenance:
+    """通过显式应用连接执行会员维护，不搜索宿主框架。"""
 
-    @with_session
-    async def process(
+    def __init__(
         self,
-        session: AsyncSession,
-        groups: list[MembershipGroup],
-        *,
-        auto_leave: bool,
-        delay: float,
-    ) -> MembershipTaskResult:
-        result = MembershipTaskResult()
+        application: Application,
+        configuration: ConfigManager,
+        service: MembershipService,
+        guard: MembershipGuard,
+        scheduler: Scheduler,
+    ) -> None:
+        """绑定唯一的应用、配置和调度器。"""
+        self.application = application
+        self.configuration = configuration
+        self.service = service
+        self.guard = guard
+        self.scheduler = scheduler
+
+    def configure(self) -> None:
+        """根据当前有效配置显式新增或移除任务。"""
+        config = self.configuration.get_system()["membership"]
+        if not config["enable_scheduler"]:
+            self.scheduler.remove("membership:expiry")
+            return
+        hour, minute = map(int, config["schedule_time"].split(":"))
+        self.scheduler.set(Job("membership:expiry", Daily((hour,), minute), self.run))
+
+    async def run(self) -> None:
+        """执行前再次读取开关，已排入队列的旧任务不能绕过禁用。"""
+        if not self.configuration.get_system()["membership"]["enable_scheduler"]:
+            return
+        result = await self.process()
+        logger.info("[Membership] 到期 {} 个群，退出 {} 个群", result.expired, result.left)
+
+    async def process(self) -> MembershipTaskResult:
+        """逐群处理；单群故障只影响该群，不停止本轮其余工作。"""
+        config = self.configuration.get_system()["membership"]
+        groups = await self.service.list_groups()
+        expired = left = 0
         for group in groups:
-            if group.status != "active" or group.expires_at is None:
-                continue
-            expires_at = _as_utc(group.expires_at)
-            if expires_at is None:
-                continue
-            days = _days_remaining(expires_at)
+            try:
+                result = await self._process_group(group, config["auto_leave_expired_groups"])
+                expired += result.expired
+                left += result.left
+            except (SQLAlchemyError, ValueError, ConnectionError, ActionFailed, asyncio.TimeoutError):
+                logger.opt(exception=True).error("会员群维护失败")
+            if config["batch_delay_seconds"]:
+                await asyncio.sleep(config["batch_delay_seconds"])
+        return MembershipTaskResult(left=left, expired=expired)
 
-            if days < 0:
-                group_in_session = await session.get(MembershipGroup, group.id)
-                if group_in_session is None:
-                    continue
-                group_in_session.status = "expired"
-                group_in_session.expired_at = utc_now()
-                group_in_session.updated_at = utc_now()
-                result.expired += 1
-                if auto_leave and await _leave_group(group.managed_by_bot, group.group_id, expires_at):
-                    result.left += 1
-                if delay:
-                    await asyncio.sleep(delay)
-                continue
-
-        return result
-
-
-_task_store = _MembershipTaskStore()
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """将 datetime 转为 UTC aware 对象。"""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _days_remaining(expires_at: datetime) -> int:
-    """计算剩余天数。"""
-    delta = _as_utc(expires_at) - utc_now()  # type: ignore[operator]
-    return delta.days
-
-
-def _membership_cfg() -> dict[str, Any]:
-    """读取会员任务配置。"""
-    cfg = get_config_manager().get_system()
-    return cfg["membership"]
-
-
-async def _leave_group(bot_id: str | None, group_id: str, expires_at: datetime) -> bool:
-    """让 Bot 退出指定群。"""
-    bot = get_bots().get(str(bot_id)) if bot_id else None
-    if bot is None:
-        return False
-    try:
-        client = bind_bot(bot)
+    async def _process_group(self, group: MembershipGroup, auto_leave: bool) -> MembershipTaskResult:
+        """先提交过期状态并刷新缓存，再执行外部发送和退群。"""
+        if group.status != "active" or group.expires_at is None:
+            return MembershipTaskResult()
+        expires = group.expires_at if group.expires_at.tzinfo else group.expires_at.replace(tzinfo=timezone.utc)
+        if expires > utc_now():
+            return MembershipTaskResult()
+        target = SessionTarget.from_key(group.group_id)
+        if not await self.service.mark_expired(group.group_id):
+            return MembershipTaskResult()
+        await self.guard.invalidate(group.group_id)
+        bot = next(
+            (
+                item
+                for item in self.application.bots
+                if (item.platform, item.bot_id) == (target.platform, target.bot_id)
+            ),
+            None,
+        )
+        if not auto_leave or bot is None:
+            return MembershipTaskResult(expired=1)
+        notice = f"本群会员已到期，到期时间：{format_membership_expiry(expires)}。\n{renewal_contact_text()}"
         try:
-            expires_text = format_membership_expiry(expires_at)
-            message = f"本群会员已到期，到期时间：{expires_text}。\n{renewal_contact_text()}"
-            await client.send_group_message(group_id, message)
-        except Exception as exc:
-            logger.warning(f"[MembershipTask] 群 {group_id} 到期提醒发送失败: {exc}")
-        await client.leave_group(group_id)
-        return True
-    except Exception as exc:
-        logger.warning(f"[MembershipTask] 群 {group_id} 退群失败: {exc}")
-    return False
-
-
-async def check_and_process_memberships() -> MembershipTaskResult:
-    """检查会员到期状态，执行自动退群。"""
-    cfg = _membership_cfg()
-    auto_leave = bool(cfg["auto_leave_expired_groups"])
-    delay = max(float(cfg["batch_delay_seconds"] or 0), 0.0)
-    groups = await membership_service.list_groups()
-    result = await _task_store.process(
-        groups,
-        auto_leave=auto_leave,
-        delay=delay,
-    )
-
-    await membership_guard.reload_all_cache()
-    return result
-
-
-async def membership_task_job() -> MembershipTaskResult:
-    """会员定时任务入口。"""
-    if not bool(_membership_cfg()["enable_scheduler"]):
-        logger.info("[MembershipTask] 会员定时任务已关闭，跳过检查")
-        return MembershipTaskResult()
-    result = await check_and_process_memberships()
-    logger.info(f"[MembershipTask] 检查完成，过期={result.expired}，退群={result.left}")
-    return result
-
-
-def setup_membership_tasks() -> None:
-    """注册会员定时任务；缺少 scheduler 时跳过。"""
-    try:
-        from apscheduler.jobstores.base import JobLookupError
-        from nonebot_plugin_apscheduler import scheduler
-    except Exception:
-        logger.warning("[MembershipTask] nonebot-plugin-apscheduler 未安装或未加载，跳过定时任务")
-        return
-
-    cfg = _membership_cfg()
-    if not bool(cfg["enable_scheduler"]):
-        try:
-            scheduler.remove_job("fxbot_membership_check")
-        except JobLookupError:
-            pass
-        return
-    schedule_time = str(cfg["schedule_time"])
-    try:
-        hour_text, minute_text = schedule_time.split(":", 1)
-        hour = int(hour_text)
-        minute = int(minute_text)
-    except Exception:
-        hour, minute = 12, 0
-
-    scheduler.add_job(
-        membership_task_job,
-        trigger="cron",
-        hour=hour,
-        minute=minute,
-        second=0,
-        id="fxbot_membership_check",
-        replace_existing=True,
-    )
-    logger.info(f"[MembershipTask] 定时任务已注册: {hour:02d}:{minute:02d}")
+            await bot.send(target, Message.text(notice))
+        except (ConnectionError, ActionFailed, asyncio.TimeoutError):
+            logger.opt(exception=True).warning("到期提醒发送失败，继续执行退群")
+        await bot.leave_group(target.target_id)
+        return MembershipTaskResult(left=1, expired=1)

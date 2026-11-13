@@ -1,134 +1,75 @@
-"""开盒命令。"""
+"""QQ 公开资料卡，原生能力边界。"""
 
 from __future__ import annotations
 
+import re
 import textwrap
 from io import BytesIO
 from typing import Any
 from datetime import datetime
 
+import httpx
 from PIL import Image
-from nonebot import logger, on_notice
-from nonebot.params import RegexGroup
-from nonebot.matcher import Matcher
-from nonebot.adapters import Bot, Event
 
 from .config import cfg_box
-from ...plugin import Plugin
-from .box_draw import create_image
-from ...adapter import Uninfo, selfBot, build_message, event_user_id, event_group_id, build_message_segment
 from ...utils.tz import SHANGHAI_TZ
-from ...permission import PermLevel, PermScene
+from ...core.types import Message, Capability, SessionTarget, MessageSegment
 from ...utils.http import get_shared_async_client
-
-P = Plugin(
-    "entertain",
-    display_name="娱乐",
-    enabled=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
+from ...core.plugin import on_event, on_regex
 
 
-def _cfg_get(key: str) -> Any:
-    """读取开盒配置项。"""
-    return cfg_box()[key]
+class Box:
+    async def handle(self, context) -> None:
+        cfg = cfg_box()
+        event = context.event
+        if Capability.QQ_PROFILE not in context.bot.capabilities:
+            await context.finish("当前平台不支持 QQ 资料查询")
+        if cfg["only_admin"]:
+            if not event.is_group or await context.bot.member_role(event.target.target_id, event.user_id) not in {
+                "owner",
+                "admin",
+            }:
+                await context.finish("仅限群管理员可用")
+        mentions = (event.original_message or event.message).mentions()
+        number = re.search(r"\d{5,}", context.arguments)
+        user_id = next((uid for uid in mentions if uid != event.bot_id), None) or (
+            number.group() if number else event.user_id
+        )
+        key = SessionTarget(event.platform, event.bot_id, "private", user_id).key()
+        if key in cfg["box_blacklist"]:
+            await context.finish("该用户无法被开盒")
+        await context.send(await self.render(context.bot, user_id, event.target.target_id if event.is_group else None))
 
+    async def render(self, bot, user_id, group_id) -> Message:
+        from .box_draw import create_image
 
-def _extract_target_id(event: Event, fallback: str = "", self_id: str = "", default_user_id: str = "") -> str:
-    """提取开盒目标。"""
-    target = selfBot.first_mention_target(event.get_message(), {self_id})
-    if target:
-        return target
-    import re
-
-    match = re.search(r"\d{5,}", fallback)
-    if match and match.group(0) != self_id:
-        return match.group(0)
-    return default_user_id or event_user_id(event)
-
-
-async def _is_admin(bot: Bot, group_id: str, user_id: str) -> bool:
-    """判断用户是否为群管理员。"""
-    try:
-        info = await selfBot.get_group_member(group_id, user_id)
-        return str(info.get("role")) in {"owner", "admin"}
-    except Exception:
-        return False
-
-
-box_matcher = P.on_regex(
-    r"^(?:#|＃|/)(?:盒|开盒)\s*(.*)",
-    name="box",
-    display_name="开盒",
-    priority=5,
-    block=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
-
-
-@box_matcher.handle()
-async def _handle_box(
-    matcher: Matcher,
-    event: Event,
-    bot: Bot,
-    session: Uninfo,
-    groups: tuple = RegexGroup(),
-) -> None:
-    """处理开盒命令。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    target_id = _extract_target_id(
-        event,
-        str(groups[0] if groups else ""),
-        str(getattr(bot, "self_id", "")),
-        session.user.id,
-    )
-
-    if _cfg_get("only_admin") and group_id and not await _is_admin(bot, group_id, session.user.id):
-        await matcher.finish("仅限管理员可用")
-    blacklist = {str(item) for item in (_cfg_get("box_blacklist") or [])}
-    if str(target_id) in blacklist:
-        await matcher.finish("该用户无法被开盒")
-    message = await _do_box(bot, target_id=target_id, group_id=group_id)
-    await matcher.finish(message)
-
-
-async def _do_box(bot: Bot, *, target_id: str, group_id: str | None):
-    """执行开盒信息查询并生成消息。"""
-    try:
-        stranger_info = await selfBot.get_user(target_id)
-    except Exception:
-        return build_message(bot, build_message_segment(bot, "text", "无效 QQ 号"))
-    member_info: dict[str, Any] = {}
-    if group_id:
+        info = await bot.get_user(user_id)
+        member = await bot.get_member(group_id, user_id) if group_id else {}
+        url = cfg_box()["avatar_api_url"].format(user_id=user_id)
         try:
-            member_info = await selfBot.get_group_member(group_id, target_id)
-        except Exception:
-            member_info = {}
+            response = await (await get_shared_async_client()).get(url)
+            response.raise_for_status()
+            avatar = response.content
+        except httpx.HTTPError:
+            buffer = BytesIO()
+            Image.new("RGB", (640, 640), "white").save(buffer, format="PNG")
+            avatar = buffer.getvalue()
+        return Message([MessageSegment.image(create_image(avatar, _transform_info(info, member)))])
 
-    avatar = await _get_avatar_bytes(target_id)
-    if not avatar:
-        buffer = BytesIO()
-        Image.new("RGB", (640, 640), (255, 255, 255)).save(buffer, format="PNG")
-        avatar = buffer.getvalue()
-
-    lines = _transform_info(stranger_info, member_info)
-    image_bytes = create_image(avatar, lines)
-    return build_message(bot, build_message_segment(bot, "image", image_bytes))
-
-
-async def _get_avatar_bytes(user_id: str) -> bytes | None:
-    """下载 QQ 头像。"""
-    url = str(_cfg_get("avatar_api_url")).format(user_id=user_id)
-    try:
-        client = await get_shared_async_client()
-        response = await client.get(url)
-        response.raise_for_status()
-        return response.content
-    except Exception:
-        logger.opt(exception=True).warning("[box] 下载头像失败")
-        return None
+    async def joined(self, context) -> None:
+        cfg = cfg_box()
+        event = context.event
+        if (
+            not cfg["increase_box"]
+            or event.user_id == event.bot_id
+            or Capability.QQ_PROFILE not in context.bot.capabilities
+        ):
+            return
+        if event.target.key() not in cfg["auto_box_groups"]:
+            return
+        key = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
+        if key not in cfg["box_blacklist"]:
+            await context.send(await self.render(context.bot, event.user_id, event.target.target_id))
 
 
 def _transform_info(info: dict[str, Any], member_info: dict[str, Any]) -> list[str]:
@@ -296,7 +237,7 @@ def _parse_home_town(code: str) -> str:
     }
     try:
         country_code, province_code, _ = code.split("-")
-    except Exception:
+    except ValueError:
         return str(code)
     country = country_map.get(country_code, f"外国{country_code}")
     if country_code == "49" and province_code != "0":
@@ -304,28 +245,14 @@ def _parse_home_town(code: str) -> str:
     return country
 
 
-box_notice = on_notice(priority=12, block=False, permission=P.permission())
+@on_regex(r"^(?:#|＃|/)(?:盒|开盒)\s*(.*)", name="box", display_name="QQ资料卡", level="all")
+async def show_box(context):
+    await box.handle(context)
 
 
-@box_notice.handle()
-async def _handle_increase_box(bot: Bot, event: Event) -> None:
-    """新成员入群时自动开盒。"""
-    if not _cfg_get("increase_box"):
-        return
-    notice_type = str(getattr(event, "notice_type", "") or "")
-    if notice_type != "group_increase" and "increase" not in type(event).__name__.lower():
-        return
-    group_id = event_group_id(event)
-    if not group_id:
-        return
-    groups = {str(item) for item in (_cfg_get("auto_box_groups") or [])}
-    if groups and group_id not in groups:
-        return
-    user_id = str(getattr(event, "user_id", "") or "")
-    if not user_id or user_id == str(getattr(bot, "self_id", "")):
-        return
-    try:
-        message = await _do_box(bot, target_id=user_id, group_id=group_id)
-        await selfBot.send(event, message)
-    except Exception:
-        logger.opt(exception=True).debug("[box] 入群自动开盒失败")
+@on_event("member_joined", name="increase_box", scene="group", priority=12)
+async def joined(context):
+    await box.joined(context)
+
+
+box = Box()

@@ -10,7 +10,7 @@ from datetime import datetime
 from contextlib import suppress
 from dataclasses import replace
 
-from nonebot import logger
+from loguru import logger
 
 from . import plan_flow, emoji_tools
 from ..emoji import emoji_config
@@ -366,7 +366,7 @@ async def run(service: Any, context: Any) -> ChatResponse:
             )
             if digest:
                 response.metadata["attach_emoji"] = digest
-        if getattr(context.runtime, "matcher", None) is None:
+        if getattr(context.runtime, "sender", None) is None:
             await end_turn_without_reply(request, context.provider_name)
             return {"ok": True}, response
         sent = await service._send_generated(reply_request, response, context.runtime)

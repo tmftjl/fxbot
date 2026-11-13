@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from dataclasses import dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from .bindings import PERSONA, get_binding, clear_binding_value
 from ..utils.cache import cache

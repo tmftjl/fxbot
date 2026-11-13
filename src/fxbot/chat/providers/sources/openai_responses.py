@@ -5,12 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from loguru import logger
 from openai import AsyncOpenAI
-from nonebot import logger
 
 from ..base import ChatProvider, local_http_client
 from ..entities import LLMResponse, JSONResponse, LLMResponseError
-from ..register import register_provider
 
 CLIENT_TYPE = "openai_responses"
 _FAILED_STATUS = {"failed", "incomplete", "cancelled"}
@@ -191,11 +190,6 @@ def _parse_response(response: Any, model: str) -> LLMResponse:
     return result
 
 
-@register_provider(
-    f"{CLIENT_TYPE}_chat",
-    "OpenAI Responses API",
-    default_config={"base_url": "https://api.openai.com/v1", "timeout": 60},
-)
 class OpenAIResponsesProvider(ChatProvider):
     """使用 Responses API 的对话 Provider；回放 reasoning item 支持续写。"""
 

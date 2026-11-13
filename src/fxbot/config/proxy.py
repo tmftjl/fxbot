@@ -6,8 +6,9 @@ from copy import deepcopy
 from typing import Any, Callable
 from dataclasses import field, dataclass
 
-from nonebot import logger
+from loguru import logger
 
+from .errors import ConfigFormatError, ConfigValidationError
 from .storage import ConfigStorage
 from ..utils.cache import cache
 
@@ -83,8 +84,11 @@ class ConfigProxy:
     def _validated(self, raw: dict[str, Any]) -> dict[str, Any]:
         """同时校验原始值与合并后的配置。"""
         if self.validator is not None:
-            self.validator(raw)
-            self.validator(deep_merge(self.defaults, raw, clean_extra=self.clean_extra))
+            try:
+                self.validator(raw)
+                self.validator(deep_merge(self.defaults, raw, clean_extra=self.clean_extra))
+            except ValueError as exc:
+                raise ConfigValidationError(str(exc)) from exc
         return raw
 
     def _remember(self, raw: dict[str, Any]) -> None:
@@ -92,7 +96,7 @@ class ConfigProxy:
         if self.validator is not None:
             try:
                 self.history_storage.write(raw)
-            except Exception as exc:
+            except OSError as exc:
                 logger.warning(f"[Config] {self.namespace}/{self.filename} 有效配置快照保存失败: {exc}")
                 raise
         self._last_valid = deepcopy(raw)
@@ -104,7 +108,7 @@ class ConfigProxy:
         if self._last_valid is None and self.history_storage.exists():
             try:
                 self._last_valid = deepcopy(self._validated(self.history_storage.read(strict=True)))
-            except Exception as history_exc:
+            except (OSError, ConfigFormatError, ConfigValidationError) as history_exc:
                 logger.warning(f"[Config] {self.namespace}/{self.filename} 有效配置快照不可用: {history_exc}")
                 raise RuntimeError("有效配置快照不可用，拒绝回退默认值") from history_exc
         source = "上一份有效配置" if self._last_valid is not None else "默认值（无有效历史）"
@@ -120,7 +124,7 @@ class ConfigProxy:
             if not self.storage.exists():
                 raise FileNotFoundError(f"配置文件不存在: {self.path}")
             raw = self._validated(self.storage.read(strict=True))
-        except Exception as exc:
+        except (OSError, ConfigFormatError, ConfigValidationError) as exc:
             raw = self._fallback(exc)
         else:
             self._remember(raw)
@@ -143,7 +147,7 @@ class ConfigProxy:
             if not self.storage.exists():
                 raise FileNotFoundError(f"配置文件不存在: {self.path}")
             raw = self._validated(self.storage.read(strict=True))
-        except Exception as exc:
+        except (OSError, ConfigFormatError, ConfigValidationError) as exc:
             return deep_merge(self.defaults, self._fallback(exc), clean_extra=self.clean_extra)
         merged = deep_merge(self.defaults, raw, clean_extra=self.clean_extra)
         if merged != raw:

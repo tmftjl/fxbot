@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 from fxbot.core import Message, SessionTarget, MessageSegment, UnsupportedCapability, current_event
 from fxbot.core.router import Router
-from fxbot.core.platforms.onebot11 import OneBot11Client, parse_event, parse_message, encode_message
+from fxbot.platforms.onebot11 import OneBot11Client, parse_event, parse_message, encode_message
 
 
 def payload(kind: str = "group") -> dict:
@@ -70,7 +70,7 @@ class ParseTests(unittest.TestCase):
                 {"type": "face", "data": {"id": "1"}},
             ]
         )
-        self.assertEqual([s.type for s in message.segments], ["mention_all", "audio", "onebot11:face"])
+        self.assertEqual([s.type for s in message.segments], ["mention_all", "voice", "onebot11:face"])
         self.assertEqual(message.mentions(), [])
 
     def test_wrong_identity_and_malformed_ids_are_rejected(self) -> None:
@@ -87,13 +87,16 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_event(data, bot_id="100")
 
-    def test_notices_and_string_messages_are_explicitly_unsupported(self) -> None:
+    def test_requests_are_explicitly_unsupported(self) -> None:
         data = payload()
-        data["post_type"] = "notice"
+        data["post_type"] = "request"
         with self.assertRaises(UnsupportedCapability):
             parse_event(data, bot_id="100")
-        with self.assertRaises(UnsupportedCapability):
-            parse_message("[CQ:at,qq=100]")
+
+    def test_cq_string_is_parsed_once_and_escaped_text_stays_text(self) -> None:
+        message = parse_message("&#91;CQ:at,qq=999&#93;[CQ:at,qq=100]a&amp;b")
+        self.assertEqual(message.mentions(), ["100"])
+        self.assertEqual(message.plain_text(), "[CQ:at,qq=999]a&b")
 
     def test_malformed_segments_reject_runtime_objects(self) -> None:
         for value in ([{}], [{"type": "text", "data": {"text": object()}}], [{"type": "text", "data": []}]):

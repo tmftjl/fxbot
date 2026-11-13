@@ -2,28 +2,24 @@
 
 from __future__ import annotations
 
-import os
 import argparse
+from dataclasses import replace
 
 from .settings import Settings
 
 
 def main() -> None:
-    """读取连接环境配置并运行单进程服务。"""
+    """读取项目配置并运行单进程服务。"""
     parser = argparse.ArgumentParser(description="FxBot 独立运行时")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--bot-id", action="append", required=True, help="允许的 Bot ID，可重复传入")
+    parser.add_argument("--host", help="覆盖项目配置中的监听地址")
+    parser.add_argument("--port", type=int, help="覆盖项目配置中的监听端口")
     args = parser.parse_args()
     try:
-        settings = Settings(
-            token=os.environ.get("FXBOT_ACCESS_TOKEN", ""),
-            bot_ids=frozenset(args.bot_id),
-            host=args.host,
-            port=args.port,
-        )
-    except ValueError:
-        parser.error("配置无效：请设置 FXBOT_ACCESS_TOKEN、有效 Bot ID 和监听端口")
+        settings = Settings.load()
+        overrides = {name: getattr(args, name) for name in ("host", "port") if getattr(args, name) is not None}
+        settings = replace(settings, **overrides)
+    except (OSError, ValueError):
+        parser.error("无法读取有效的 data/config/runtime/config.json，请检查身份、令牌和监听配置")
 
     import uvicorn
 

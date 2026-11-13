@@ -10,16 +10,18 @@ from typing import Any
 from pathlib import Path
 from datetime import datetime
 
-from fastapi import Depends, APIRouter, HTTPException
-from nonebot import logger, get_bots
+from loguru import logger
+from fastapi import Depends, Request, APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from ..auth import sse_auth, bearer_auth
 from ...chat import emoji as emoji_module
 from ...config import get_manager as get_config_manager
 from ...utils.tz import SHANGHAI_TZ, as_shanghai
+from ...chat.media import load_images
 from ...chat.types import speaker_label
 from ...chat.vision import describe_emoji
+from ..dependencies import runtime_for
 from ...chat.service import chat_service
 from ...chat.bindings import PERSONA, PROVIDER, TALK_VALUE, get_binding, set_binding
 from ...chat.personas import load_personas, effective_persona_name
@@ -27,7 +29,6 @@ from ...chat.providers import provider_manager
 from ...chat.model_trace import read_snapshot, list_snapshots
 from ...chat.memory.state import is_ready, degraded_reason
 from ...chat.focus.manager import FAILURE_THRESHOLD, focus_mode_manager
-from ...chat.message_adapter import load_images
 from ...chat.memory.expression import (
     CHUNK_LENGTH,
     MAX_SOURCE_LENGTH,
@@ -843,58 +844,25 @@ async def batch_delete_emoji(payload: dict[str, Any]) -> dict[str, int]:
     return {"deleted": deleted}
 
 
-def _scheduler_jobs() -> list[dict[str, Any]]:
-    """读取已注册的后台任务；调度器未加载时返回空列表。"""
-    try:
-        from nonebot_plugin_apscheduler import scheduler
-
-        jobs = scheduler.get_jobs()
-    except Exception:
-        return []
-    result = []
-    for job in jobs:
-        if not str(job.id).startswith("fxbot_chat_"):
-            continue
-        next_run = getattr(job, "next_run_time", None)
-        result.append(
-            {
-                "id": str(job.id),
-                "next_run": next_run.isoformat() if next_run else None,
-                "pending": bool(getattr(job, "pending", False)),
-            }
-        )
-    return sorted(result, key=lambda item: item["id"])
-
-
 @router.get("/health")
-async def chat_health() -> dict[str, Any]:
+async def chat_health(request: Request) -> dict[str, Any]:
     """返回聊天存储、调度器与在线 Bot 的可用状态。"""
-    try:
-        chat = get_config_manager().get_system()["chat"]
-        enabled = bool(chat.get("enabled"))
-    except Exception:
-        enabled = False
-        chat = {"enabled": False}
+    services = runtime_for(request)
+    chat = services.configuration.get_system()["chat"]
     from ...chat.work_schedule import schedule_status
 
     work_schedule = schedule_status(chat)
-    focus_groups = []
-    focus_ok = True
-    try:
-        focus_groups = focus_mode_manager.status_snapshot()
-        focus_ok = all(
-            group["worker_alive"] and group["consecutive_failures"] <= FAILURE_THRESHOLD for group in focus_groups
-        )
-    except Exception:
-        focus_groups = []
-        logger.opt(exception=True).debug("[ChatFocus] 健康状态读取失败")
+    focus_groups = focus_mode_manager.status_snapshot()
+    focus_ok = all(
+        group["worker_alive"] and group["consecutive_failures"] <= FAILURE_THRESHOLD for group in focus_groups
+    )
     return {
-        "enabled": enabled,
+        "enabled": chat["enabled"],
         "work_schedule": work_schedule,
         "storage_ready": is_ready(),
         "degraded_reason": degraded_reason(),
-        "scheduler_ready": bool(_scheduler_jobs()),
-        "online_bots": len(get_bots()),
+        "scheduler_ready": any(job.name.startswith("chat:") for job in services.scheduler.jobs),
+        "online_bots": len(services.application.bots),
         "focus_groups": focus_groups,
         "focus_ok": focus_ok,
     }

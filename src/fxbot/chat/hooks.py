@@ -11,7 +11,7 @@ from typing import Any, Literal, get_args
 from dataclasses import dataclass
 from collections.abc import Callable, Collection, MutableMapping
 
-from nonebot import logger
+from loguru import logger
 
 from .hook_registry import Registration, CallbackRegistry, ordered_callbacks, register_callback
 

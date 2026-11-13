@@ -7,7 +7,7 @@ import json
 from typing import Any
 from pathlib import Path
 
-from nonebot import logger
+from loguru import logger
 
 from ..utils.cache import cache
 from ..utils.paths import config_dir

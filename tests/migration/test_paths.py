@@ -31,11 +31,6 @@ class PathTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     paths.data_dir("../outside")
 
-    def test_bundled_assets_stay_in_package(self) -> None:
-        asset = paths.built_in_plugins_dir() / "rocom/resources/pokedex/bg.jpg"
-        self.assertTrue(asset.is_file())
-        self.assertTrue(asset.is_relative_to(paths.package_root()))
-
     def test_source_project_is_independent_of_working_directory(self) -> None:
         root = Path(__file__).resolve().parents[2]
         script = (

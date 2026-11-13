@@ -14,7 +14,7 @@ from typing import Any
 from pathlib import Path
 from dataclasses import field, dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from .models import ChatExpression
 from ...config import get_manager as get_config_manager

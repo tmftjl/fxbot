@@ -6,14 +6,13 @@ import re
 from typing import Any
 from collections.abc import AsyncGenerator
 
+from loguru import logger
 from openai import AsyncOpenAI
-from nonebot import logger
 
 from ..base import STTProvider, TTSProvider, ChatProvider, EmbeddingProvider, local_http_client
-from ..entities import LLMResponse, JSONResponse, ProviderType, LLMResponseError
-from ..register import register_provider
+from ..catalog import EMBED_BATCH_LIMIT
+from ..entities import LLMResponse, JSONResponse, LLMResponseError
 
-EMBED_BATCH_LIMIT = 25
 _THINK_PATTERN = re.compile(
     r"<think>(?P<think>.*?)</think>(?P<content>.*)|<think>(?P<think_unclosed>.*)|(?P<content_only>.+)",
     re.DOTALL,
@@ -46,11 +45,6 @@ def _inline_reasoning(content: str, reasoning: str) -> tuple[str, str]:
     return reasoning, (match.group("content_only") or "").strip()
 
 
-@register_provider(
-    "openai_chat",
-    "OpenAI / 兼容 API",
-    default_config={"base_url": "https://api.openai.com/v1", "timeout": 60},
-)
 class OpenAIProvider(ChatProvider):
     """OpenAI 协议对话 Provider。"""
 
@@ -235,17 +229,6 @@ class OpenAIProvider(ChatProvider):
             return []
 
 
-@register_provider(
-    "openai_embedding",
-    "OpenAI Embedding",
-    provider_type=ProviderType.EMBEDDING,
-    default_config={
-        "base_url": "https://api.openai.com/v1",
-        "timeout": 60,
-        "embedding_dim": 1536,
-        "embed_batch_limit": EMBED_BATCH_LIMIT,
-    },
-)
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     """OpenAI 嵌入 Provider。"""
 
@@ -281,12 +264,6 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             raise
 
 
-@register_provider(
-    "openai_stt",
-    "OpenAI 语音识别",
-    provider_type=ProviderType.STT,
-    default_config={"base_url": "https://api.openai.com/v1", "timeout": 60},
-)
 class OpenAISTTProvider(STTProvider):
     """OpenAI 语音转写 Provider。"""
 
@@ -320,12 +297,6 @@ class OpenAISTTProvider(STTProvider):
             raise
 
 
-@register_provider(
-    "openai_tts",
-    "OpenAI 语音合成",
-    provider_type=ProviderType.TTS,
-    default_config={"base_url": "https://api.openai.com/v1", "timeout": 60, "voice": "alloy"},
-)
 class OpenAITTSProvider(TTSProvider):
     """OpenAI 语音合成 Provider。"""
 

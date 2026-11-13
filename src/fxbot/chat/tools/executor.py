@@ -7,38 +7,32 @@ import asyncio
 import inspect
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 from .types import ToolSpec, ToolError, ToolContext
 from ..hooks import ChatHookContext, guard, notify
 from .runtime import ToolRuntime
 from .registry import ToolRegistry, default_registry
-from ...adapter import event_user_id, event_group_id
-from ...permission import check_permission
 
 
 async def tool_allowed(spec: ToolSpec, runtime: ToolRuntime, *, session_id: str = "") -> bool:
     """判断当前调用者是否有权使用该工具；无 bot/event 时按无权限处理。"""
-    runtime_tools = getattr(runtime, "allowed_tools", None)
+    runtime_tools = runtime.allowed_tools
     if runtime_tools is not None and spec.name not in runtime_tools:
         return False
     identity = ChatHookContext(
         session_id=session_id,
-        user_id=str(event_user_id(runtime.event) or "") if runtime.event is not None else "",
-        group_id=event_group_id(runtime.event) if runtime.event is not None else None,
+        user_id=runtime.event.user_id if runtime.event is not None else "",
+        group_id=runtime.event.target.target_id if runtime.event is not None and runtime.event.is_group else None,
         phase="tool_discovery",
     )
     if not await guard("tool_guard", identity, tool_name=spec.name):
         return False
     if not spec.permission:
         return True
-    if runtime.bot is None or runtime.event is None:
+    if runtime.authorizer is None or runtime.event is None:
         return False
-    try:
-        return await check_permission(spec.permission, runtime.bot, runtime.event)
-    except Exception:
-        logger.opt(exception=True).warning(f"[Tool] 权限检查失败: {spec.name}")
-        return False
+    return await runtime.authorizer.check(spec.permission, runtime.event)
 
 
 async def execute_tool(

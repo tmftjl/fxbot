@@ -7,14 +7,10 @@ import random
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+import emoji
+from PIL import Image, ImageDraw, UnidentifiedImageError
 
 from ...utils.fonts import load_font, get_shared_font_path
-
-try:
-    import emoji
-except Exception:  # pragma: no cover
-    emoji = None
 
 RESOURCE_DIR = Path(__file__).resolve().parent / "resource"
 FONT_PATH = get_shared_font_path()
@@ -35,10 +31,7 @@ def create_image(avatar: bytes, reply: list[str]) -> bytes:
     text = "\n".join(reply)
     temp_img = Image.new("RGBA", (1, 1))
     temp_draw = ImageDraw.Draw(temp_img)
-    if emoji is not None:
-        measure_text = "".join("一" if getattr(emoji, "is_emoji", None) and emoji.is_emoji(ch) else ch for ch in text)
-    else:
-        measure_text = text
+    measure_text = "".join("一" if emoji.is_emoji(ch) else ch for ch in text)
     text_bbox = temp_draw.textbbox((0, 0), measure_text, font=FONT)
     text_width = int(text_bbox[2] - text_bbox[0])
     text_height = max(1, int(text_bbox[3] - text_bbox[1]))
@@ -46,7 +39,7 @@ def create_image(avatar: bytes, reply: list[str]) -> bytes:
 
     try:
         avatar_image = Image.open(BytesIO(avatar)).convert("RGBA")
-    except Exception:
+    except (UnidentifiedImageError, OSError, ValueError):
         avatar_image = Image.new(
             "RGBA",
             (max(1, text_height), max(1, text_height)),
@@ -93,12 +86,7 @@ def _draw_multi(image: Image.Image, text: str, text_x: int = 10, text_y: int = 1
         )
         current_x = text_x
         for char in line:
-            is_emoji = False
-            if emoji is not None:
-                try:
-                    is_emoji = char in getattr(emoji, "EMOJI_DATA", {})
-                except Exception:
-                    is_emoji = False
+            is_emoji = char in emoji.EMOJI_DATA
             font = EMOJI_FONT if is_emoji else FONT
             draw.text(
                 (current_x, current_y + (10 if is_emoji else 0)),

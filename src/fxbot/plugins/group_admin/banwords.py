@@ -1,445 +1,221 @@
-"""群违禁词管理和拦截。"""
+"""群违禁词的规范会话存储和原生拦截。"""
 
 from __future__ import annotations
 
 import re
-import json
-from typing import Any, Literal
-from pathlib import Path
+import hashlib
 
-from nonebot import logger
-from nonebot.params import RegexGroup
-from nonebot.matcher import Matcher
-from nonebot.adapters import Bot, Event
-from nonebot.exception import StopPropagation
+from loguru import logger
 
-from ...plugin import Plugin
-from .identity import is_superuser_id
-from ...adapter import Uninfo, selfBot
-from ...utils.tz import now_str
-from ...permission import PermLevel, PermScene
-from ...utils.cache import cache
+from ...core import Event, SessionTarget, HandlerContext, UnsupportedCapability
+from .service import GroupAdminService
+from ...core.plugin import on_regex, on_message
 from ...utils.paths import data_dir
-
-MatchType = Literal["exact", "fuzzy", "regex"]
-PenaltyType = Literal["mute", "kick", "recall"]
-
-P = Plugin(
-    "group_admin",
-    display_name="群管",
-    enabled=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
-)
-
-DATA_DIR = data_dir("group_admin") / "banned_words"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+from ...runtime.actions import ActionFailed
+from ...utils.json_file import read_json, write_json
 
 
-def _plain_text(event: Event) -> str:
-    """提取纯文本。"""
-    if hasattr(event, "get_plaintext"):
+class Banwords:
+    def __init__(self, service: GroupAdminService) -> None:
+        self.service = service
+        self.directory = data_dir("group_admin") / "banned_words"
+        definitions = (
+            ("banword_add", r"^[#＃]新增(精确|模糊|正则)?(禁|踢|撤)?违禁词\s*(.+)"),
+            ("banword_del", r"^[#＃]删除违禁词\s*(.+)"),
+            ("banword_clear", r"^[#＃]清空违禁词$"),
+            ("banword_list", r"^[#＃]违禁词列表$"),
+            ("banword_on", r"^[#＃]开启违禁词$"),
+            ("banword_off", r"^[#＃]关闭违禁词$"),
+            ("banword_mute_time", r"^[#＃]设置违禁词禁言时间\s*(\d+)$"),
+        )
+        self.patterns = {name: re.compile(pattern) for name, pattern in definitions}
+
+    def path(self, target: SessionTarget):
+        if target.kind != "group":
+            raise ValueError("违禁词只能配置群会话")
+        return self.directory / (hashlib.sha256(target.key().encode("utf-8")).hexdigest() + ".json")
+
+    def _validate(self, data: dict) -> dict:
+        if not isinstance(data, dict) or set(data) != {"target", "enabled", "mute_seconds", "words"}:
+            raise ValueError("违禁词配置必须明确包含群会话身份，旧文件不能猜测归属")
+        if SessionTarget.from_key(data["target"]).kind != "group" or type(data["enabled"]) is not bool:
+            raise ValueError("违禁词目标或开关无效")
+        if type(data["mute_seconds"]) is not int or not 1 <= data["mute_seconds"] <= 2592000:
+            raise ValueError("违禁词禁言秒数无效")
+        if not isinstance(data["words"], dict):
+            raise ValueError("违禁词必须为对象")
+        for word, item in data["words"].items():
+            if not isinstance(word, str) or not word or not isinstance(item, dict):
+                raise ValueError("违禁词记录无效")
+            if item["match"] not in {"exact", "fuzzy", "regex"} or item["penalty"] not in {"mute", "kick", "recall"}:
+                raise ValueError("违禁词匹配或处罚类型无效")
+            if item["match"] == "regex":
+                re.compile(word, re.MULTILINE)
+        return data
+
+    def validate(self) -> None:
+        for path in self.directory.glob("*.json"):
+            data = self._validate(read_json(path, dict))
+            if path != self.path(SessionTarget.from_key(data["target"])):
+                raise ValueError("违禁词文件名与完整群身份不一致，必须明确迁移")
+
+    def load(self, target: SessionTarget) -> dict:
+        data = read_json(
+            self.path(target),
+            lambda: {
+                "target": target.key(),
+                "enabled": True,
+                "mute_seconds": 300,
+                "words": {},
+            },
+        )
+        data = self._validate(data)
+        if data["target"] != target.key():
+            raise ValueError("违禁词配置属于其他会话")
+        return data
+
+    async def handle(self, action: str, context: HandlerContext) -> None:
+        data = self.load(context.event.target)
+        match = self.patterns[action].search(context.arguments)
+        if action == "banword_add":
+            mode = {"精确": "exact", "模糊": "fuzzy", "正则": "regex"}[match.group(1) or "精确"]
+            penalty = {"禁": "mute", "踢": "kick", "撤": "recall"}[match.group(2) or "禁"]
+            word = match.group(3).strip()
+            if not word:
+                await context.finish("请提供违禁词")
+            if word in data["words"]:
+                await context.finish("违禁词已经存在")
+            if mode == "regex":
+                try:
+                    re.compile(word, re.MULTILINE)
+                except re.error:
+                    await context.finish("正则表达式无效")
+            data["words"][word] = {"match": mode, "penalty": penalty, "operator": context.event.user_id}
+        elif action == "banword_del":
+            if data["words"].pop(match.group(1).strip(), None) is None:
+                await context.finish("违禁词不存在")
+        elif action == "banword_clear":
+            data["words"] = {}
+        elif action == "banword_on":
+            data["enabled"] = True
+        elif action == "banword_off":
+            data["enabled"] = False
+        elif action == "banword_mute_time":
+            data["mute_seconds"] = int(match.group(1))
+            if not 1 <= data["mute_seconds"] <= 2592000:
+                await context.finish("禁言时间必须在 1 到 2592000 秒之间")
+        else:
+            await context.finish(
+                "\n".join(
+                    [
+                        f"违禁词检测：{'开启' if data['enabled'] else '关闭'}，禁言 {data['mute_seconds']} 秒",
+                        *[
+                            f"{word} [{item['match']}/{item['penalty']}]"
+                            for word, item in list(data["words"].items())[:50]
+                        ],
+                    ]
+                )
+            )
+        write_json(self.path(context.event.target), data)
+        await context.finish("违禁词配置已保存")
+
+    async def rule(self, event: Event) -> bool:
+        if not event.is_group or not await self.service.authorizer.check("group_admin:banword_interceptor", event):
+            return False
+        if event.metadata.get("sender_role") in {"owner", "admin"} or self.service.protected(
+            event.target, event.user_id
+        ):
+            return False
+        data = self.load(event.target)
+        if not data["enabled"]:
+            return False
+        text = event.message.plain_text()
+        compact = re.sub(r"\s+", "", text)
+        for word, item in data["words"].items():
+            if item["match"] == "exact":
+                matched = text == word or compact == word
+            elif item["match"] == "fuzzy":
+                matched = word in text or word in compact
+            else:
+                pattern = re.compile(word, re.MULTILINE)
+                matched = pattern.search(text) is not None or pattern.search(compact) is not None
+            if matched:
+                event.metadata["group_admin:banword"] = (item["penalty"], data["mute_seconds"])
+                return True
+        return False
+
+    async def intercept(self, context: HandlerContext) -> None:
+        penalty, duration = context.event.metadata.pop("group_admin:banword")
         try:
-            return str(event.get_plaintext())
-        except Exception:
-            pass
-    try:
-        return str(event.get_message())
-    except Exception:
-        return ""
+            await self.service.automatic(
+                context.bot,
+                context.event.target,
+                context.event.user_id,
+                penalty,
+                duration=duration,
+                message_id=context.event.message_id or "",
+            )
+        except (ActionFailed, UnsupportedCapability, TimeoutError, OSError, ValueError):
+            logger.opt(exception=True).warning("违禁词命中，但无法确认安全处罚条件")
 
 
-class BannedWordsManager:
-    """违禁词管理器。"""
-
-    MATCH_TYPE_MAP = {"精确": "exact", "模糊": "fuzzy", "正则": "regex"}
-    PENALTY_TYPE_MAP = {"禁": "mute", "踢": "kick", "撤": "recall"}
-
-    @staticmethod
-    def _path(group_id: int) -> Path:
-        """返回群违禁词配置路径。"""
-        return DATA_DIR / f"{group_id}.json"
-
-    @staticmethod
-    def _default() -> dict[str, Any]:
-        """默认违禁词配置。"""
-        return {"banned_words": {}, "config": {"enabled": True, "mute_seconds": 300}}
-
-    @classmethod
-    def load_group_data(cls, group_id: int) -> dict[str, Any]:
-        """加载群违禁词配置。"""
-        path = cls._path(group_id)
-        if not path.exists():
-            return cls._default()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else cls._default()
-        except Exception:
-            logger.opt(exception=True).warning(f"[banwords] 加载违禁词配置失败: {group_id}")
-            return cls._default()
-
-    @classmethod
-    def save_group_data(cls, group_id: int, data: dict[str, Any]) -> None:
-        """保存群违禁词配置。"""
-        path = cls._path(group_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        cache.clear_prefix(("banwords", group_id))
-
-    @classmethod
-    def load_group_config(cls, group_id: int) -> dict[str, Any]:
-        """加载群违禁词开关配置。"""
-        def loader() -> dict[str, Any]:
-            data = cls.load_group_data(group_id)
-            config = data.get("config", {})
-            if not isinstance(config, dict):
-                config = {}
-            return {"enabled": True, "mute_seconds": 300, **config}
-
-        return cache.remember(("banwords", group_id, "config"), loader)
-
-    @classmethod
-    def compile_banned_words(cls, group_id: int) -> list[tuple[re.Pattern[str], dict[str, Any]]]:
-        """编译群违禁词规则。"""
-        def loader() -> list[tuple[re.Pattern[str], dict[str, Any]]]:
-            data = cls.load_group_data(group_id)
-            banned_words = data.get("banned_words", {})
-            compiled: list[tuple[re.Pattern[str], dict[str, Any]]] = []
-            if isinstance(banned_words, dict):
-                for word, meta in banned_words.items():
-                    if not isinstance(meta, dict):
-                        continue
-                    match_type = str(meta.get("match_type", "exact"))
-                    try:
-                        if match_type == "exact":
-                            pattern = re.compile(f"^{re.escape(str(word))}$")
-                        elif match_type == "fuzzy":
-                            pattern = re.compile(re.escape(str(word)))
-                        elif match_type == "regex":
-                            pattern = re.compile(str(word), re.MULTILINE)
-                        else:
-                            continue
-                        compiled.append((pattern, {**meta, "raw_word": str(word)}))
-                    except re.error:
-                        logger.opt(exception=True).warning(f"[banwords] 正则编译失败: {group_id} {word}")
-            return compiled
-
-        return cache.remember(("banwords", group_id, "compiled"), loader)
-
-    @classmethod
-    async def add_word(
-        cls,
-        group_id: int,
-        word: str,
-        match_type: MatchType = "exact",
-        penalty_type: PenaltyType = "mute",
-        added_by: int = 0,
-    ) -> None:
-        """添加违禁词。"""
-        data = cls.load_group_data(group_id)
-        banned_words = data.setdefault("banned_words", {})
-        if word in banned_words:
-            raise ValueError(f"违禁词已存在: {word}")
-        banned_words[word] = {
-            "match_type": match_type,
-            "penalty_type": penalty_type,
-            "added_by": added_by,
-            "added_at": now_str(),
-        }
-        cls.save_group_data(group_id, data)
-
-    @classmethod
-    async def remove_word(cls, group_id: int, word: str) -> None:
-        """删除违禁词。"""
-        data = cls.load_group_data(group_id)
-        banned_words = data.setdefault("banned_words", {})
-        if word not in banned_words:
-            raise ValueError(f"违禁词不存在: {word}")
-        del banned_words[word]
-        cls.save_group_data(group_id, data)
-
-    @classmethod
-    async def clear_words(cls, group_id: int) -> None:
-        """清空违禁词。"""
-        data = cls.load_group_data(group_id)
-        data["banned_words"] = {}
-        cls.save_group_data(group_id, data)
-
-    @classmethod
-    async def set_enabled(cls, group_id: int, enabled: bool) -> None:
-        """设置违禁词开关。"""
-        data = cls.load_group_data(group_id)
-        config = data.setdefault("config", {})
-        config["enabled"] = enabled
-        cls.save_group_data(group_id, data)
-
-    @classmethod
-    async def set_mute_seconds(cls, group_id: int, seconds: int) -> None:
-        """设置违禁词禁言秒数。"""
-        data = cls.load_group_data(group_id)
-        config = data.setdefault("config", {})
-        config["mute_seconds"] = max(1, seconds)
-        cls.save_group_data(group_id, data)
-
-    @classmethod
-    async def check_message(cls, group_id: int, text: str) -> tuple[str, dict[str, Any]] | None:
-        """检查消息是否命中违禁词。"""
-        compact_text = re.sub(r"\s+", "", text)
-        for pattern, meta in cls.compile_banned_words(group_id):
-            try:
-                if pattern.search(text) or (compact_text != text and pattern.search(compact_text)):
-                    return str(meta.get("raw_word", "")), meta
-            except Exception:
-                logger.opt(exception=True).warning(f"[banwords] 匹配违禁词异常: {group_id}")
-        return None
-
-
-banword_add = P.on_regex(
+@on_regex(
     r"^[#＃]新增(精确|模糊|正则)?(禁|踢|撤)?违禁词\s*(.+)",
     name="banword_add",
     display_name="新增违禁词",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
+    level="admin",
+    scene="group",
 )
+async def banword_add(context: HandlerContext) -> None:
+    await banwords(context.runtime).handle("banword_add", context)
 
-banword_del = P.on_regex(
-    r"^[#＃]删除违禁词\s*(.+)",
-    name="banword_del",
-    display_name="删除违禁词",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
-)
 
-banword_clear = P.on_regex(
-    r"^[#＃]清空违禁词",
-    name="banword_clear",
-    display_name="清空违禁词",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
-)
+@on_regex(r"^[#＃]删除违禁词\s*(.+)", name="banword_del", display_name="删除违禁词", level="admin", scene="group")
+async def banword_del(context: HandlerContext) -> None:
+    await banwords(context.runtime).handle("banword_del", context)
 
-banword_list = P.on_regex(
-    r"^[#＃]违禁词列表",
-    name="banword_list",
-    display_name="违禁词列表",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
-)
 
-banword_on = P.on_regex(
-    r"^[#＃]开启违禁词",
-    name="banword_on",
-    display_name="开启违禁词",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
-)
+@on_regex(r"^[#＃]清空违禁词$", name="banword_clear", display_name="清空违禁词", level="admin", scene="group")
+async def banword_clear(context: HandlerContext) -> None:
+    await banwords(context.runtime).handle("banword_clear", context)
 
-banword_off = P.on_regex(
-    r"^[#＃]关闭违禁词",
-    name="banword_off",
-    display_name="关闭违禁词",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
-)
 
-banword_mute_time = P.on_regex(
-    r"^[#＃]设置违禁词禁言时间\s*(\d+)",
+@on_regex(r"^[#＃]违禁词列表$", name="banword_list", display_name="违禁词列表", level="admin", scene="group")
+async def banword_list(context: HandlerContext) -> None:
+    await banwords(context.runtime).handle("banword_list", context)
+
+
+@on_regex(r"^[#＃]开启违禁词$", name="banword_on", display_name="开启违禁词", level="admin", scene="group")
+async def banword_on(context: HandlerContext) -> None:
+    await banwords(context.runtime).handle("banword_on", context)
+
+
+@on_regex(r"^[#＃]关闭违禁词$", name="banword_off", display_name="关闭违禁词", level="admin", scene="group")
+async def banword_off(context: HandlerContext) -> None:
+    await banwords(context.runtime).handle("banword_off", context)
+
+
+@on_regex(
+    r"^[#＃]设置违禁词禁言时间\s*(\d+)$",
     name="banword_mute_time",
-    display_name="设置违禁词禁言时间",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
+    display_name="违禁词禁言时长",
+    level="admin",
+    scene="group",
 )
+async def banword_mute_time(context: HandlerContext) -> None:
+    await banwords(context.runtime).handle("banword_mute_time", context)
 
 
-@banword_add.handle()
-async def _handle_banword_add(matcher: Matcher, event: Event, session: Uninfo, groups: tuple = RegexGroup()) -> None:
-    """添加违禁词。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    user_id = session.user.id or "0"
-    if group_id is None:
-        await matcher.finish("请在群聊中使用")
-    match_cn = str(groups[0] or "精确")
-    penalty_cn = str(groups[1] or "禁")
-    word = str(groups[2] or "").strip()
-    if not word:
-        await matcher.finish("请提供要添加的违禁词")
-    try:
-        await BannedWordsManager.add_word(
-            group_id,
-            word,
-            BannedWordsManager.MATCH_TYPE_MAP.get(match_cn, "exact"),
-            BannedWordsManager.PENALTY_TYPE_MAP.get(penalty_cn, "mute"),
-            user_id,
-        )
-    except ValueError as exc:
-        await matcher.finish(str(exc))
-    await matcher.finish(f"✅ 已添加违禁词\n词条: {word}\n匹配: {match_cn}\n处罚: {penalty_cn}")
+async def matches_banword(context):
+    return await banwords(context.runtime).rule(context.event)
 
 
-@banword_del.handle()
-async def _handle_banword_del(matcher: Matcher, event: Event, session: Uninfo, groups: tuple = RegexGroup()) -> None:
-    """删除违禁词。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    if group_id is None:
-        await matcher.finish("请在群聊中使用")
-    word = str(groups[0] or "").strip()
-    if not word:
-        await matcher.finish("请提供要删除的违禁词")
-    try:
-        await BannedWordsManager.remove_word(group_id, word)
-    except ValueError as exc:
-        await matcher.finish(str(exc))
-    await matcher.finish(f"✅ 已删除违禁词: {word}")
+@on_message(name="banword_interceptor", scene="group", priority=0, when=matches_banword)
+async def intercept(context):
+    await banwords(context.runtime).intercept(context)
 
 
-@banword_clear.handle()
-async def _handle_banword_clear(matcher: Matcher, session: Uninfo) -> None:
-    """清空违禁词。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    if group_id is None:
-        await matcher.finish("请在群聊中使用")
-    await BannedWordsManager.clear_words(group_id)
-    await matcher.finish("✅ 已清空所有违禁词")
-
-
-@banword_list.handle()
-async def _handle_banword_list(matcher: Matcher, session: Uninfo) -> None:
-    """列出违禁词。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    if group_id is None:
-        await matcher.finish("请在群聊中使用")
-    data = BannedWordsManager.load_group_data(group_id)
-    banned_words = data.get("banned_words", {})
-    config = {"enabled": True, "mute_seconds": 300, **(data.get("config", {}) or {})}
-    enabled = "✅ 开启" if config.get("enabled", True) else "❌ 关闭"
-    lines = [f"违禁词检测: {enabled}", f"禁言时长: {config.get('mute_seconds', 300)}秒"]
-    if not banned_words:
-        lines.append("词条: 暂无")
-        await matcher.finish("\n".join(lines))
-
-    match_names = {value: key for key, value in BannedWordsManager.MATCH_TYPE_MAP.items()}
-    penalty_names = {value: key for key, value in BannedWordsManager.PENALTY_TYPE_MAP.items()}
-    for index, (word, meta) in enumerate(banned_words.items(), 1):
-        match_cn = match_names.get(meta.get("match_type", "exact"), "精确")
-        penalty_cn = penalty_names.get(meta.get("penalty_type", "mute"), "禁")
-        lines.append(f"{index}. [{match_cn}/{penalty_cn}] {word}")
-        if index >= 50:
-            lines.append(f"... (共{len(banned_words)}条)")
-            break
-    await matcher.finish("\n".join(lines))
-
-
-@banword_on.handle()
-async def _handle_banword_on(matcher: Matcher, session: Uninfo) -> None:
-    """开启违禁词检测。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    if group_id is None:
-        await matcher.finish("请在群聊中使用")
-    await BannedWordsManager.set_enabled(group_id, True)
-    await matcher.finish("✅ 已开启违禁词检测")
-
-
-@banword_off.handle()
-async def _handle_banword_off(matcher: Matcher, session: Uninfo) -> None:
-    """关闭违禁词检测。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    if group_id is None:
-        await matcher.finish("请在群聊中使用")
-    await BannedWordsManager.set_enabled(group_id, False)
-    await matcher.finish("❌ 已关闭违禁词检测")
-
-
-@banword_mute_time.handle()
-async def _handle_banword_mute_time(matcher: Matcher, session: Uninfo, groups: tuple = RegexGroup()) -> None:
-    """设置违禁词禁言时长。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    if group_id is None:
-        await matcher.finish("请在群聊中使用")
-    seconds = int(groups[0] or 300)
-    await BannedWordsManager.set_mute_seconds(group_id, seconds)
-    await matcher.finish(f"✅ 已设置违禁词禁言时长为 {seconds} 秒")
-
-
-banword_interceptor = P.on_message(
-    name="banword_interceptor",
-    display_name="违禁词拦截",
-    priority=0,
-    block=False,
-    level=PermLevel.LOW,
-    scene=PermScene.GROUP,
-    log=False,
-)
-
-
-async def _is_admin(bot: Bot, event: Event, session: Uninfo) -> bool:
-    """判断消息发送者是否为管理员。"""
-    sender = getattr(event, "sender", None)
-    role = str(getattr(sender, "role", "") or "")
-    if role in {"owner", "admin"}:
-        return True
-    group_id = session.scene.id if session.scene.is_group else None
-    user_id = session.user.id
-    if group_id is None or user_id is None:
-        return False
-    try:
-        info = await selfBot.get_group_member(group_id, user_id)
-        return str(info.get("role")) in {"owner", "admin"}
-    except Exception:
-        return False
-
-
-@banword_interceptor.handle()
-async def _handle_banword_interceptor(bot: Bot, event: Event, session: Uninfo) -> None:
-    """拦截违禁词消息。"""
-    group_id = session.scene.id if session.scene.is_group else None
-    user_id = session.user.id
-    if group_id is None or user_id is None:
-        return
-    config = BannedWordsManager.load_group_config(group_id)
-    if not config.get("enabled", True):
-        return
-    if await _is_admin(bot, event, session) or is_superuser_id(user_id):
-        return
-    text = _plain_text(event)
-    if not text:
-        return
-    result = await BannedWordsManager.check_message(group_id, text)
-    if not result:
-        return
-
-    word, meta = result
-    penalty_type = meta.get("penalty_type", "mute")
-    mute_seconds = int(config.get("mute_seconds", 300) or 300)
-    logger.warning(f"[banwords] 违禁词拦截 [{group_id}] {user_id}: {word} ({penalty_type})")
-
-    message_id = getattr(event, "message_id", None) or getattr(event, "id", None)
-    if message_id is not None:
-        try:
-            await selfBot.delete_message(message_id, group_id=group_id)
-        except Exception:
-            logger.opt(exception=True).warning("[banwords] 撤回消息失败")
-    if penalty_type == "mute":
-        try:
-            await selfBot.ban(group_id, user_id, max(1, mute_seconds))
-        except Exception:
-            logger.opt(exception=True).warning("[banwords] 禁言失败")
-    elif penalty_type == "kick":
-        try:
-            await selfBot.kick(group_id, user_id)
-        except Exception:
-            logger.opt(exception=True).warning("[banwords] 踢出失败")
-    raise StopPropagation()
+def banwords(runtime):
+    service = Banwords(GroupAdminService(runtime.application, runtime.authorizer))
+    service.validate()
+    return service

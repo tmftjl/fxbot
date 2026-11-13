@@ -6,7 +6,7 @@ from typing import Any
 from datetime import datetime, timedelta
 from collections.abc import Callable, Awaitable
 
-from nonebot import logger
+from loguru import logger
 
 from .state import is_ready
 from .models import utc_now_naive

@@ -7,7 +7,7 @@ import asyncio
 from typing import Any
 from hashlib import sha256
 
-from nonebot import logger
+from loguru import logger
 
 from .context import FocusCheckpointStore
 from ...config import get_manager as get_config_manager
@@ -66,6 +66,13 @@ class FocusModeManager:
         self.groups: dict[str, FocusGroupRuntime] = {}
         self._scope_by_session: dict[str, str] = {}
         self._requests: dict[str, Any] = {}
+        self._lock = asyncio.Lock()
+        self._stopping = False
+
+    def start(self) -> None:
+        """所有旧共享组关闭后，允许接入新的应用生命周期。"""
+        if self.groups:
+            raise RuntimeError("Focus 仍有活动共享组")
         self._lock = asyncio.Lock()
         self._stopping = False
 

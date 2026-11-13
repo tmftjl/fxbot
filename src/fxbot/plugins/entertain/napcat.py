@@ -1,158 +1,67 @@
-"""NapCat 点赞功能。"""
+"""有界点赞服务，不以接口失败探测次数。"""
 
 from __future__ import annotations
 
-import json
 import asyncio
-from copy import deepcopy
-from typing import Any
 
-from nonebot.matcher import Matcher
-from nonebot.adapters import Bot
-
-from ...plugin import Plugin
-from ...adapter import Uninfo, selfBot
 from ...utils.tz import today_str
-from ...chat.tools import ToolContext, ToolRuntime, tool
-from ...permission import PermLevel, PermScene
-from ...utils.cache import cache
+from ...core.types import Capability
+from ...core.plugin import on_command
+from ...core.router import HandlerContext
 from ...utils.paths import data_dir
+from ...utils.json_file import read_json, write_json
 
-P = Plugin(
-    "entertain",
-    display_name="娱乐",
-    enabled=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
-
-MAX_LIKE_TIMES = 10
-_like_lock = asyncio.Lock()
-LIKE_DATA_FILE = data_dir("entertain") / "like_daily.json"
-_LIKE_DATA_KEY = ("napcat", "like_raw")
-
-like_cmd = P.on_regex(
-    r"^[#＃]赞我",
-    name="like",
-    display_name="点赞",
-    priority=5,
-    block=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
+_lock = asyncio.Lock()
 
 
-async def _send_like(bot: Bot, user_id: str, times: int = MAX_LIKE_TIMES) -> bool:
-    """调用 OneBot 点赞接口。"""
-    await selfBot.like(user_id, max(1, min(times, MAX_LIKE_TIMES)))
-    return True
+class Likes:
+    def __init__(self):
+        self.path = data_dir("entertain") / "like_daily.json"
+        self.lock = _lock
+
+    def records(self) -> dict:
+        data = read_json(self.path, dict)
+        if not isinstance(data, dict):
+            raise ValueError("点赞记录必须为对象")
+        for bot_id, users in data.items():
+            if not bot_id.isascii() or not bot_id.isdecimal() or not isinstance(users, dict):
+                raise ValueError("点赞记录必须按 Bot QQ 号、用户 QQ 号分层")
+            for user_id, record in users.items():
+                if (
+                    not user_id.isascii()
+                    or not user_id.isdecimal()
+                    or not isinstance(record, dict)
+                    or set(record) != {"date", "count"}
+                    or not isinstance(record["date"], str)
+                    or type(record["count"]) is not int
+                    or record["count"] < 0
+                ):
+                    raise ValueError("点赞记录需要用户 QQ 号、日期和非负次数")
+        return data
+
+    async def send(self, bot, user_id: str, times: int = 10) -> str:
+        if Capability.LIKE not in bot.capabilities:
+            return "当前平台不支持点赞"
+        if type(times) is not int or not 1 <= times <= 10:
+            raise ValueError("点赞次数必须为 1 到 10")
+        async with self.lock:
+            records = self.records()
+            today = today_str()
+            record = records.get(bot.bot_id, {}).get(user_id)
+            if record and record["date"] == today and record["count"] > 0:
+                return f"今天已经为你点赞 {record['count']} 次啦，明天再来吧！"
+            await bot.like(user_id, times)
+            records.setdefault(bot.bot_id, {})[user_id] = {"date": today, "count": times}
+            write_json(self.path, records)
+        return f"已为你点赞 {times} 次，记得回我哟！"
+
+    async def handle(self, context: HandlerContext) -> None:
+        await context.send(await self.send(context.bot, context.event.user_id))
 
 
-async def _send_likes_until_stopped(bot: Bot, user_id: str) -> int:
-    """每次发送最多十个赞，直到接口拒绝或当前适配器不支持。"""
-    count = 0
-    while True:
-        try:
-            await selfBot.like(user_id, MAX_LIKE_TIMES)
-        except Exception:
-            break
-        count += MAX_LIKE_TIMES
-    return count
+@on_command("赞我", name="like", display_name="QQ点赞", level="all")
+async def like(context):
+    await likes.handle(context)
 
 
-def _read_like_data() -> dict[str, Any]:
-    """从磁盘读取点赞记录。"""
-    if not LIKE_DATA_FILE.exists():
-        return {}
-    try:
-        raw = json.loads(LIKE_DATA_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def _load_like_data(today: str) -> dict[str, dict[str, dict[str, Any]]]:
-    """加载当天点赞记录，自动丢弃旧日期。"""
-    raw = cache.remember(_LIKE_DATA_KEY, _read_like_data)
-    data: dict[str, dict[str, dict[str, Any]]] = {}
-    for bot_id, users in raw.items():
-        if not isinstance(users, dict):
-            continue
-        today_users = {
-            str(user_id): record
-            for user_id, record in users.items()
-            if isinstance(record, dict) and record.get("date") == today
-        }
-        if today_users:
-            data[str(bot_id)] = today_users
-    return data
-
-
-def _save_like_data(data: dict[str, dict[str, dict[str, Any]]]) -> None:
-    """保存当天点赞记录并同步缓存。"""
-    LIKE_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LIKE_DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    cache.set(_LIKE_DATA_KEY, deepcopy(data))
-
-
-def _get_like_count(data: dict[str, dict[str, dict[str, Any]]], bot_id: str, user_id: str) -> int:
-    """获取机器人为用户记录的当天点赞次数。"""
-    record = data.get(bot_id, {}).get(user_id)
-    return int(record.get("count") or 0) if isinstance(record, dict) else 0
-
-
-def _set_like_count(
-    data: dict[str, dict[str, dict[str, Any]]], bot_id: str, user_id: str, today: str, count: int
-) -> None:
-    """写入机器人为用户记录的当天点赞次数。"""
-    data.setdefault(bot_id, {})[user_id] = {"date": today, "count": count}
-
-
-@like_cmd.handle()
-async def _handle_like(matcher: Matcher, bot: Bot, session: Uninfo) -> None:
-    """处理点赞命令。"""
-    user_id = session.user.id
-    if not user_id:
-        await matcher.finish("无法获取用户 ID")
-    bot_id = str(session.self_id)
-    liked_on = today_str()
-    async with _like_lock:
-        like_data = _load_like_data(liked_on)
-        today_count = _get_like_count(like_data, bot_id, user_id)
-        if today_count:
-            await matcher.finish(f"今天已经为你点赞 {today_count} 次啦，明天再来吧！")
-
-        count = await _send_likes_until_stopped(bot, user_id)
-        if count == 0:
-            return
-
-        _set_like_count(like_data, bot_id, user_id, liked_on, count)
-        _save_like_data(like_data)
-    await matcher.finish(f"已为你点赞 {count} 次，记得回我哟！")
-
-
-@tool(
-    name="like",
-    title="QQ 点赞",
-    description="为 QQ 用户点赞；不传 user_id 时给当前用户点赞。仅 OneBot/NapCat 支持。",
-    deferred=True,
-    parameters={
-        "type": "object",
-        "properties": {
-            "user_id": {"type": "string", "description": "目标 QQ 号，留空表示当前用户"},
-            "times": {"type": "integer", "description": "点赞次数，1 到 10"},
-        },
-    },
-)
-async def like_tool(
-    ctx: ToolContext, rt: ToolRuntime, user_id: str = "", times: int = MAX_LIKE_TIMES
-) -> dict[str, Any]:
-    """AI 工具：点赞。"""
-    target = str(user_id or ctx.user_id or "").strip()
-    if not target.isdigit():
-        return {"success": False, "message": "当前平台拿不到 QQ 号，点赞仅支持 OneBot/NapCat"}
-    try:
-        ok = await _send_like(rt.require_bot(), target, times)
-    except Exception as exc:
-        return {"success": False, "message": str(exc)}
-    return {"success": ok, "message": "点赞完成" if ok else "点赞未完成"}
+likes = Likes()

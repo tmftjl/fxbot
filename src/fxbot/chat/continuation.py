@@ -11,14 +11,15 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from nonebot import logger
+from loguru import logger
 
+from ..core import Message, BotClient, SessionTarget
 from .hooks import ChatHookContext, hook_context
 from .tools import ToolRuntime
 from .types import ChatRequest
 from .access import continuation_allowed
 from .stages import execute_stage
-from ..adapter import bind_bot, build_message, build_message_segment, extract_message_target, send_message_to_target
+from ..core.application import Application
 
 if TYPE_CHECKING:
     from .service import ChatService
@@ -34,8 +35,9 @@ class _Binding:
 
     context: ChatHookContext
     service: ChatService
-    bot: Any
-    target: dict[str, Any]
+    bot: BotClient
+    target: SessionTarget
+    application: Application
     created: float
 
 
@@ -47,23 +49,16 @@ class _ReplyTarget:
         self.valid = valid
 
     async def send(self, payload: Any) -> Any:
-        """通过平台适配层发送，不保留已失效的 matcher。"""
+        """使用捕获的客户端和会话目标发送。"""
         if not self.valid() or not await _eligible(self.binding) or not self.valid():
             raise RuntimeError("后续对话目标已失效")
-        bot = self.binding.bot
-        bind_bot(bot)
-        if isinstance(payload, str):
-            payload = build_message(bot, build_message_segment(bot, "text", payload))
-        return await send_message_to_target(bot, self.binding.target, payload)
-
-    async def finish(self, *args: Any, **kwargs: Any) -> None:
-        """后台回复没有 matcher 生命周期需要结束。"""
-        return None
+        content = Message.text(payload) if isinstance(payload, str) else payload
+        return await self.binding.bot.send(self.binding.target, content)
 
 
 async def _eligible(binding: _Binding) -> bool:
     """将调度绑定交给共享准入策略，发送与生成使用同一检查。"""
-    return await continuation_allowed(binding.context, binding.bot)
+    return await continuation_allowed(binding.context, binding.bot, binding.application, binding.target)
 
 
 class ReplyScheduler:
@@ -74,23 +69,21 @@ class ReplyScheduler:
         self.tasks: dict[tuple[str, str, str], asyncio.Task] = {}
         self.stopping = False
 
+    def start(self) -> None:
+        """开启应用接入，旧绑定不能跨越应用生命周期。"""
+        if self.tasks or self.bindings:
+            raise RuntimeError("后续对话仍有遗留任务或绑定")
+        self.stopping = False
+
     def remember(self, service: ChatService, request: ChatRequest, runtime: ToolRuntime | None) -> None:
         """仅真实入站轮次可建立目标绑定，不让后续对话递归建立新起点。"""
-        if self.stopping or request.metadata.get("_extension_owner") or getattr(runtime, "event", None) is None:
+        if self.stopping or request.metadata.get("_extension_owner") or runtime is None:
             return
-        if getattr(runtime, "bot", None) is None:
+        if runtime.event is None or runtime.bot is None or runtime.application is None:
             return
-        try:
-            binding = _Binding(
-                hook_context(request),
-                service,
-                runtime.bot,
-                dict(extract_message_target(runtime.event)),
-                time.monotonic(),
-            )
-        except Exception:
-            logger.opt(exception=True).warning("[ChatExtension] 捕获后续对话目标失败")
-            return
+        binding = _Binding(
+            hook_context(request), service, runtime.bot, runtime.event.target, runtime.application, time.monotonic()
+        )
         self.bindings[request.session_id] = binding
         self.bindings.move_to_end(request.session_id)
         cutoff = time.monotonic() - MAX_DELAY_SECONDS
@@ -160,7 +153,6 @@ class ReplyScheduler:
                 await asyncio.sleep(delay)
                 if not valid() or not await _eligible(binding) or not valid():
                     return ""
-                bind_bot(binding.bot)
                 token = uuid4().hex
                 request = ChatRequest(
                     context.session_id,
@@ -175,7 +167,12 @@ class ReplyScheduler:
                     accepted_epoch=context.epoch,
                     metadata={"_extension_owner": source or owner, "continuation": True},
                 )
-                runtime = ToolRuntime(bot=binding.bot, matcher=_ReplyTarget(binding, valid), allowed_tools=frozenset())
+                runtime = ToolRuntime(
+                    bot=binding.bot,
+                    application=binding.application,
+                    sender=_ReplyTarget(binding, valid),
+                    allowed_tools=frozenset(),
+                )
 
                 async def reply() -> str:
                     if not valid():

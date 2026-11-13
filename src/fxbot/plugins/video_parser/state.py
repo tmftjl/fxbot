@@ -1,56 +1,34 @@
-"""视频解析运行状态。"""
+"""视频解析的完整群会话开关。"""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-from ...utils.cache import cache
+from ...core import SessionTarget
 from ...utils.paths import data_dir
+from ...utils.json_file import read_json, write_json
 
-STATE_PATH: Path = data_dir("video_parser") / "groups.json"
-_STATE_KEY = ("video_parser", "groups")
-
-
-def _read() -> dict[str, list[str]]:
-    """读取群解析开关状态。"""
-    if not STATE_PATH.exists():
-        return {"disabled_groups": []}
-    try:
-        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, TypeError, json.JSONDecodeError):
-        return {"disabled_groups": []}
-    if not isinstance(data, dict):
-        return {"disabled_groups": []}
-    groups = data.get("disabled_groups")
-    return {"disabled_groups": [str(item) for item in groups]} if isinstance(groups, list) else {"disabled_groups": []}
+STATE_PATH = data_dir("video_parser") / "groups.json"
 
 
-def _save(data: dict[str, list[str]]) -> None:
-    """保存群解析开关状态。"""
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def load_state() -> dict:
+    data = read_json(STATE_PATH, lambda: {"disabled_groups": []})
+    if not isinstance(data, dict) or set(data) != {"disabled_groups"} or not isinstance(data["disabled_groups"], list):
+        raise ValueError("视频解析群开关格式无效")
+    for key in data["disabled_groups"]:
+        if not isinstance(key, str) or SessionTarget.from_key(key).kind != "group":
+            raise ValueError("视频解析必须使用完整群会话键；旧裸群号不能猜测归属")
+    return data
 
 
-def _load() -> dict[str, list[str]]:
-    """读取群解析开关状态，按进程内缓存复用。"""
-    return cache.remember(_STATE_KEY, _read)
+def is_group_enabled(target: SessionTarget) -> bool:
+    return target.kind != "group" or target.key() not in load_state()["disabled_groups"]
 
 
-def is_group_enabled(group_id: str | None) -> bool:
-    """判断本群解析是否启用。"""
-    if not group_id:
-        return True
-    return str(group_id) not in set(_load()["disabled_groups"])
-
-
-def set_group_enabled(group_id: str, enabled: bool) -> None:
-    """设置本群解析开关。"""
-    groups = set(_load()["disabled_groups"])
+def set_group_enabled(target: SessionTarget, enabled: bool) -> None:
+    if target.kind != "group" or type(enabled) is not bool:
+        raise ValueError("群解析开关目标无效")
+    groups = set(load_state()["disabled_groups"])
     if enabled:
-        groups.discard(str(group_id))
+        groups.discard(target.key())
     else:
-        groups.add(str(group_id))
-    data = {"disabled_groups": sorted(groups)}
-    _save(data)
-    cache.set(_STATE_KEY, data)
+        groups.add(target.key())
+    write_json(STATE_PATH, {"disabled_groups": sorted(groups)})

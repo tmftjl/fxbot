@@ -1,53 +1,23 @@
-"""会员门禁判定逻辑和缓存。"""
+"""按完整会话身份判定会员资格并缓存业务结果。"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from dataclasses import dataclass
 
-from nonebot import logger, get_driver
+from loguru import logger
+from sqlalchemy.exc import SQLAlchemyError
 
-from .models import MembershipGroup
-from ..config import get_manager as get_config_manager
-from .service import membership_service
+from ..core import SessionTarget
+from .models import MembershipGroup, utc_now
+from ..config import ConfigManager, get_manager
+from .service import MembershipService, membership_service
 from ..utils.cache import cache
 
 
-def _now_utc() -> datetime:
-    """返回当前 UTC 时间。"""
-    return datetime.now(timezone.utc)
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """将 datetime 统一转换为 UTC aware 对象。"""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _is_superuser(user_id: str) -> bool:
-    """判断用户是否为 SUPERUSER。"""
-    try:
-        superusers = {str(item) for item in get_driver().config.superusers or []}
-    except Exception:
-        superusers = set()
-    return str(user_id) in superusers
-
-
-def _bot_admins() -> set[str]:
-    """读取 bot_admin 用户列表。"""
-    cfg = get_config_manager().get_system()
-    value = cfg["system"]["bot_admins"]
-    if isinstance(value, (list, tuple, set)):
-        return {str(item) for item in value if item is not None}
-    return set()
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MembershipDecision:
-    """会员门禁决策结果。"""
+    """不包含内部异常内容的会员准入结果。"""
 
     allowed: bool
     reason: str
@@ -56,104 +26,66 @@ class MembershipDecision:
 
 
 class MembershipGuard:
-    """群会员门禁。"""
+    """依赖配置和会员服务，豁免判断先于业务缓存。"""
 
-    async def check_membership(
-        self,
-        group_id: str,
-        user_id: str,
-        *,
-        bot_id: str | None = None,
-    ) -> tuple[bool, str]:
-        """检查群会员资格。"""
-        decision = await self.check_membership_detail(group_id, user_id, bot_id=bot_id)
-        return decision.allowed, decision.reason
+    def __init__(self, configuration: ConfigManager, service: MembershipService) -> None:
+        """显式绑定业务依赖。"""
+        self.configuration = configuration
+        self.service = service
 
-    async def check_membership_detail(
-        self,
-        group_id: str,
-        user_id: str,
-        *,
-        bot_id: str | None = None,
-    ) -> MembershipDecision:
-        """检查群会员资格并返回详细结果。"""
-        gid = str(group_id or "").strip()
-        uid = str(user_id or "").strip()
-        if not gid:
-            return MembershipDecision(False, "missing_group_id")
-        if uid and _is_superuser(uid):
-            return MembershipDecision(True, "exempt_superuser")
-        if uid and uid in _bot_admins():
-            return MembershipDecision(True, "exempt_bot_admin")
-
-        cached = cache.get(("membership", gid))
-        if cached is not None:
-            if cached.expires_at is not None and cached.expires_at <= _now_utc():
-                return MembershipDecision(False, "expired", cached.expires_at, cached.status)
-            return cached
-
-        decision = await self._load_from_db(gid)
-        cache.set(("membership", gid), decision)
+    async def check_membership_detail(self, group_id: str, user_id: str | None) -> MembershipDecision:
+        """群和操作者都必须是规范键，后台任务使用明确的空操作者。"""
+        group = SessionTarget.from_key(group_id)
+        if group.kind != "group":
+            raise ValueError("会员查询目标必须为群")
+        if user_id is not None:
+            user = SessionTarget.from_key(user_id)
+            if user.kind != "private" or (user.platform, user.bot_id) != (group.platform, group.bot_id):
+                raise ValueError("会员操作者不属于目标连接")
+            system = self.configuration.get_system()["system"]
+            if user_id in system["superusers"]:
+                return MembershipDecision(True, "exempt_superuser")
+            if user_id in system["bot_admins"]:
+                return MembershipDecision(True, "exempt_bot_admin")
+        key = ("membership", group_id)
+        decision = cache.get(key)
+        if decision is None:
+            decision = await self._load_from_db(group_id)
+            cache.set(key, decision)
+        if decision.expires_at is not None and decision.expires_at <= utc_now():
+            return MembershipDecision(False, "expired", decision.expires_at, decision.status)
         return decision
 
     async def invalidate(self, group_id: str) -> None:
-        """刷新指定群缓存。"""
-        gid = str(group_id or "").strip()
-        if not gid:
-            return
-        cache.pop(("membership", gid))
-        cache.set(("membership", gid), await self._load_from_db(gid))
-
-    async def add_to_cache(
-        self,
-        group_id: str,
-        *,
-        allowed: bool,
-        reason: str,
-        expires_at: datetime | None = None,
-        status: str = "",
-    ) -> None:
-        """手动写入指定群缓存。"""
-        gid = str(group_id or "").strip()
-        if gid:
-            cache.set(("membership", gid), MembershipDecision(allowed, reason, expires_at, status))
-
-    async def reload_all_cache(self) -> None:
-        """重新加载所有会员群缓存。"""
-        cache.clear_prefix(("membership",))
-        try:
-            rows = await MembershipGroup.select_rows()
-        except Exception as exc:
-            logger.opt(exception=True).warning(f"[MembershipGuard] 重载缓存失败: {exc}")
-            return
-        for row in rows:
-            group_id = str(row.group_id)
-            cache.set(("membership", group_id), self._decision_from_record(row))
+        """写入后立即刷新对应群，不影响无关会话。"""
+        key = ("membership", group_id)
+        cache.pop(key)
+        cache.set(key, await self._load_from_db(group_id))
 
     async def _load_from_db(self, group_id: str) -> MembershipDecision:
-        """从数据库加载会员状态，异常时 fail-closed。"""
+        """数据库查询失败在这一业务边界闭锁，不返回异常详情。"""
         try:
-            record = await membership_service.get_group(group_id)
-        except Exception as exc:
-            logger.opt(exception=True).warning(
-                f"[MembershipGuard] DB 查询失败，按 fail-closed 拒绝: group={group_id} err={exc}"
-            )
+            record = await self.service.get_group(group_id)
+        except SQLAlchemyError:
+            logger.opt(exception=True).warning("会员数据库查询失败，拒绝业务访问")
             return MembershipDecision(False, "db_error")
         if record is None:
             return MembershipDecision(False, "not_registered")
-        return self._decision_from_record(record)
+        return self._decision(record)
 
-    def _decision_from_record(self, record: MembershipGroup) -> MembershipDecision:
-        """根据会员记录生成门禁决策。"""
-        status = str(record.status or "")
-        expires_at = _as_utc(record.expires_at)
-        if status != "active":
-            return MembershipDecision(False, f"status_{status}", expires_at, status)
-        if expires_at is None:
-            return MembershipDecision(True, "active_no_expiry", None, status)
-        if expires_at <= _now_utc():
-            return MembershipDecision(False, "expired", expires_at, status)
-        return MembershipDecision(True, "active", expires_at, status)
+    @staticmethod
+    def _decision(record: MembershipGroup) -> MembershipDecision:
+        """SQLite 无时区时间一律解释为 UTC。"""
+        expires = record.expires_at
+        if expires is not None:
+            expires = (
+                expires.replace(tzinfo=timezone.utc) if expires.tzinfo is None else expires.astimezone(timezone.utc)
+            )
+        if record.status != "active":
+            return MembershipDecision(False, f"status_{record.status}", expires, record.status)
+        if expires is not None and expires <= utc_now():
+            return MembershipDecision(False, "expired", expires, record.status)
+        return MembershipDecision(True, "active" if expires else "active_no_expiry", expires, record.status)
 
 
-membership_guard = MembershipGuard()
+membership_guard = MembershipGuard(get_manager(), membership_service)

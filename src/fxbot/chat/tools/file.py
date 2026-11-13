@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from nonebot import logger
+from loguru import logger
 
 from .types import ToolError, ToolContext
+from ...core import Capability, UnsupportedCapability
 from .runtime import ToolRuntime
 from .registry import tool
-from ...adapter import UnsupportedCapability, send_file_to_target, extract_message_target
 from ...utils.paths import cache_dir
+from ...runtime.actions import ActionFailed
 
 MAX_FILE_CHARS = 200_000
 
@@ -23,6 +25,8 @@ def _filename(value: str) -> str:
         or len(name) > 100
         or name in {".", ".."}
         or name != Path(name).name
+        or any(char in name for char in '/\\:*?"<>|')
+        or name.endswith(".")
         or any(ord(char) < 32 for char in name)
     ):
         raise ToolError("文件名必须是不含路径的纯文件名，最长 100 字符。", code="invalid_file_name")
@@ -53,19 +57,18 @@ async def send_file_tool(context: ToolContext, runtime: ToolRuntime, name: str =
     text = content if isinstance(content, str) else str(content or "")
     if len(text) > MAX_FILE_CHARS:
         raise ToolError(f"文件内容超过 {MAX_FILE_CHARS} 字，拆成多个文件再发。", code="file_too_large")
-    path = cache_dir("chat") / filename
+    bot, event = runtime.require_bot(), runtime.require_event()
+    if Capability.FILE not in bot.capabilities:
+        raise ToolError("当前平台不支持发送文件。", code="file_unsupported")
     try:
-        path.write_text(text, encoding="utf-8")
-    except OSError:
-        logger.opt(exception=True).warning("[Chat] 写入待发送文件失败")
-        raise ToolError("写入文件失败。", code="file_write_failed") from None
-    try:
-        await send_file_to_target(
-            runtime.require_bot(), extract_message_target(runtime.require_event()), path, filename
-        )
+        with TemporaryDirectory(prefix="upload-", dir=cache_dir("chat")) as directory:
+            path = Path(directory) / filename
+            path.write_text(text, encoding="utf-8")
+            size = path.stat().st_size
+            await bot.send_file(event.target, path, filename)
     except UnsupportedCapability:
         raise ToolError("当前平台不支持发送文件。", code="file_unsupported") from None
-    except Exception:
+    except (OSError, ActionFailed, TimeoutError):
         logger.opt(exception=True).warning("[Chat] 发送文件失败")
         raise ToolError("发送文件失败，可能是平台拒绝上传该文件。", code="file_send_failed") from None
-    return {"sent": True, "name": filename, "bytes": path.stat().st_size}
+    return {"sent": True, "name": filename, "bytes": size}

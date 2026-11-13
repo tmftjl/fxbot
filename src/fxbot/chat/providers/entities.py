@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from dataclasses import field, dataclass
+from collections.abc import Callable
+
+if TYPE_CHECKING:
+    from .base import BaseProvider
 
 
 class ProviderType(Enum):
@@ -33,9 +37,14 @@ class ProviderMetadata(ProviderMeta):
     """Provider 注册元数据。"""
 
     desc: str = ""
-    cls_type: Any = None
+    loader: Callable[[], type[BaseProvider]] = field(kw_only=True, repr=False)
     default_config: dict[str, Any] | None = None
     display_name: str | None = None
+
+    @property
+    def cls_type(self) -> type[BaseProvider]:
+        """仅在实际创建实例时加载所选实现。"""
+        return self.loader()
 
 
 @dataclass

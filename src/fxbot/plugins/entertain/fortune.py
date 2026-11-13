@@ -5,23 +5,22 @@ from __future__ import annotations
 import io
 import json
 import math
-import base64
 import random
 from typing import Any
 from pathlib import Path
 
-from PIL import Image, ImageOps, ImageDraw
-from nonebot import get_driver
-from nonebot.matcher import Matcher
+import httpx
+from PIL import Image, ImageOps, ImageDraw, UnidentifiedImageError
 
 from .config import cfg_api_urls
-from ...plugin import Plugin
-from ...adapter import Uninfo, selfBot
 from ...utils.tz import today_str
-from ...permission import PermLevel, PermScene
+from ...core.types import Message, MessageSegment
 from ...utils.http import get_shared_async_client
+from ...core.plugin import on_regex
+from ...core.router import HandlerContext
 from ...utils.fonts import load_font, get_shared_font_path
 from ...utils.paths import data_dir
+from ...utils.json_file import read_json, write_json
 
 RESOURCE_DIR = Path(__file__).parent / "resource"
 DATA_DIR = data_dir("entertain")
@@ -38,58 +37,34 @@ FONT_MEDIUM = load_font(_SHARED_FONT, 32)
 FONT_SMALL = load_font(_SHARED_FONT, 26)
 FONT_TINY = load_font(_SHARED_FONT, 22)
 
-P = Plugin(
-    "entertain",
-    display_name="娱乐",
-    enabled=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
-
 
 def _load_fortune_defs() -> None:
-    """加载运势定义。"""
+    """读取自带运势库，资源损坏直接报告。"""
     global _JRYS_DATA
-    if not JRYS_DEFS_FILE.exists():
-        _JRYS_DATA = []
-        return
-    try:
-        data = json.loads(JRYS_DEFS_FILE.read_text(encoding="utf-8"))
-        _JRYS_DATA = data if isinstance(data, list) else []
-    except Exception:
-        _JRYS_DATA = []
+    _JRYS_DATA = json.loads(JRYS_DEFS_FILE.read_text(encoding="utf-8"))
+    if not isinstance(_JRYS_DATA, list) or not _JRYS_DATA or not all(isinstance(item, dict) for item in _JRYS_DATA):
+        raise ValueError("运势库格式错误")
 
 
 def _load_user_fortunes() -> None:
-    """加载用户运势缓存。"""
     global _USER_FORTUNES
-    if not USER_DATA_FILE.exists():
-        _USER_FORTUNES = {}
-        return
-    try:
-        data = json.loads(USER_DATA_FILE.read_text(encoding="utf-8"))
-        _USER_FORTUNES = data if isinstance(data, dict) else {}
-    except Exception:
-        _USER_FORTUNES = {}
+    records = read_json(USER_DATA_FILE, dict)
+    if not isinstance(records, dict):
+        raise ValueError("运势记录必须为对象")
+    for key, record in records.items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(record, dict)
+            or not isinstance(record.get("fortune"), dict)
+            or not isinstance(record.get("time"), str)
+        ):
+            raise ValueError("运势记录需要用户 ID、运势及日期")
+    _USER_FORTUNES = records
 
 
 def _save_user_fortunes() -> None:
-    """保存用户运势缓存。"""
-    USER_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    USER_DATA_FILE.write_text(json.dumps(_USER_FORTUNES, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-@get_driver().on_startup
-async def _on_startup() -> None:
-    """启动时加载运势数据。"""
-    _load_fortune_defs()
-    _load_user_fortunes()
-
-
-@get_driver().on_shutdown
-async def _on_shutdown() -> None:
-    """关闭时兜底保存运势数据。"""
-    _save_user_fortunes()
+    write_json(USER_DATA_FILE, _USER_FORTUNES)
 
 
 async def _get_background_image() -> Image.Image | None:
@@ -102,7 +77,7 @@ async def _get_background_image() -> Image.Image | None:
         response = await client.get(url)
         response.raise_for_status()
         return Image.open(io.BytesIO(response.content)).convert("RGBA")
-    except Exception:
+    except (httpx.HTTPError, UnidentifiedImageError, OSError):
         return None
 
 
@@ -217,11 +192,10 @@ def _generate_fortune_canvas(
     return image
 
 
-def _pil_to_base64_image(image: Image.Image) -> str:
-    """PIL 图片转 base64 图片段。"""
+def image_bytes(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
-    return "base64://" + base64.b64encode(buffer.getvalue()).decode()
+    return buffer.getvalue()
 
 
 def _get_or_create_today_fortune(user_id: str) -> tuple[dict[str, Any], bool]:
@@ -229,6 +203,7 @@ def _get_or_create_today_fortune(user_id: str) -> tuple[dict[str, Any], bool]:
     if not _JRYS_DATA:
         _load_fortune_defs()
     today = today_str()
+    _load_user_fortunes()
     record = _USER_FORTUNES.get(user_id)
     if record and record.get("time") == today:
         return record, False
@@ -236,34 +211,14 @@ def _get_or_create_today_fortune(user_id: str) -> tuple[dict[str, Any], bool]:
         raise ValueError("运势库为空，无法生成")
     record = {"fortune": random.choice(_JRYS_DATA), "time": today}
     _USER_FORTUNES[user_id] = record
-    # 立即落盘：on_shutdown 只在优雅退出时执行，进程被强杀或走 os.execv 重启时不会触发
+    # 生成后立即落盘，不依赖退出钩子。
     _save_user_fortunes()
     return record, True
 
 
-fortune_cmd = P.on_regex(
-    r"^([#＃]|/)(?:今日运势|运势|抽签)",
-    name="today",
-    display_name="今日运势",
-    priority=5,
-    block=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
-
-
-@fortune_cmd.handle()
-async def _handle_fortune(matcher: Matcher, session: Uninfo) -> None:
-    """发送今日运势图片。"""
-    user_id = session.user.id
-    if not user_id:
-        await matcher.finish("无法获取用户 ID")
-    try:
-        data, _ = _get_or_create_today_fortune(user_id)
-    except Exception as exc:
-        await matcher.finish(f"生成失败：{exc}")
-    background = await _get_background_image()
-    image = _generate_fortune_canvas(
-        session.user.nick or session.user.name or f"用户{user_id}", data, background=background
-    )
-    await matcher.finish(selfBot.build_message(selfBot.build_segment("image", image)))
+@on_regex(r"^([#＃]|/)(?:今日运势|运势|抽签)", name="today", level="all")
+async def handle(context: HandlerContext) -> None:
+    event = context.event
+    data, _ = _get_or_create_today_fortune(event.user_id)
+    image = _generate_fortune_canvas(event.user_name or event.user_id, data, await _get_background_image())
+    await context.send(Message([MessageSegment.image(image_bytes(image))]))

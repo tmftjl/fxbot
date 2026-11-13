@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
+from importlib.util import module_from_spec, spec_from_file_location
 
+from loguru import logger
 from fastapi import Depends, APIRouter, HTTPException
-from nonebot import logger
 
 from ..auth import bearer_auth
 from ...config import SYSTEM_DEFAULTS, get_manager
-from ...utils.paths import built_in_plugins_dir
+from ...utils.paths import plugins_dir
 from ...chat.personas import load_personas
 from ...config.manager import ConfigConflictError
 
@@ -1254,21 +1254,18 @@ def _chat_config_tab() -> dict[str, Any]:
 def _plugin_config_tabs() -> list[dict[str, Any]]:
     """扫描内置插件的控制台配置 schema。"""
     tabs: list[dict[str, Any]] = []
-    package_root = __package__.rsplit(".console.routes", 1)[0]
-    for plugin_path in sorted(built_in_plugins_dir().iterdir()):
+    for plugin_path in sorted(plugins_dir().iterdir()):
         if not plugin_path.is_dir() or plugin_path.name.startswith("_"):
             continue
         if not (plugin_path / "ui_schema.py").exists():
             continue
-        module_name = f"{package_root}.plugins.{plugin_path.name}.ui_schema"
-        try:
-            module = importlib.import_module(module_name)
-            schema = module.get_ui_schema()
-        except Exception as exc:
-            logger.warning(f"[Config] 加载插件配置界面失败: {plugin_path.name} err={exc}")
-            continue
-        if isinstance(schema, dict):
-            tabs.append(schema)
+        spec = spec_from_file_location(f"fxbot_schema_{plugin_path.name}", plugin_path / "ui_schema.py")
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        schema = module.get_ui_schema()
+        if not isinstance(schema, dict):
+            raise TypeError("插件配置界面必须返回对象")
+        tabs.append(schema)
     return tabs
 
 

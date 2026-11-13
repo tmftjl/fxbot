@@ -7,10 +7,11 @@ import json
 import string
 import hashlib
 import secrets
+from enum import Enum
 from typing import Any
 from pathlib import Path
 
-from nonebot import logger
+from loguru import logger
 
 from ..utils.paths import config_dir
 
@@ -18,6 +19,23 @@ USERNAME = "root"
 MIN_PASSWORD = 8
 _ITERATIONS = 200_000
 _ALPHABET = string.ascii_letters + string.digits
+
+
+class PasswordRejection(Enum):
+    """客户可见的固定密码操作拒绝原因。"""
+
+    WRONG_PASSWORD = "原密码不正确"
+    TOO_SHORT = f"新密码至少 {MIN_PASSWORD} 位"
+    UNCHANGED = "新密码不能与原密码相同"
+
+
+class PasswordChangeRejected(ValueError):
+    """业务拒绝和账户文件损坏属于不同的错误类型。"""
+
+    def __init__(self, reason: PasswordRejection) -> None:
+        """只保存预定义的业务原因。"""
+        self.reason = reason
+        super().__init__(reason.value)
 
 
 def _path() -> Path:
@@ -32,12 +50,10 @@ def _read() -> dict[str, Any]:
     path = _path()
     if not path.exists():
         return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("[Console] 控制台账户文件损坏，将重新生成初始账户")
-        return {}
-    return data if isinstance(data, dict) else {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("控制台账户必须为对象")
+    return data
 
 
 def _write(data: dict[str, Any]) -> None:
@@ -57,6 +73,8 @@ def ensure_account() -> dict[str, Any]:
     data = _read()
     if data.get("username") and data.get("salt") and data.get("password_hash"):
         return data
+    if _path().exists():
+        raise ValueError("已有控制台账户不完整，拒绝覆盖")
     password = _new_password()
     salt = secrets.token_hex(16)
     data = {
@@ -93,11 +111,11 @@ def change_password(old_password: str, new_password: str) -> None:
     """校验旧密码后写入新密码；首次改密同时清掉提醒标记。"""
     data = ensure_account()
     if not verify(str(data.get("username") or ""), old_password):
-        raise ValueError("原密码不正确")
+        raise PasswordChangeRejected(PasswordRejection.WRONG_PASSWORD)
     if len(new_password) < MIN_PASSWORD:
-        raise ValueError(f"新密码至少 {MIN_PASSWORD} 位")
+        raise PasswordChangeRejected(PasswordRejection.TOO_SHORT)
     if new_password == old_password:
-        raise ValueError("新密码不能与原密码相同")
+        raise PasswordChangeRejected(PasswordRejection.UNCHANGED)
     salt = secrets.token_hex(16)
     data.update(
         salt=salt,

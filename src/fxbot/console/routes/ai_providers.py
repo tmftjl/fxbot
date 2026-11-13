@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from loguru import logger
 from fastapi import Depends, APIRouter
-from nonebot import logger
 
 from ..auth import bearer_auth
 from ...config import SYSTEM_DEFAULTS, get_manager
@@ -48,7 +48,7 @@ def _api_type_of(full_type: str, capability: str) -> str:
 
 
 def _type_options() -> list[dict[str, Any]]:
-    """返回可用的接口类型组合。"""
+    """返回声明的接口类型组合，不在配置页加载 SDK。"""
     options: list[dict[str, Any]] = []
     for full_type, meta in sorted(list_providers().items()):
         capability = _capability_of(meta)

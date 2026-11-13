@@ -6,19 +6,13 @@ import json
 from typing import Any
 from collections.abc import AsyncGenerator
 
-from nonebot import logger
+from loguru import logger
 from anthropic import AsyncAnthropic
 
 from ..base import ChatProvider, local_http_client
 from ..entities import LLMResponse, JSONResponse
-from ..register import register_provider
 
 
-@register_provider(
-    "anthropic_chat",
-    "Anthropic Claude API",
-    default_config={"base_url": "https://api.anthropic.com", "timeout": 60},
-)
 class AnthropicProvider(ChatProvider):
     """Anthropic Claude 对话 Provider。"""
 

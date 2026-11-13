@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .types import perm_entry_default
-from .storage import get_storage
+from .storage import PermissionStorage, get_storage
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -36,23 +36,24 @@ def _update_entry(
     wl_groups: list[str] | None = None,
     bl_users: list[str] | None = None,
     bl_groups: list[str] | None = None,
+    initialize: bool = False,
 ) -> None:
     """按传入参数更新权限条目。"""
-    if enabled is not None and "enabled" not in entry:
+    if enabled is not None and (initialize or "enabled" not in entry):
         entry["enabled"] = bool(enabled)
-    if level is not None and "level" not in entry:
+    if level is not None and (initialize or "level" not in entry):
         entry["level"] = level
-    if scene is not None and "scene" not in entry:
+    if scene is not None and (initialize or "scene" not in entry):
         entry["scene"] = scene
     whitelist = _ensure_dict(entry, "whitelist")
     blacklist = _ensure_dict(entry, "blacklist")
-    if wl_users is not None and "users" not in whitelist:
+    if wl_users is not None and (initialize or "users" not in whitelist):
         whitelist["users"] = _as_str_list(wl_users)
-    if wl_groups is not None and "groups" not in whitelist:
+    if wl_groups is not None and (initialize or "groups" not in whitelist):
         whitelist["groups"] = _as_str_list(wl_groups)
-    if bl_users is not None and "users" not in blacklist:
+    if bl_users is not None and (initialize or "users" not in blacklist):
         blacklist["users"] = _as_str_list(bl_users)
-    if bl_groups is not None and "groups" not in blacklist:
+    if bl_groups is not None and (initialize or "groups" not in blacklist):
         blacklist["groups"] = _as_str_list(bl_groups)
 
 
@@ -66,12 +67,14 @@ def upsert_plugin_defaults(
     wl_groups: list[str] | None = None,
     bl_users: list[str] | None = None,
     bl_groups: list[str] | None = None,
+    storage: PermissionStorage | None = None,
 ) -> None:
     """写入子插件默认权限配置。"""
-    storage = get_storage()
+    storage = get_storage() if storage is None else storage
     data = storage.load()
     sub_plugins = data.setdefault("sub_plugins", {})
     plugin_node = sub_plugins.setdefault(plugin, {})
+    initialize = "top" not in plugin_node
     entry = plugin_node.setdefault("top", perm_entry_default())
     plugin_node.setdefault("commands", {})
     _update_entry(
@@ -83,6 +86,7 @@ def upsert_plugin_defaults(
         wl_groups=wl_groups,
         bl_users=bl_users,
         bl_groups=bl_groups,
+        initialize=initialize,
     )
     storage.mark_dirty(data)
 
@@ -98,14 +102,16 @@ def upsert_command_defaults(
     wl_groups: list[str] | None = None,
     bl_users: list[str] | None = None,
     bl_groups: list[str] | None = None,
+    storage: PermissionStorage | None = None,
 ) -> None:
     """写入子插件命令默认权限配置。"""
-    storage = get_storage()
+    storage = get_storage() if storage is None else storage
     data = storage.load()
     sub_plugins = data.setdefault("sub_plugins", {})
     plugin_node = sub_plugins.setdefault(plugin, {})
     plugin_node.setdefault("top", perm_entry_default())
     commands = plugin_node.setdefault("commands", {})
+    initialize = command not in commands
     entry = commands.setdefault(command, perm_entry_default())
     _update_entry(
         entry,
@@ -116,5 +122,6 @@ def upsert_command_defaults(
         wl_groups=wl_groups,
         bl_users=bl_users,
         bl_groups=bl_groups,
+        initialize=initialize,
     )
     storage.mark_dirty(data)

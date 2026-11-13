@@ -14,15 +14,18 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from PIL import Image, ImageDraw, ImageFont
-from nonebot import logger
+from loguru import logger
 
+from ..core import Event, BotClient
+from .media import load_image_bytes
 from .vision import review_emoji, describe_emoji, vision_configured
 from ..config import get_manager as get_config_manager
 from .personas import DEFAULT_PERSONA
 from ..utils.paths import config_dir
 from .memory.models import ChatEmoji, utc_now_naive
 from .memory.prompts import learning_prompt
-from .message_adapter import load_image_bytes, emoji_sources_for_event
+from .message_adapter import emoji_sources_for_event
+from ..core.application import Application
 from .memory.repository import chat_repository
 from .providers.routing import routed_task, fallback_provider
 
@@ -115,12 +118,12 @@ def _tenant_lock(tenant: str) -> asyncio.Lock:
     return _tenant_locks.setdefault(tenant, asyncio.Lock())
 
 
-async def collect_from_event(tenant: str, event: Any) -> None:
+async def collect_from_event(tenant: str, bot: BotClient, event: Event) -> None:
     """从消息采集并去重，识别注册由周期维护执行。"""
     if not emoji_config().get("steal_emoji", True):
         return
     limit = _max_collect_bytes()
-    for source in emoji_sources_for_event(event):
+    for source in await emoji_sources_for_event(bot, event):
         try:
             data = await load_image_bytes(source, limit=limit)
         except Exception as exc:
@@ -139,16 +142,16 @@ async def collect_from_event(tenant: str, event: Any) -> None:
             continue
 
 
-def collect_in_background(tenant: str, event: Any) -> None:
+def collect_in_background(tenant: str, bot: BotClient, event: Event, application: Application) -> None:
     """异步采集表情，失败只记日志。"""
 
     async def run() -> None:
         try:
-            await collect_from_event(tenant, event)
+            await collect_from_event(tenant, bot, event)
         except Exception:
             logger.opt(exception=True).debug("[ChatEmoji] 表情采集失败")
 
-    asyncio.create_task(run())
+    application.spawn(run(), name=f"emoji:{tenant}")
 
 
 async def _analyze(tenant: str, digest: str, path: Path) -> bool:

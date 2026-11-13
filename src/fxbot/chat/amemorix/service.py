@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 from collections.abc import Iterable
 
-from nonebot import logger
+from loguru import logger
 
 from .people import session_parts
 from .runtime import amemorix_runtime

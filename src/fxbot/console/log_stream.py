@@ -1,21 +1,18 @@
-"""进程内日志环形缓冲与订阅分发。
-
-模块导入即安装 loguru 处理器，不依赖启动钩子：日志要从进程早期就开始收集，
-而 NoneBot 的 lifespan 启动钩子列表在启动前已快照，启动阶段才注册的钩子不会执行。
-"""
+"""应用显式拥有的日志环形缓冲与订阅分发。"""
 
 from __future__ import annotations
 
 import sys
+import logging
 import secrets
 import threading
 import traceback
 from typing import TYPE_CHECKING, Any
-from asyncio import Queue, QueueFull, QueueEmpty, get_running_loop
+from asyncio import Queue, get_running_loop
+from datetime import datetime, timezone
 from collections import deque
 
-from nonebot import logger
-from nonebot.log import default_filter
+from loguru import logger
 
 from ..utils.tz import as_shanghai
 from .log_store import enqueue as enqueue_log
@@ -37,50 +34,64 @@ _records: deque[dict[str, Any]] = deque(maxlen=_BUFFER_SIZE)
 _subscribers: set[Queue] = set()
 _seq = 0
 _loop: AbstractEventLoop | None = None
+_sink_id: int | None = None
 
 
 def _dispatch(item: dict[str, Any]) -> None:
     """把一条记录投递给所有订阅队列，必须在事件循环线程执行。"""
     for queue in _subscribers:
-        try:
-            queue.put_nowait(item)
-        except QueueFull:
-            # 队列满说明该客户端消费不过来，丢最旧的一条保住「最新可见」优先
-            try:
-                queue.get_nowait()
-                queue.put_nowait(item)
-            except (QueueEmpty, QueueFull):
-                pass
+        if queue.full():
+            queue.get_nowait()
+        queue.put_nowait(item)
+
+
+def _append(moment: datetime, level: str, name: str, text: str) -> None:
+    """标准日志和 Loguru 使用同一条记录存储边界。"""
+    global _seq
+    moment = as_shanghai(moment)
+    with _lock:
+        _seq += 1
+        item = {
+            "boot": _BOOT_ID,
+            "seq": _seq,
+            "time": moment.strftime(_TIME_FORMAT),
+            "ts": moment.isoformat(timespec="milliseconds"),
+            "ts_ms": int(moment.timestamp() * 1000),
+            "level": level,
+            "name": name,
+            "text": text.rstrip("\n"),
+        }
+        _records.append(item)
+        loop = _loop
+        has_subscriber = bool(_subscribers)
+    enqueue_log(item)
+    if loop is not None and has_subscriber:
+        loop.call_soon_threadsafe(_dispatch, item)
 
 
 def _sink(message: Message) -> None:
-    """loguru 处理器：写入环形缓冲并分发给订阅者。"""
+    """日志处理器的故障只写 stderr，不能递归写回日志本身。"""
     try:
         record = message.record
-        global _seq
-        with _lock:
-            _seq += 1
-            moment = as_shanghai(record["time"])
-            item = {
-                "boot": _BOOT_ID,
-                "seq": _seq,
-                "time": moment.strftime(_TIME_FORMAT),
-                "ts": moment.isoformat(timespec="milliseconds"),
-                "ts_ms": int(moment.timestamp() * 1000),
-                "level": record["level"].name,
-                "name": record["name"] or "",
-                "text": str(message).rstrip("\n"),
-            }
-            _records.append(item)
-            loop = _loop
-            has_subscriber = bool(_subscribers)
-        enqueue_log(item)
-        if loop is not None and has_subscriber:
-            loop.call_soon_threadsafe(_dispatch, item)
+        _append(record["time"], record["level"].name, record["name"] or "", str(message))
     except Exception:
-        # 不能再用 logger 报错：本处理器就是日志入口，报错会递归回自己，直接写 stderr。
-        # 也不能静默吞掉：这条链路本身就是控制台排查用的，悄悄丢记录等于让页面「看起来正常」。
         traceback.print_exc(file=sys.stderr)
+
+
+class _StandardSink(logging.Handler):
+    """采集核心和 ASGI 服务的标准日志，不影响其他处理器。"""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """日志入口必须独立报告自身的处理异常。"""
+        try:
+            _append(
+                datetime.fromtimestamp(record.created, timezone.utc), record.levelname, record.name, self.format(record)
+            )
+        except Exception:
+            self.handleError(record)
+
+
+_standard_sink = _StandardSink(level=logging.INFO)
 
 
 def boot_id() -> str:
@@ -112,23 +123,29 @@ def unsubscribe(queue: Queue) -> None:
         _subscribers.discard(queue)
 
 
-def _install() -> None:
-    """安装 loguru 处理器。
-
-    复用 NoneBot 自带的过滤器，级别门槛由 .env 的 LOG_LEVEL 统一控制，控制台与终端一致。
-    格式只要 ``{message}``：loguru 会自动追加 ``\\n{exception}``，异常堆栈自带进同一段文本；
-    而 NoneBot 的 default_format 是给终端看的带颜色标记单行串，级别和模块名挤在字符串里，
-    前端无法分别染色，所以级别、模块名从 record 的结构化字段取。
-    """
-    logger.add(
+def start() -> None:
+    """显式安装一次处理器，禁止在模块导入时安装。"""
+    global _sink_id
+    if _sink_id is not None:
+        raise RuntimeError("日志缓冲已启动")
+    _sink_id = logger.add(
         _sink,
-        level=0,
-        filter=default_filter,
+        level="INFO",
         format="{message}",
         colorize=False,
         backtrace=False,
         diagnose=False,
     )
+    logging.getLogger().addHandler(_standard_sink)
 
 
-_install()
+def stop() -> None:
+    """卸载本应用的处理器并释放订阅，不修改其他日志所有者。"""
+    global _sink_id, _loop
+    if _sink_id is not None:
+        logger.remove(_sink_id)
+        _sink_id = None
+    logging.getLogger().removeHandler(_standard_sink)
+    with _lock:
+        _subscribers.clear()
+        _loop = None

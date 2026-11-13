@@ -51,5 +51,5 @@ def startup_marker_path() -> Path:
     return data_dir("system") / "startup.json"
 
 
-def built_in_plugins_dir() -> Path:
+def plugins_dir() -> Path:
     return package_root() / "plugins"

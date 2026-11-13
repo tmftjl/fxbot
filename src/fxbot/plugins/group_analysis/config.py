@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...core import SessionTarget
 from ...config import get_manager
 from .ui_schema import DEFAULTS
 
@@ -19,6 +20,25 @@ def validate_config(value: dict[str, Any]) -> None:
             raise ValueError(f"basic.{key} 必须是布尔值")
     if "theme" in basic and basic["theme"] not in ("miku", "atri"):
         raise ValueError("basic.theme 必须是 miku 或 atri")
+    for key, minimum, maximum in (
+        ("days", 1, 30),
+        ("max_days", 1, 30),
+        ("max_messages", 1, 5000),
+        ("min_messages", 0, 5000),
+    ):
+        if key in basic and (type(basic[key]) is not int or not minimum <= basic[key] <= maximum):
+            raise ValueError(f"basic.{key} 必须在 {minimum} 到 {maximum} 之间")
+    auto = value.get("auto", {})
+    for key, maximum in (("auto_hour", 23), ("auto_minute", 59)):
+        if key in auto and (type(auto[key]) is not int or not 0 <= auto[key] <= maximum):
+            raise ValueError(f"auto.{key} 超出有效范围")
+    for settings, key in ((basic, "groups"), (auto, "auto_groups")):
+        if key in settings:
+            if not isinstance(settings[key], list):
+                raise ValueError(f"{key} 必须为完整群会话键数组")
+            for item in settings[key]:
+                if not isinstance(item, str) or SessionTarget.from_key(item).kind != "group":
+                    raise ValueError(f"{key} 必须使用明确平台和 Bot 的群会话键")
     features = value.get("analysis_features") or {}
     for key in (
         "topic_analysis_enabled",
@@ -30,6 +50,9 @@ def validate_config(value: dict[str, Any]) -> None:
     ):
         if key in features and not isinstance(features[key], bool):
             raise ValueError(f"analysis_features.{key} 必须是布尔值")
+    for key in ("max_topics", "max_user_titles", "max_golden_quotes"):
+        if key in features and (type(features[key]) is not int or not 1 <= features[key] <= 50):
+            raise ValueError(f"analysis_features.{key} 必须在 1 到 50 之间")
 
 
 REG = get_manager().register("group_analysis", DEFAULTS, clean_extra=True, validator=validate_config)
@@ -58,6 +81,8 @@ def allowed_groups() -> set[str]:
 
 
 def group_allowed(group_id: str) -> bool:
+    if SessionTarget.from_key(group_id).kind != "group":
+        return False
     groups = allowed_groups()
     return not groups or str(group_id) in groups
 
@@ -86,6 +111,6 @@ def auto_groups() -> list[str]:
 def bounded_days(value: int | None) -> int:
     """手动天数限制在 1 到 max_days，避免回溯过久拖垮协议端。"""
     config = basic_config()
-    maximum = max(1, int(config.get("max_days") or 1))
-    days = int(value if value is not None else config.get("days") or 1)
+    maximum = config["max_days"]
+    days = value if value is not None else config["days"]
     return min(max(days, 1), maximum)

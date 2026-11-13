@@ -1,84 +1,74 @@
-"""每日群聊日报定时任务。"""
+"""群聊日报原生定时调度与精确目标交付。"""
 
 from __future__ import annotations
 
-import asyncio
+from loguru import logger
 
-from nonebot import logger, get_bots
-
-from .config import get_config, is_enabled, auto_groups
+from ...core import Message, Capability, SessionTarget, MessageSegment
+from .config import get_config, is_enabled, auto_groups, group_allowed, validate_config
 from .report import generate, daily_period, group_name_for
-from ...adapter import build_message, build_message_segment, send_message_to_target
 from ...utils.tz import SHANGHAI_TZ
+from ...core.plugin import scheduled
+from ...core.scheduler import Daily
+from ...core.application import Application
+from ...runtime.notifications import NotificationService
+
+JOB_NAME = "group_analysis:daily"
 
 
-async def _send_report(bot, group_id: str) -> None:
-    end, label, report_date = daily_period()
-    result = await generate(
-        bot,
-        group_id,
-        days=1,
-        end=end,
-        label=label,
-        report_date=report_date,
-        group_name=await group_name_for(bot, group_id),
-    )
-    if not result.ok:
-        logger.info(f"[group_analysis] 群 {group_id} 自动日报跳过: {result.reason}")
-        return
-    target = {"group_id": group_id, "group_openid": group_id}
-    message = build_message(bot, build_message_segment(bot, "image", result.image))
-    await send_message_to_target(bot, target, message)
+class ReportSchedule:
+    """配置保存后重新排期，目标不再由在线 Bot 列表猜测。"""
+
+    def __init__(self, application: Application, notifications: NotificationService) -> None:
+        self.application = application
+        self.notifications = notifications
+
+    def _valid(self, target: SessionTarget) -> bool:
+        return is_enabled() and target.key() in auto_groups() and group_allowed(target.key())
+
+    async def run(self) -> None:
+        if not is_enabled():
+            return
+        end, label, report_date = daily_period()
+        for key in tuple(auto_groups()):
+            target = SessionTarget.from_key(key)
+            bot = self.application.get_bot(target.platform, target.bot_id)
+            if bot is None or Capability.HISTORY not in bot.capabilities:
+                continue
+            if not await self.notifications.allowed("group_analysis", target, valid=lambda: self._valid(target)):
+                continue
+            if self.application.get_bot(target.platform, target.bot_id) is not bot:
+                continue
+            result = await generate(
+                bot,
+                target,
+                days=1,
+                end=end,
+                label=label,
+                report_date=report_date,
+                group_name=await group_name_for(bot, target),
+                session_id=key,
+            )
+            if not result.ok:
+                logger.info("自动群日报跳过: {} / {}", key, result.reason)
+                continue
+            await self.notifications.send(
+                "group_analysis",
+                target,
+                Message([MessageSegment.image(result.image)]),
+                valid=lambda: self._valid(target) and self.application.is_registered(bot),
+            )
 
 
-async def _scheduled_report() -> None:
-    """逐个群生成前一天的日报；单群失败不影响后续群。"""
-    if not is_enabled():
-        return
-    groups = auto_groups()
-    bots = list(get_bots().values())
-    if not groups or not bots:
-        return
-    for index, group_id in enumerate(groups):
-        for bot in bots:
-            try:
-                await _send_report(bot, group_id)
-                break
-            except Exception:
-                logger.opt(exception=True).warning(f"[group_analysis] 群 {group_id} 自动日报发送失败")
-        if index + 1 < len(groups):
-            await asyncio.sleep(3)
+def daily_plan(context):
+    config = get_config()
+    validate_config(config)
+    if not config["basic"]["enabled"] or not config["auto"]["auto_groups"]:
+        return None
+    auto = config["auto"]
+    return Daily((auto["auto_hour"],), auto["auto_minute"], SHANGHAI_TZ)
 
 
-def _coerce_int(value: object, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def setup_group_analysis_tasks() -> None:
-    """注册每日任务；缺少 scheduler 时跳过。"""
-    try:
-        from nonebot_plugin_apscheduler import scheduler
-    except Exception:
-        logger.warning("[group_analysis] nonebot-plugin-apscheduler 未安装或未加载，跳过定时任务")
-        return
-    auto = get_config()["auto"]
-    hour = max(0, min(23, _coerce_int(auto.get("auto_hour"), 8)))
-    minute = max(0, min(59, _coerce_int(auto.get("auto_minute"), 0)))
-    scheduler.add_job(
-        _scheduled_report,
-        trigger="cron",
-        hour=hour,
-        minute=minute,
-        timezone=SHANGHAI_TZ,
-        id="group_analysis_daily",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-    )
-    logger.info(f"[group_analysis] 定时任务已注册: 每天 {hour:02d}:{minute:02d} 生成前一天日报")
-
-
-__all__ = ["setup_group_analysis_tasks"]
+@scheduled(plan=daily_plan, watch_config=True, name="daily")
+async def daily(context):
+    await ReportSchedule(context.runtime.application, context.notifications).run()

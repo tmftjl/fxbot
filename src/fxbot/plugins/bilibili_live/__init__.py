@@ -1,36 +1,20 @@
-"""B 站直播订阅与开播推送。"""
+"""B 站直播订阅与推送：业务声明不管理框架任务。"""
 
-from __future__ import annotations
-
-from nonebot.plugin import PluginMetadata
-
-from ...plugin import Plugin
-from ...permission import PermLevel, PermScene
+from . import commands
+from .scheduler import CHECK_INTERVAL_SECONDS, LivePoller
+from ...core.plugin import PluginMetadata, scheduled
 
 __plugin_meta__ = PluginMetadata(
     name="B站直播推送",
-    description="订阅 B 站直播间，在主播开播时向当前会话推送通知。",
-    usage=(
-        "#B站直播订阅 直播间号/链接：订阅当前会话\n"
-        "#B站直播订阅UID:123456：按主播 UID 订阅当前会话\n"
-        "#B站直播取消 直播间号/链接：取消订阅\n"
-        "#B站直播列表：查看当前会话的订阅\n"
-        "#B站直播查询 直播间号/链接：查询当前状态"
-    ),
-    type="application",
+    description="订阅 B 站直播间，在主播开播时推送通知。",
+    usage="#B站直播订阅 房间号；#B站直播取消 房间号；#B站直播列表",
 )
 
-P = Plugin(
-    "bilibili_live",
-    display_name="B站直播推送",
-    enabled=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
+store = commands.store
+poller = LivePoller(store)
 
-from . import commands as commands  # noqa: E402
-from .scheduler import setup_bilibili_live_tasks  # noqa: E402
 
-setup_bilibili_live_tasks()
-
-__all__ = ["P"]
+@scheduled(interval=CHECK_INTERVAL_SECONDS, run_on_start=True, name="poll")
+async def check_live(context):
+    store.validate()
+    await poller.check(context.notifications, initial=context.first_run)

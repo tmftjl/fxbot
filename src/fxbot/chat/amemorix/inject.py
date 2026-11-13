@@ -10,7 +10,7 @@ from time import time
 from typing import Any
 from dataclasses import field, dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from ..types import ChatRequest
 from .people import session_parts

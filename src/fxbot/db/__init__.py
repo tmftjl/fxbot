@@ -2,15 +2,15 @@
 
 from .base_models import (
     BaseIDModel,
-    exec_list,
     with_session,
     init_database,
+    close_database,
     is_initialized,
 )
 
 __all__ = [
     "BaseIDModel",
-    "exec_list",
+    "close_database",
     "init_database",
     "is_initialized",
     "with_session",

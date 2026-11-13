@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from collections.abc import AsyncGenerator
 
 import httpx
-from nonebot import logger
+from loguru import logger
 
 from .entities import LLMResponse, JSONResponse, ProviderMeta, ProviderType
 

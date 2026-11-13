@@ -6,21 +6,28 @@ import re
 import json
 import base64
 import asyncio
+import hashlib
+from io import BytesIO
+from uuid import uuid4
 from typing import Any
-from datetime import timedelta
+from datetime import date, timedelta
 from dataclasses import dataclass
 
 import httpx
-from nonebot import logger
+from PIL import Image
+from loguru import logger
+from sqlalchemy.exc import SQLAlchemyError
 
+from ...core import BotClient, Capability, SessionTarget, UnsupportedCapability
 from .config import get_config, is_enabled, group_allowed, resolve_persona
 from .models import GroupAnalysisReport, utc_now_naive
 from .history import HistoryWindow, build_stats, build_user_stats, collect_messages, build_analysis_messages
 from .renderer import render_report
-from ...adapter import UnsupportedCapability, platform_bot
 from .analyzers import analyze
 from ...utils.tz import now
+from ...chat.media import load_image_bytes
 from ...utils.paths import data_dir
+from ...runtime.actions import ActionFailed
 
 _RUNNING: set[str] = set()
 _AVATARS: dict[str, str] = {}
@@ -60,16 +67,14 @@ def daily_period() -> tuple[int, str, str]:
     return int(today_start.timestamp()), f"{date} 全天", date
 
 
-async def group_name_for(bot: Any, group_id: str) -> str:
+async def group_name_for(bot: BotClient, target: SessionTarget) -> str:
+    if Capability.TARGET_LOOKUP not in bot.capabilities:
+        return ""
     try:
-        info = await platform_bot(bot).get_group_info(group_id)
-    except UnsupportedCapability:
+        return await bot.target_name(target)
+    except (UnsupportedCapability, ActionFailed, TimeoutError, OSError):
+        logger.opt(exception=True).debug("群聊日报名称查询暂不可用")
         return ""
-    except Exception:
-        return ""
-    if isinstance(info, dict):
-        return str(info.get("group_name") or info.get("name") or "")
-    return ""
 
 
 def _replace_mentions(text: str, names: dict[str, str]) -> str:
@@ -81,34 +86,40 @@ async def _avatar_data(url: str) -> str:
         return ""
     if url not in _AVATARS:
         try:
-            async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-            mime = response.headers.get("content-type", "image/png").split(";")[0]
-            _AVATARS[url] = f"data:{mime};base64,{base64.b64encode(response.content).decode()}"
-        except Exception:
-            _AVATARS[url] = ""
+            content = await load_image_bytes(url, limit=2 * 1024 * 1024)
+            with Image.open(BytesIO(content)) as image:
+                output = BytesIO()
+                image.save(output, format="PNG")
+            data = f"data:image/png;base64,{base64.b64encode(output.getvalue()).decode('ascii')}"
+        except (httpx.HTTPError, OSError, ValueError):
+            logger.opt(exception=True).debug("群聊日报头像暂不可用")
+            return ""
+        if len(_AVATARS) >= 256:
+            _AVATARS.pop(next(iter(_AVATARS)))
+        _AVATARS[url] = data
     return _AVATARS[url]
 
 
-async def _attach_avatars(bot: Any, analysis: dict[str, Any]) -> None:
-    client = platform_bot(bot)
+async def _attach_avatars(bot: BotClient, analysis: dict[str, Any]) -> None:
+    if Capability.AVATAR not in bot.capabilities:
+        return
     items = [*analysis["titles"], *analysis["quotes"]]
     user_urls: dict[str, str] = {}
     for item in items:
         user_id = str(item.get("user_id") or "")
         if not user_id:
             continue
-        try:
-            url = client.user_avatar(user_id)
-        except Exception:
-            url = None
+        url = bot.avatar_url(user_id)
         if url:
             user_urls[user_id] = str(url)
     if not user_urls:
         return
     urls = list(dict.fromkeys(user_urls.values()))
-    fetched = dict(zip(urls, await asyncio.gather(*(_avatar_data(url) for url in urls)), strict=True))
+    results = await asyncio.gather(*(_avatar_data(url) for url in urls), return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    fetched = dict(zip(urls, results, strict=True))
     for item in items:
         url = user_urls.get(str(item.get("user_id") or ""))
         if url and fetched.get(url):
@@ -126,8 +137,8 @@ def _resolve_names(analysis: dict[str, Any], messages: list[dict[str, Any]]) -> 
 
 
 async def generate(
-    bot: Any,
-    group_id: str,
+    bot: BotClient,
+    target: SessionTarget,
     *,
     days: int,
     end: int,
@@ -137,13 +148,19 @@ async def generate(
     session_id: str = "",
 ) -> ReportResult:
     """同一群同时只跑一份；失败只返回预定义原因，不向用户泄露异常文本。"""
-    group_id = str(group_id)
+    if target.kind != "group" or (target.platform, target.bot_id) != (bot.platform, bot.bot_id):
+        raise ValueError("日报目标必须属于当前 Bot 的群会话")
+    if date.fromisoformat(report_date).isoformat() != report_date:
+        raise ValueError("日报日期必须为规范 ISO 日期")
+    group_id = target.key()
     if not is_enabled():
         return ReportResult(False, reason="disabled")
     if not group_allowed(group_id):
         return ReportResult(False, reason="group_not_allowed")
     if group_id in _RUNNING:
         return ReportResult(False, reason="busy")
+    if Capability.HISTORY not in bot.capabilities:
+        return ReportResult(False, reason="unsupported")
     _RUNNING.add(group_id)
     try:
         config = get_config()
@@ -152,28 +169,28 @@ async def generate(
         try:
             messages = await collect_messages(
                 bot,
-                group_id,
+                target,
                 window,
-                limit=max(1, int(basic.get("max_messages") or 1000)),
-                filter_self=bool(basic.get("filter_self", True)),
+                limit=basic["max_messages"],
+                filter_self=basic["filter_self"],
             )
         except UnsupportedCapability:
             return ReportResult(False, reason="unsupported")
-        except Exception:
+        except (ActionFailed, TimeoutError, OSError):
             logger.opt(exception=True).warning(f"[group_analysis] 群 {group_id} 拉取历史消息失败")
             return ReportResult(False, reason="fetch_failed")
-        if len(messages) < int(basic.get("min_messages") or 0):
+        if len(messages) < basic["min_messages"]:
             return ReportResult(False, reason="too_few")
         features = config["analysis_features"]
         stats = build_stats(messages)
-        analysis_messages = build_analysis_messages(messages, {str(getattr(bot, "self_id", "") or "")})
-        users = build_user_stats(messages, int(features.get("max_user_titles") or 8))
+        analysis_messages = build_analysis_messages(messages, {bot.bot_id})
+        users = build_user_stats(messages, features["max_user_titles"])
         analysis = await analyze(
             group_id,
             analysis_messages,
             users=users,
             features=features,
-            persona=resolve_persona(session_id),
+            persona=resolve_persona(session_id or group_id),
         )
         _resolve_names(analysis, analysis_messages)
         await _attach_avatars(bot, analysis)
@@ -185,10 +202,16 @@ async def generate(
             "stats": stats,
             "analysis": analysis,
         }
-        image = await render_report(report, theme=str(basic.get("theme") or "miku"))
-        path = data_dir("group_analysis") / "images" / f"{group_id}_{report_date}.png"
+        image = await render_report(report, theme=basic["theme"])
+        identity = hashlib.sha256(group_id.encode("utf-8")).hexdigest()
+        path = data_dir("group_analysis") / "images" / identity / f"{report_date}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(image)
+        temporary = path.with_name(f"{report_date}-{uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(image)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
         await GroupAnalysisReport.upsert(
             group_id=group_id,
             report_date=report_date,
@@ -202,7 +225,7 @@ async def generate(
         )
         logger.info(f"[group_analysis] 群 {group_id} 日报生成完成：{stats['total']} 条消息")
         return ReportResult(True, image=image)
-    except Exception:
+    except (OSError, SQLAlchemyError):
         logger.opt(exception=True).warning(f"[group_analysis] 群 {group_id} 日报生成失败")
         return ReportResult(False, reason="failed")
     finally:

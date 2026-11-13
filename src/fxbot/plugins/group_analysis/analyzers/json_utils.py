@@ -6,7 +6,7 @@ import re
 import json
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 
 def fix_json(text: str) -> str:

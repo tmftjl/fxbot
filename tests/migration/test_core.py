@@ -40,6 +40,10 @@ class CoreTypeTests(unittest.TestCase):
         self.assertEqual(target.key(), "test:bot-1:group:100")
         self.assertNotEqual(target, SessionTarget("other", "bot-1", "group", "100"))
         self.assertNotEqual(
+            SessionTarget("test:other", "bot", "group", "100").bot_key(),
+            SessionTarget("test", "other:bot", "group", "100").bot_key(),
+        )
+        self.assertNotEqual(
             SessionTarget("test:other", "bot", "private", "100").key(),
             SessionTarget("test", "other:bot", "private", "100").key(),
         )

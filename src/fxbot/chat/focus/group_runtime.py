@@ -14,16 +14,16 @@ from collections import OrderedDict
 from dataclasses import field, replace, dataclass
 from collections.abc import Callable
 
-from nonebot import logger
+from loguru import logger
 
 from .tools import WAIT_TOOL, FocusToolRouter, _failure
+from ...core import Event, Message, BotClient, Capability, SessionTarget
 from ..hooks import ChatHookError, ChatHookContext, guard, notify, hook_context, prompt_notes, system_prompt_sections
 from ..tools import ToolRuntime
 from ..types import ChatRequest, speaker_label
 from .context import FocusEntry, FocusCheckpointStore, closed_entry, restore_entries
 from ...config import get_manager as get_config_manager
 from ..service import chat_service, _memory_block, _learning_reference
-from ...adapter import get_bot_group_role
 from ..personas import DEFAULT_PERSONA, effective_persona_name
 from ...utils.tz import now
 from ..providers import LLMResponse
@@ -35,10 +35,12 @@ from ..replyer.prompt import recall_query, strip_images, build_persona_text, bui
 from ..context_summary import SUMMARY_HEADER, clear_summary, compact_messages, planner_snapshot
 from ..message_context import render_message, message_metadata
 from ..tools.discovery import deferred_reminder
+from ...core.application import Application
 from ..behavior.debounce import quiet_wait
 from ..behavior.mentions import reply_at_enabled
 from ..memory.repository import chat_repository
 from ..providers.routing import fallback_provider
+from ...permission.authorization import Authorizer
 
 MAX_SEEN_MESSAGES = 20000
 MAX_INTERNAL_ROUNDS = 16
@@ -52,39 +54,33 @@ class FocusMember:
     """共享组里一个聊天的最新接入信息。"""
 
     session_id: str
-    bot: Any
-    event: Any
-    target: dict[str, Any]
+    bot: BotClient
+    event: Event
+    target: SessionTarget
     request: ChatRequest
     is_group: bool
+    application: Application
+    authorizer: Authorizer
     allowed_names: set[str] = field(default_factory=set)
 
     @property
     def runtime(self) -> ToolRuntime:
         """该聊天的工具运行时；发送目标由调用方注入。"""
-        return ToolRuntime(bot=self.bot, event=self.event)
+        return ToolRuntime(bot=self.bot, event=self.event, application=self.application, authorizer=self.authorizer)
 
 
-class FocusMatcher:
-    """把发送目标包装成 matcher 形状，复用普通发送流程。"""
+class FocusSender:
+    """绑定真实会话目标的发送通道。"""
 
-    def __init__(self, bot: Any, target: dict[str, Any], *, is_valid: Callable[[], bool] | None = None) -> None:
+    def __init__(self, bot: BotClient, target: SessionTarget, *, is_valid: Callable[[], bool] | None = None) -> None:
         self.bot = bot
         self.target = target
         self.is_valid = is_valid
 
-    async def send(self, payload: Any) -> Any:
-        from ...adapter import build_message, build_message_segment, send_message_to_target
-
-        if isinstance(payload, str):
-            payload = build_message(self.bot, build_message_segment(self.bot, "text", payload))
+    async def send(self, payload: Message | str) -> Any:
         if self.is_valid is not None and not self.is_valid():
             raise RuntimeError("Focus member is no longer valid")
-        return await send_message_to_target(self.bot, self.target, payload)
-
-    async def finish(self, *args: Any, **kwargs: Any) -> None:
-        """Focus 没有需要收尾的 matcher。"""
-        return None
+        return await self.bot.send(self.target, Message.text(payload) if isinstance(payload, str) else payload)
 
 
 class FocusGroupRuntime:
@@ -167,6 +163,7 @@ class FocusGroupRuntime:
 
         return (
             self.members.get(member.session_id) is member
+            and member.application.is_registered(member.bot)
             and not self._closed
             and focus_mode_manager.is_enabled_for_session(member.session_id)
             and focus_mode_manager.scope_key(member.session_id) == self.scope_id
@@ -422,7 +419,9 @@ class FocusGroupRuntime:
         runtime = ToolRuntime(
             bot=member.bot,
             event=member.event,
-            matcher=FocusMatcher(member.bot, member.target, is_valid=is_valid),
+            sender=FocusSender(member.bot, member.target, is_valid=is_valid),
+            application=member.application,
+            authorizer=member.authorizer,
         )
         try:
             text = await chat_service.focus_reply(request, runtime, instruction, is_valid=is_valid)
@@ -454,7 +453,9 @@ class FocusGroupRuntime:
             runtime = ToolRuntime(
                 bot=member.bot,
                 event=member.event,
-                matcher=FocusMatcher(member.bot, member.target, is_valid=partial(self.is_member_valid, member)),
+                sender=FocusSender(member.bot, member.target, is_valid=partial(self.is_member_valid, member)),
+                application=member.application,
+                authorizer=member.authorizer,
             )
             context = SimpleNamespace(
                 request=member.request, runtime=runtime, epoch=chat_service.session_store.epoch(member.session_id)
@@ -722,7 +723,11 @@ class FocusGroupRuntime:
                 continue
             request = member.request
             try:
-                request.metadata["bot_group_role"] = await get_bot_group_role(member.bot, request.group_id)
+                request.metadata["bot_group_role"] = (
+                    await member.bot.bot_group_role(request.group_id)
+                    if request.group_id and Capability.GROUP_ROLE in member.bot.capabilities
+                    else None
+                )
                 _, persona_text = build_persona_text(
                     request, chat_cfg, behavior, hook_phase="focus_planner", include_system_sections=False
                 )

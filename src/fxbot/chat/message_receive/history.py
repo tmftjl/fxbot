@@ -12,7 +12,7 @@ from uuid import uuid4
 from typing import Any
 from datetime import datetime
 
-from nonebot import logger
+from loguru import logger
 
 from ..types import MentionRef, ChatRequest, ChatResponse, speaker_label, is_continuation
 from .sender import parts, item_id

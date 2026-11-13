@@ -57,7 +57,7 @@ def get_ui_schema() -> dict[str, Any]:
                         "label": "允许分析的群",
                         "component": "GArrayInput",
                         "default": DEFAULTS["basic"]["groups"],
-                        "helpMessage": "填写群号；留空表示所有群都可以使用 /群聊分析。",
+                        "helpMessage": "填写完整群会话键，例如 onebot11:100:group:300；留空表示所有群。",
                     },
                     {
                         "field": "days",
@@ -122,14 +122,14 @@ def get_ui_schema() -> dict[str, Any]:
                         "label": "自动推送的群",
                         "component": "GArrayInput",
                         "default": DEFAULTS["auto"]["auto_groups"],
-                        "helpMessage": "留空表示不自动推送；日报只分析前一天，群号需在允许分析的群中（留空时除外）。",
+                        "helpMessage": "填写完整群会话键；留空不自动推送。目标需在允许分析的群中。",
                     },
                     {
                         "field": "auto_hour",
                         "label": "推送小时",
                         "component": "InputNumber",
                         "default": DEFAULTS["auto"]["auto_hour"],
-                        "helpMessage": "按北京时间每天在这个小时生成并发送前一天的日报；修改后需重载插件生效。",
+                        "helpMessage": "按北京时间每天在这个小时生成前一天日报；保存后自动重排任务。",
                         "componentProps": {"min": 0, "max": 23},
                     },
                     {

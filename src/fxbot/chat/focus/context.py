@@ -14,7 +14,7 @@ from hashlib import sha256
 from pathlib import Path
 from dataclasses import field, dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from ...utils.paths import data_dir
 

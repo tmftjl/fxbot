@@ -1,13 +1,3 @@
-"""AI 对话子系统导出。"""
+"""AI 对话与记忆子系统，导入包不启动业务服务。"""
 
-from .types import MentionRef, ChatRequest, ChatResponse, InboundSegment
-from .service import ChatService, chat_service
-
-__all__ = [
-    "ChatRequest",
-    "ChatResponse",
-    "ChatService",
-    "InboundSegment",
-    "MentionRef",
-    "chat_service",
-]
+from __future__ import annotations

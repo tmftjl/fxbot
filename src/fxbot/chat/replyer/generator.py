@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 from ..web import web_runtime
 from ..hooks import ChatHookContext, hook_context

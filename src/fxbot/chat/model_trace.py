@@ -18,7 +18,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import OrderedDict
 
-from nonebot import logger
+from loguru import logger
 
 from ..utils.tz import SHANGHAI_TZ
 from ..utils.paths import data_dir

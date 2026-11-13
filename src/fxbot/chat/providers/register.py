@@ -1,15 +1,17 @@
-"""Provider 注册系统，按 temp/core/agent/providers/register.py 适配。"""
+"""Provider 声明目录、扩展注册和按需实现工厂。"""
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
+from .catalog import BUILTIN_PROVIDERS
 from .entities import ProviderType, ProviderMetadata
 
 if TYPE_CHECKING:
     from .base import BaseProvider
 
-provider_registry: dict[str, ProviderMetadata] = {}
+provider_registry: dict[str, ProviderMetadata] = dict(BUILTIN_PROVIDERS)
 
 
 def register_provider(
@@ -23,7 +25,7 @@ def register_provider(
 
     def decorator(cls: type["BaseProvider"]):
         if type_name in provider_registry:
-            return cls
+            raise ValueError(f"Provider 类型重复注册: {type_name}")
 
         provider_registry[type_name] = ProviderMetadata(
             id="default",
@@ -31,7 +33,7 @@ def register_provider(
             type=type_name,
             desc=desc,
             provider_type=provider_type,
-            cls_type=cls,
+            loader=lambda: cls,
             default_config=default_config,
             display_name=display_name or type_name,
         )
@@ -50,4 +52,4 @@ def get_provider_class(type_name: str) -> type["BaseProvider"]:
 
 def list_providers() -> dict[str, ProviderMetadata]:
     """列出所有已注册的 Provider。"""
-    return provider_registry.copy()
+    return deepcopy(provider_registry)

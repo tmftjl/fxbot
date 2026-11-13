@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any
 from datetime import datetime, timezone, timedelta
 
-from fastapi import Depends, APIRouter, HTTPException
-from nonebot import logger, get_bots
+from loguru import logger
+from fastapi import Depends, Request, APIRouter, HTTPException
 
 from ..auth import bearer_auth
-from ...adapter import bind_bot
+from ...core import Message, SessionTarget
+from ..dependencies import runtime_for
+from ...runtime.actions import ActionFailed
 from ...membership.guard import membership_guard
 from ...membership.contact import renewal_contact_text, format_membership_expiry
 from ...membership.service import MembershipError, membership_service
@@ -17,34 +19,32 @@ from ...membership.service import MembershipError, membership_service
 router = APIRouter(prefix="/membership", tags=["fxbot-membership"], dependencies=[Depends(bearer_auth)])
 
 
-def _candidate_bots(managed_by_bot: str | None) -> list[Any]:
-    """优先使用记录 Bot，失败时遍历其他在线 Bot。"""
-    bots = {str(bot_id): bot for bot_id, bot in get_bots().items()}
-    preferred_id = str(managed_by_bot or "")
-    candidates = [bots[preferred_id]] if preferred_id in bots else []
-    candidates.extend(bot for bot_id, bot in bots.items() if bot_id != preferred_id)
-    return candidates
-
-
-async def _send_group_message(row: Any, message: str) -> str:
-    """发送群消息并在成功时更新管理 Bot。"""
-    errors: list[str] = []
-    for bot in _candidate_bots(row.managed_by_bot):
-        bot_id = str(getattr(bot, "self_id", ""))
-        try:
-            await bind_bot(bot).send_group_message(row.group_id, message)
-        except Exception as exc:
-            errors.append(f"{bot_id}: {exc}")
-            continue
-        if bot_id and bot_id != row.managed_by_bot:
-            await membership_service.update_managed_bot(row.group_id, bot_id)
-        return bot_id
-    logger.warning(f"[MembershipConsole] 群 {row.group_id} 所有在线 Bot 发送失败: {'; '.join(errors)}")
-    raise HTTPException(
-        status_code=409,
-        detail="所有在线 Bot 都无法向该群发送消息",
-        headers={"X-FxBot-Delete-Record": "true"},
+def _online_group_bot(request: Request, group_id: str):
+    """完整会话身份只选择其所属连接，不轮询无关平台。"""
+    try:
+        target = SessionTarget.from_key(group_id)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="群记录缺少有效平台身份，请先完成数据迁移") from None
+    if target.kind != "group":
+        raise HTTPException(status_code=409, detail="会员群记录不是群会话")
+    bot = next(
+        (
+            item
+            for item in runtime_for(request).application.bots
+            if (item.platform, item.bot_id) == (target.platform, target.bot_id)
+        ),
+        None,
     )
+    if bot is None:
+        raise HTTPException(status_code=503, detail="托管 Bot 不在线")
+    return bot, target
+
+
+async def _send_group_message(request: Request, row: Any, message: str) -> str:
+    """只通过记录所属平台的连接发送，不把失败包装成删除记录的理由。"""
+    bot, target = _online_group_bot(request, row.group_id)
+    await bot.send(target, Message.text(message))
+    return target.bot_key()
 
 
 def _duration_unit(unit: str) -> str:
@@ -118,11 +118,7 @@ async def get_membership_data() -> dict[str, Any]:
 async def list_codes() -> dict[str, Any]:
     """列出仍可使用的续费码。"""
     rows = await membership_service.list_codes()
-    return {
-        row.code: _code_to_console(row)
-        for row in rows
-        if row.status == "active" and row.used_count < row.max_use
-    }
+    return {row.code: _code_to_console(row) for row in rows if row.status == "active" and row.used_count < row.max_use}
 
 
 @router.post("/generate")
@@ -137,8 +133,8 @@ async def generate_code_for_console(payload: dict[str, Any]) -> dict[str, Any]:
             max_use=int(payload.get("max_use", 1)),
             expires_at=expires_at,
         )
-    except (ValueError, TypeError, MembershipError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ValueError, TypeError, MembershipError):
+        raise HTTPException(status_code=400, detail="会员参数无效，请核对输入") from None
     return {"code": row.code}
 
 
@@ -169,8 +165,8 @@ async def extend_from_console(payload: dict[str, Any]) -> dict[str, Any]:
             )
             row = result.group
         await membership_guard.invalidate(group_id)
-    except (ValueError, TypeError, MembershipError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ValueError, TypeError, MembershipError):
+        raise HTTPException(status_code=400, detail="会员参数无效，请核对输入") from None
     return {
         "group_id": row.group_id,
         "expiry": row.expires_at.isoformat() if row.expires_at else "",
@@ -179,14 +175,14 @@ async def extend_from_console(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/remind")
-async def remind_group(payload: dict[str, Any]) -> dict[str, int]:
+async def remind_group(payload: dict[str, Any], request: Request) -> dict[str, int]:
     """向会员群发送续费提示。"""
     group_id = str(payload.get("group_id") or "").strip()
     row = await membership_service.get_group(group_id)
     if row is None:
         raise HTTPException(status_code=404, detail="群不存在")
     expires = format_membership_expiry(row.expires_at)
-    await _send_group_message(row, f"本群会员到期时间：{expires}。\n{renewal_contact_text()}")
+    await _send_group_message(request, row, f"本群会员到期时间：{expires}。\n{renewal_contact_text()}")
     return {"sent": 1}
 
 
@@ -200,7 +196,7 @@ async def delete_group_record(group_id: str) -> dict[str, int]:
 
 
 @router.post("/notify")
-async def notify_groups(payload: dict[str, Any]) -> dict[str, int]:
+async def notify_groups(payload: dict[str, Any], request: Request) -> dict[str, int]:
     """批量发送群通知。"""
     group_ids = [str(item).strip() for item in payload.get("group_ids") or [] if str(item).strip()]
     text = str(payload.get("text") or "").strip()
@@ -214,39 +210,35 @@ async def notify_groups(payload: dict[str, Any]) -> dict[str, int]:
     for group_id in group_ids:
         row = await membership_service.get_group(group_id)
         if row is None:
+            failed += 1
             continue
         try:
-            await _send_group_message(row, text)
-        except HTTPException as exc:
-            if exc.status_code == 409:
-                failed += 1
-            continue
-        sent += 1
+            await _send_group_message(request, row, text)
+            sent += 1
+        except (HTTPException, ConnectionError, ActionFailed, TimeoutError):
+            logger.opt(exception=True).warning("会员通知发送失败")
+            failed += 1
     return {"sent": sent, "failed": failed}
 
 
 @router.post("/leave")
-async def leave_group(payload: dict[str, Any]) -> dict[str, int]:
+async def leave_group(payload: dict[str, Any], request: Request) -> dict[str, int]:
     """退出会员群并删除记录。"""
     group_id = str(payload.get("group_id") or "").strip()
     row = await membership_service.get_group(group_id)
     if row is None:
         raise HTTPException(status_code=404, detail="群不存在")
-    bot = get_bots().get(str(row.managed_by_bot or ""))
-    if bot is None:
-        raise HTTPException(status_code=503, detail="托管 Bot 不在线")
-    await bind_bot(bot).leave_group(group_id)
+    bot, target = _online_group_bot(request, group_id)
+    await bot.leave_group(target.target_id)
     await membership_service.delete_group(group_id)
     await membership_guard.invalidate(group_id)
     return {"left": 1}
 
 
 @router.post("/job/run")
-async def run_membership_job() -> dict[str, int]:
+async def run_membership_job(request: Request) -> dict[str, int]:
     """手动触发会员任务。"""
-    from ...membership.tasks import membership_task_job
-
-    result = await membership_task_job()
+    result = await runtime_for(request).membership.process()
     return {"expired": result.expired, "left": result.left}
 
 
@@ -261,8 +253,8 @@ async def generate_code(payload: dict[str, Any]) -> dict[str, Any]:
             max_use=int(payload.get("max_use", 1)),
             expires_at=datetime.fromisoformat(expires_at) if expires_at else None,
         )
-    except (ValueError, TypeError, MembershipError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ValueError, TypeError, MembershipError):
+        raise HTTPException(status_code=400, detail="会员参数无效，请核对输入") from None
     return row.model_dump(mode="json")
 
 
@@ -278,8 +270,8 @@ async def extend_group(group_id: str, payload: dict[str, Any]) -> dict[str, Any]
             code="console",
         )
         await membership_guard.invalidate(group_id)
-    except (ValueError, TypeError, MembershipError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ValueError, TypeError, MembershipError):
+        raise HTTPException(status_code=400, detail="会员参数无效，请核对输入") from None
     return result.group.model_dump(mode="json")
 
 
@@ -296,6 +288,6 @@ async def upsert_group(group_id: str, payload: dict[str, Any]) -> dict[str, Any]
             remark=payload.get("remark"),
         )
         await membership_guard.invalidate(group_id)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ValueError, TypeError, MembershipError):
+        raise HTTPException(status_code=400, detail="会员配置参数无效") from None
     return row.model_dump(mode="json")

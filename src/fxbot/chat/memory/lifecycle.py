@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nonebot import logger
+from loguru import logger
 
 from .state import is_ready
 from ..session import default_session_store

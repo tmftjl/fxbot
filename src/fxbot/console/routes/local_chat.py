@@ -5,8 +5,8 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Any
 
+from loguru import logger
 from fastapi import Depends, APIRouter, HTTPException
-from nonebot import logger
 from pydantic import Field, BaseModel
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask

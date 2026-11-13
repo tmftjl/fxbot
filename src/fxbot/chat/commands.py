@@ -4,25 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from nonebot import logger, get_driver, on_message
-from nonebot.rule import Rule
-from nonebot.matcher import Matcher
-from nonebot.adapters import Bot, Event
-from nonebot.permission import SUPERUSER, Permission
+from loguru import logger
 
+from ..core import Event, BotClient, SessionTarget, HandlerContext
 from ..config import get_manager as get_config_manager
 from .service import chat_service
-from ..adapter import selfBot, normalize_id, event_user_id, event_group_id, event_plain_text
 from .bindings import PERSONA, PROVIDER, get_binding, set_binding
 from .personas import DEFAULT_PERSONA, load_personas
 from .providers import provider_manager
 from .message_adapter import session_id_for_event
+from ..core.application import Application
+from ..permission.types import PermLevel
 from .behavior.reply_gate import (
     talk_value_for,
     proactive_switch,
     set_proactive_switch,
     default_reply_gate_registry,
 )
+from ..permission.authorization import Authorizer
 
 
 def _chat_cfg() -> dict[str, Any]:
@@ -60,18 +59,6 @@ def _provider_name(text: str) -> str | None:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
-def _event_group_role(event: Any) -> str:
-    """从事件发送者读取群身份。"""
-    for member in (getattr(event, "sender", None), getattr(event, "author", None)):
-        if isinstance(member, dict):
-            value = member.get("role") or member.get("member_role")
-        else:
-            value = getattr(member, "role", None) or getattr(member, "member_role", None)
-        if value:
-            return str(value)
-    return ""
-
-
 def _proactive_argument(text: str) -> str | None:
     """解析「主动」命令，返回空表示查询，None 表示不是该命令。"""
     stripped = _strip_prefix(text.strip())
@@ -83,132 +70,54 @@ def _proactive_argument(text: str) -> str | None:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
-def _is_privileged(user_id: str) -> bool:
-    """判断是否为超级用户或 Bot 管理员。"""
-    try:
-        superusers = {str(item) for item in get_driver().config.superusers or []}
-    except Exception:
-        superusers = set()
-    if user_id and user_id in superusers:
-        return True
-    value = get_config_manager().get_system().get("system", {}).get("bot_admins")
-    admins = {str(item) for item in value if item is not None} if isinstance(value, (list, tuple, set)) else set()
-    return bool(user_id and user_id in admins)
+async def _can_manage(event: Event, authorizer: Authorizer) -> bool:
+    """私聊可管理自己的会话；群聊要求管理权限。"""
+    return not event.is_group or authorizer.context(event, authorizer.storage.load()).user_level >= PermLevel.ADMIN
 
 
-async def _group_role(group_id: str, user_id: str, event: Any) -> str:
-    """读取群身份，事件未提供时回查平台。"""
-    role = _event_group_role(event)
-    if role or not group_id or not user_id:
-        return role
-    try:
-        return str(await selfBot.get_group_member_role(group_id, user_id) or "")
-    except Exception:
-        logger.opt(exception=True).debug(f"[Chat] 查询群身份失败: group={group_id} user={user_id}")
-        return ""
-
-
-async def _can_manage(event: Event) -> bool:
-    """私聊或特权账号可用；群聊要求群主/管理员。"""
-    group_id = normalize_id(event_group_id(event))
-    if not group_id:
-        return True
-    user_id = normalize_id(event_user_id(event)) or ""
-    return _is_privileged(user_id) or await _group_role(group_id, user_id, event) in {"owner", "admin"}
-
-
-async def _persona_rule(bot: Bot, event: Event) -> bool:
-    """人格切换命令匹配规则。"""
-    return _persona_name(event_plain_text(event)) is not None
-
-
-async def _provider_rule(bot: Bot, event: Event) -> bool:
-    """Provider 切换命令匹配规则。"""
-    return _provider_name(event_plain_text(event)) is not None
-
-
-async def _clear_rule(bot: Bot, event: Event) -> bool:
-    """清空对话命令匹配规则。"""
-    return _strip_prefix(event_plain_text(event).strip()) == "清空对话"
-
-
-def _proactive_rule(bot: Bot, event: Event) -> bool:
-    """主动接话命令匹配规则。"""
-    return _proactive_argument(event_plain_text(event)) is not None
-
-
-manage_permission = Permission(_can_manage)
-
-persona_cmd = on_message(
-    rule=Rule(_persona_rule),
-    permission=manage_permission,
-    priority=5,
-    block=True,
-)
-provider_cmd = on_message(
-    rule=Rule(_provider_rule),
-    permission=SUPERUSER,
-    priority=5,
-    block=True,
-)
-clear_cmd = on_message(
-    rule=Rule(_clear_rule),
-    permission=manage_permission,
-    priority=5,
-    block=True,
-)
-proactive_cmd = on_message(
-    rule=Rule(_proactive_rule),
-    priority=5,
-    block=True,
-)
-
-
-@persona_cmd.handle()
-async def _handle_persona(bot: Bot, event: Event, matcher: Matcher) -> None:
+async def _handle_persona(bot: BotClient, event: Event, context: HandlerContext) -> None:
     """切换当前群或当前私聊用户的人格。"""
-    group_id = normalize_id(event_group_id(event))
+    group_id = event.target.target_id if event.is_group else None
     session_id = session_id_for_event(bot, event)
     scope = "本群" if group_id else ""
 
-    name = _persona_name(event_plain_text(event)) or ""
+    name = _persona_name(event.message.plain_text()) or ""
     personas = load_personas()
     default_name = str(_chat_cfg()["persona"] or "") or DEFAULT_PERSONA
 
     if not name:
         bound = get_binding(PERSONA, session_id)
         effective = bound if bound in personas else default_name
-        await matcher.finish(f"{scope}当前人格：{effective}\n可用人格：{'、'.join(sorted(personas))}")
+        await context.finish(f"{scope}当前人格：{effective}\n可用人格：{'、'.join(sorted(personas))}")
 
     if name in {"重置", "恢复默认"}:
         try:
             set_binding(PERSONA, session_id, None)
-        except Exception:
+        except OSError:
             logger.opt(exception=True).warning(f"[Chat] 清除人格绑定失败: session={session_id}")
-            await matcher.finish("人格设置失败，请稍后再试")
+            await context.finish("人格设置失败，请稍后再试")
         await chat_service.clear_session(session_id)
-        await matcher.finish(f"已恢复全局默认人格：{default_name}，对话历史已清空")
+        await context.finish(f"已恢复全局默认人格：{default_name}，对话历史已清空")
 
     if name not in personas:
-        await matcher.finish(f"没有名为「{name}」的人格，可用人格：{'、'.join(sorted(personas))}")
+        await context.finish(f"没有名为「{name}」的人格，可用人格：{'、'.join(sorted(personas))}")
 
     try:
         set_binding(PERSONA, session_id, name)
-    except Exception:
+    except OSError:
         logger.opt(exception=True).warning(f"[Chat] 保存人格绑定失败: session={session_id}")
-        await matcher.finish("人格设置失败，请稍后再试")
+        await context.finish("人格设置失败，请稍后再试")
     await chat_service.clear_session(session_id)
-    await matcher.finish(f"{scope}人格已切换为「{name}」，对话历史已清空")
+    await context.finish(f"{scope}人格已切换为「{name}」，对话历史已清空")
 
 
-@provider_cmd.handle()
-async def _handle_provider(bot: Bot, event: Event, matcher: Matcher) -> None:
+async def _handle_provider(bot: BotClient, event: Event, context: HandlerContext) -> None:
     """切换当前群或当前私聊用户使用的 Provider。"""
-    group_id = normalize_id(event_group_id(event))
+    group_id = event.target.target_id if event.is_group else None
     session_id = session_id_for_event(bot, event)
     scope = "本群" if group_id else "当前会话"
 
-    name = _provider_name(event_plain_text(event)) or ""
+    name = _provider_name(event.message.plain_text()) or ""
     names = sorted(provider_manager.list_providers_by_type("chat"))
     default_name = str(_chat_cfg()["provider"] or "") or "自动（第一个对话 Provider）"
     choices = "、".join(names) or "（未配置）"
@@ -216,60 +125,58 @@ async def _handle_provider(bot: Bot, event: Event, matcher: Matcher) -> None:
     if not name:
         bound = get_binding(PROVIDER, session_id)
         effective = bound if bound in names else default_name
-        await matcher.finish(f"{scope}当前 Provider：{effective}\n可用 Provider：{choices}")
+        await context.finish(f"{scope}当前 Provider：{effective}\n可用 Provider：{choices}")
 
     if name in {"重置", "恢复默认"}:
         try:
             set_binding(PROVIDER, session_id, None)
-        except Exception:
+        except OSError:
             logger.opt(exception=True).warning(f"[Chat] 清除 Provider 绑定失败: session={session_id}")
-            await matcher.finish("Provider 设置失败，请稍后再试")
-        await matcher.finish(f"已恢复全局默认 Provider：{default_name}")
+            await context.finish("Provider 设置失败，请稍后再试")
+        await context.finish(f"已恢复全局默认 Provider：{default_name}")
 
     if name not in names:
-        await matcher.finish(f"没有名为「{name}」的对话 Provider，可用 Provider：{choices}")
+        await context.finish(f"没有名为「{name}」的对话 Provider，可用 Provider：{choices}")
 
     try:
         set_binding(PROVIDER, session_id, name)
-    except Exception:
+    except OSError:
         logger.opt(exception=True).warning(f"[Chat] 保存 Provider 绑定失败: session={session_id}")
-        await matcher.finish("Provider 设置失败，请稍后再试")
-    await matcher.finish(f"{scope} Provider 已切换为「{name}」")
+        await context.finish("Provider 设置失败，请稍后再试")
+    await context.finish(f"{scope} Provider 已切换为「{name}」")
 
 
-@clear_cmd.handle()
-async def _handle_clear(bot: Bot, event: Event, matcher: Matcher) -> None:
+async def _handle_clear(bot: BotClient, event: Event, context: HandlerContext) -> None:
     """销毁当前会话，连同长期记忆一起重新开始；学习记录保留。"""
     cleared = await chat_service.reset_session(session_id_for_event(bot, event))
     if cleared:
-        await matcher.finish("已重置当前会话：历史与长期记忆已清空，学习记录保留")
-    await matcher.finish("已重置当前会话；长期记忆清理失败，请查看日志")
+        await context.finish("已重置当前会话：历史与长期记忆已清空，学习记录保留")
+    await context.finish("已重置当前会话；长期记忆清理失败，请查看日志")
 
 
 def _switch_state(override: bool | None) -> str:
     return "未设置" if override is None else "开启" if override else "关闭"
 
 
-@proactive_cmd.handle()
-async def _handle_proactive(bot: Bot, event: Event, matcher: Matcher) -> None:
+async def _handle_proactive(bot: BotClient, event: Event, context: HandlerContext, authorizer: Authorizer) -> None:
     """查看或调整本群主动接话。"""
-    group_id = normalize_id(event_group_id(event)) or ""
+    group_id = (event.target.target_id if event.is_group else None) or ""
     tenant = session_id_for_event(bot, event)
-    argument = _proactive_argument(event_plain_text(event)) or ""
+    argument = _proactive_argument(event.message.plain_text()) or ""
     if argument in {"开", "开启", "打开", "关", "关闭"}:
         if not group_id:
-            await matcher.finish("主动接话只用于群聊")
-        if not await _can_manage(event):
-            await matcher.finish("只有群主或管理员可以调整主动接话")
+            await context.finish("主动接话只用于群聊")
+        if not await _can_manage(event, authorizer):
+            await context.finish("只有群主或管理员可以调整主动接话")
         enabled = argument in {"开", "开启", "打开"}
         try:
             await set_proactive_switch(tenant, enabled)
-        except Exception:
+        except OSError:
             logger.opt(exception=True).warning("[Chat] 写入主动接话开关失败")
-            await matcher.finish("设置失败，请稍后再试")
-        await matcher.finish("本群主动接话已关闭" if not enabled else "本群主动接话已开启")
+            await context.finish("设置失败，请稍后再试")
+        await context.finish("本群主动接话已关闭" if not enabled else "本群主动接话已开启")
     if argument:
-        await matcher.finish("用法：#主动 / #主动 开 / #主动 关")
+        await context.finish("用法：#主动 / #主动 开 / #主动 关")
 
     override = await proactive_switch(tenant) if group_id else None
     snapshot = default_reply_gate_registry.peek(tenant)
@@ -286,4 +193,44 @@ async def _handle_proactive(bot: Bot, event: Event, matcher: Matcher) -> None:
                 int(window.get("scored_rounds", 0)),
             )
         )
-    await matcher.finish("\n".join(lines))
+    await context.finish("\n".join(lines))
+
+
+def install(application: Application, authorizer: Authorizer) -> None:
+    """注册显式原生命令，不创建框架权限或匹配器对象。"""
+
+    async def management(event: Event) -> bool:
+        return await authorizer.check("chat", event) and await _can_manage(event, authorizer)
+
+    async def owner(event: Event) -> bool:
+        key = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
+        return (
+            await authorizer.check("chat", event)
+            and key in authorizer.configuration.get_system()["system"]["superusers"]
+        )
+
+    async def persona(context: HandlerContext) -> None:
+        await _handle_persona(context.bot, context.event, context)
+
+    async def provider(context: HandlerContext) -> None:
+        await _handle_provider(context.bot, context.event, context)
+
+    async def clear(context: HandlerContext) -> None:
+        await _handle_clear(context.bot, context.event, context)
+
+    async def proactive(context: HandlerContext) -> None:
+        await _handle_proactive(context.bot, context.event, context, authorizer)
+
+    for name, parser, handler, permission in (
+        ("persona", _persona_name, persona, management),
+        ("provider", _provider_name, provider, owner),
+        ("clear", lambda text: "" if _strip_prefix(text.strip()) == "清空对话" else None, clear, management),
+        ("proactive", _proactive_argument, proactive, authorizer.guard("chat")),
+    ):
+        application.router.add(
+            f"chat:{name}",
+            handler,
+            match=lambda event, parse=parser: parse(event.message.plain_text()) if event.is_message else None,
+            permission=permission,
+            priority=5,
+        )

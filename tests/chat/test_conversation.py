@@ -38,7 +38,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             request=self.request,
             epoch=0,
             messages=[{"role": "user", "content": "你好"}],
-            runtime=SimpleNamespace(matcher=object()),
+            runtime=SimpleNamespace(sender=object()),
             provider_name="test",
             limit=30,
             entry=None,

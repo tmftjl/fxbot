@@ -1,0 +1,96 @@
+"""QQ 官方 HTTP 鉴权和单次请求，不在写操作失败后自动重试。"""
+
+from __future__ import annotations
+
+import math
+import time
+import asyncio
+
+import httpx
+
+from ...runtime.actions import BotOffline, ActionFailed
+
+API_BASE = "https://api.bot.qq.com"
+AUTH_URL = "https://api.bot.qq.com/app/getAppAccessToken"
+
+
+class QQAPIError(ActionFailed):
+    def __init__(self, status: int, code: int | None = None) -> None:
+        self.status, self.code = status, code
+        super().__init__(f"QQ 官方接口请求失败（HTTP {status}，code={code}）")
+
+
+class QQHTTP:
+    def __init__(self, app_id: str, secret: str, http: httpx.AsyncClient) -> None:
+        self.app_id, self._secret, self._http = app_id, secret, http
+        self._token = ""
+        self._expires_at = 0.0
+        self._lock = asyncio.Lock()
+        self._closed = False
+
+    async def token(self) -> str:
+        if self._closed:
+            raise BotOffline("QQ 客户端已关闭")
+        async with self._lock:
+            if self._closed:
+                raise BotOffline("QQ 客户端已关闭")
+            if time.monotonic() < self._expires_at:
+                return self._token
+            response = await self._http.post(AUTH_URL, json={"appId": self.app_id, "clientSecret": self._secret})
+            data = self._response(response)
+            if self._closed:
+                raise BotOffline("QQ 客户端已关闭")
+            token, ttl = data.get("access_token"), data.get("expires_in")
+            if isinstance(ttl, str) and ttl.isascii() and ttl.isdecimal():
+                ttl = int(ttl)
+            if (
+                not isinstance(token, str)
+                or not token
+                or type(ttl) not in {int, float}
+                or not math.isfinite(ttl)
+                or ttl <= 0
+            ):
+                raise ValueError("QQ 鉴权响应缺少有效 token 或有效期")
+            self._token = token
+            self._expires_at = time.monotonic() + ttl - min(30, ttl / 10)
+            return token
+
+    @staticmethod
+    def _response(response: httpx.Response) -> dict:
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("QQ 接口响应必须为对象")
+        if response.status_code < 200 or response.status_code >= 300 or data.get("code", 0) != 0:
+            code = data.get("code")
+            raise QQAPIError(response.status_code, code if type(code) is int else None)
+        return data
+
+    async def request(self, method: str, path: str, *, json=None, data=None, files=None, available=None) -> dict:
+        if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
+            raise ValueError("QQ 接口必须使用固定相对路径")
+        token = await self.token()
+        if self._closed:
+            raise BotOffline("QQ 客户端已关闭")
+        if available is not None:
+            available()
+        response = await self._http.request(
+            method,
+            API_BASE + path,
+            headers={"Authorization": f"QQBot {token}", "X-Union-Appid": self.app_id},
+            json=json,
+            data=data,
+            files=files,
+        )
+        if response.status_code == 204:
+            return {}
+        if response.status_code == 401 and self._token == token:
+            self._expires_at = 0
+            self._token = ""
+        return self._response(response)
+
+    async def close(self) -> None:
+        self._closed = True
+        self._token = ""
+        self._secret = ""
+        self._expires_at = 0
+        await self._http.aclose()

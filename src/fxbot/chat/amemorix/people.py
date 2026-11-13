@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 from sqlmodel import select
 
 from ...db import base_models
@@ -73,10 +73,14 @@ async def remember_person(
     try:
         async with base_models.async_maker() as session:
             row = (
-                await session.execute(
-                    select(ChatPerson).where(ChatPerson.tenant == tenant, ChatPerson.person_id == person_id)
+                (
+                    await session.execute(
+                        select(ChatPerson).where(ChatPerson.tenant == tenant, ChatPerson.person_id == person_id)
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if row is None:
                 row = ChatPerson(
                     tenant=tenant,
@@ -107,10 +111,14 @@ async def person_name(tenant: str, person_id: str) -> str:
     try:
         async with base_models.async_maker() as session:
             row = (
-                await session.execute(
-                    select(ChatPerson).where(ChatPerson.tenant == tenant, ChatPerson.person_id == person_id)
+                (
+                    await session.execute(
+                        select(ChatPerson).where(ChatPerson.tenant == tenant, ChatPerson.person_id == person_id)
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
     except Exception:
         return ""
     return str(getattr(row, "person_name", "") or "")

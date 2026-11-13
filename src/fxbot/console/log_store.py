@@ -9,7 +9,6 @@ from __future__ import annotations
 import sys
 import time
 import queue
-import atexit
 import sqlite3
 import threading
 import traceback
@@ -53,7 +52,7 @@ _drop_lock = threading.Lock()
 _start_lock = threading.Lock()
 _writer: _Writer | None = None
 _dropped = 0
-_stopped = False
+_stopped = True
 
 
 def log_db_path() -> Path:
@@ -64,12 +63,18 @@ def log_db_path() -> Path:
 def _connect() -> sqlite3.Connection:
     """打开日志库并确保表结构存在。"""
     conn = sqlite3.connect(log_db_path(), timeout=5.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.executescript(_SCHEMA)
-    conn.commit()
-    return conn
+    ready = False
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.executescript(_SCHEMA)
+        conn.commit()
+        ready = True
+        return conn
+    finally:
+        if not ready:
+            conn.close()
 
 
 def _take_dropped() -> int:
@@ -136,6 +141,7 @@ class _Writer(threading.Thread):
             finally:
                 for _ in batch:
                     _queue.task_done()
+        self._close()
 
     def _ensure_conn(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -147,7 +153,7 @@ class _Writer(threading.Thread):
             try:
                 self._conn.close()
             except sqlite3.Error:
-                pass
+                traceback.print_exc(file=sys.stderr)
             self._conn = None
 
     def _write(self, batch: list[dict[str, Any]]) -> None:
@@ -194,28 +200,32 @@ def _ensure_writer() -> None:
     global _writer
     if _writer is not None or _stopped:
         return
+    writer = _Writer()
+    writer.start()
+    _writer = writer
+
+
+def start() -> None:
+    """由应用显式开启日志持久化，不在导入时创建写线程。"""
+    global _stopped
     with _start_lock:
-        if _writer is not None or _stopped:
-            return
-        writer = _Writer()
-        writer.start()
-        _writer = writer
-        atexit.register(shutdown)
+        if not _stopped:
+            raise RuntimeError("日志持久化已有运行中的所有者")
+        _stopped = False
 
 
 def enqueue(item: dict[str, Any]) -> None:
     """日志处理器调用入口：只入队，绝不阻塞、绝不抛异常。"""
     if _LEVEL_RANK.get(str(item.get("level") or "").upper(), 0) < _LEVEL_RANK[_MIN_LEVEL]:
         return
-    try:
+    with _start_lock:
+        if _stopped:
+            return
         _ensure_writer()
-    except Exception:
-        traceback.print_exc(file=sys.stderr)
-        return
-    try:
-        _queue.put_nowait(item)
-    except queue.Full:
-        _drop_oldest(item)
+        try:
+            _queue.put_nowait(item)
+        except queue.Full:
+            _drop_oldest(item)
 
 
 def _escape_like(value: str) -> str:
@@ -253,19 +263,15 @@ def query(
     empty = {"items": [], "total": 0, "page": page, "page_size": page_size}
     if not log_db_path().exists():
         return empty
+    conn = _connect()
     try:
-        conn = _connect()
-        try:
-            total = int(conn.execute(f"SELECT COUNT(*) FROM log {where}", params).fetchone()[0])
-            rows = conn.execute(
-                f"SELECT id, ts, ts_ms, boot, level, name, text FROM log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
-                [*params, page_size, (page - 1) * page_size],
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        traceback.print_exc(file=sys.stderr)
-        return empty
+        total = int(conn.execute(f"SELECT COUNT(*) FROM log {where}", params).fetchone()[0])
+        rows = conn.execute(
+            f"SELECT id, ts, ts_ms, boot, level, name, text FROM log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+    finally:
+        conn.close()
     columns = ("id", "ts", "ts_ms", "boot", "level", "name", "text")
     items = [dict(zip(columns, row)) for row in rows]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -292,21 +298,15 @@ def flush() -> None:
 def shutdown() -> None:
     """排空队列后停止写线程。"""
     global _writer, _stopped
-    writer = _writer
-    _stopped = True
-    if writer is None:
-        return
-    try:
-        _queue.put_nowait(None)
-    except queue.Full:
-        try:
-            _queue.get_nowait()
-            _queue.task_done()
-        except queue.Empty:
-            pass
-        try:
-            _queue.put_nowait(None)
-        except queue.Full:
+    with _start_lock:
+        if _stopped:
             return
+        _stopped = True
+        writer = _writer
+        if writer is None:
+            return
+        _queue.put(None, timeout=5)
     writer.join(timeout=5.0)
+    if writer.is_alive():
+        raise RuntimeError("日志写线程未在期限内停止")
     _writer = None

@@ -15,19 +15,23 @@ import asyncio
 import binascii
 from typing import Any
 from pathlib import Path
+from weakref import WeakKeyDictionary
 from datetime import datetime, timezone
 
-from fastapi import Depends, APIRouter, HTTPException
-from nonebot import logger, get_bots
+from loguru import logger
+from fastapi import Depends, Request, APIRouter, HTTPException
 from sqlmodel import select
 from fastapi.responses import FileResponse
 
 from ...db import base_models
 from ..auth import sse_auth, bearer_auth
-from ...adapter import bind_bot
+from ...core import Capability, UnsupportedCapability
 from ...utils.tz import SHANGHAI_TZ
+from ..dependencies import runtime_for
+from ...runtime.actions import ActionFailed
+from ...core.application import Application
+from ...chat.session_hooks import session_target
 from ...chat.amemorix.models import ChatPerson
-from ...chat.memory.learning import tenant_target
 from ...chat.amemorix.runtime import amemorix_runtime
 from ...chat.amemorix._host.host_config import save_amemorix_config
 
@@ -49,35 +53,28 @@ def _tenant(value: str) -> str:
     return tenant
 
 
-_chat_names: dict[str, tuple[float, str]] = {}
+_chat_names: WeakKeyDictionary[Application, dict[str, tuple[float, str]]] = WeakKeyDictionary()
 
 
-async def _chat_name(chat_id: str) -> str:
+async def _chat_name(chat_id: str, application: Application) -> str:
     """用在线 Bot 查聊天显示名；离线或平台不支持时返回空串。"""
-    target = tenant_target(chat_id)
-    if target is None:
+    try:
+        target = session_target(chat_id)
+    except ValueError:
         return ""
-    cached = _chat_names.get(chat_id)
+    names = _chat_names.setdefault(application, {})
+    cached = names.get(chat_id)
     if cached and time.time() - cached[0] < (600 if cached[1] else 60):
         return cached[1]
-    bot_id = target.namespace.split(":", 1)[1] if ":" in target.namespace else ""
-    bot = next((item for bid, item in get_bots().items() if str(bid) == bot_id), None)
+    bot = application.get_bot(target.platform, target.bot_id)
     name = ""
-    if bot is not None:
-        client = bind_bot(bot)
+    if bot is not None and Capability.TARGET_LOOKUP in bot.capabilities:
         try:
-            info = await asyncio.wait_for(
-                client.get_group_info(target.item_id) if target.is_group else client.get_user(target.item_id),
-                timeout=3,
-            )
-            if isinstance(info, dict):
-                name = str(info.get("group_name" if target.is_group else "nickname") or "")
-            else:
-                name = str(getattr(info, "group_name" if target.is_group else "nickname", "") or "")
-        except Exception:
+            name = await asyncio.wait_for(bot.target_name(target), timeout=3)
+        except (ActionFailed, UnsupportedCapability, TimeoutError, OSError):
             name = ""
     name = name.strip()
-    _chat_names[chat_id] = (time.time(), name)
+    names[chat_id] = (time.time(), name)
     return name
 
 
@@ -1808,7 +1805,7 @@ async def upload_image(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/images/{asset_id}/detail")
-async def image_detail(asset_id: str, tenant: str) -> dict[str, Any]:
+async def image_detail(asset_id: str, tenant: str, request: Request) -> dict[str, Any]:
     """单张图片的文件信息、来源记录、认知说明与关联记忆。"""
     tenant = _tenant(tenant)
     kernel = await _kernel()
@@ -1821,7 +1818,7 @@ async def image_detail(asset_id: str, tenant: str) -> dict[str, Any]:
     occurrences = result.get("occurrences") or []
     for chat_id in {str(item.get("chat_id") or "") for item in occurrences}:
         if chat_id:
-            name = await _chat_name(chat_id)
+            name = await _chat_name(chat_id, runtime_for(request).application)
             for item in occurrences:
                 if str(item.get("chat_id") or "") == chat_id:
                     item["chat_name"] = name

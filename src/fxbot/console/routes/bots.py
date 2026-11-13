@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, APIRouter
-from nonebot import get_bots
+from fastapi import Depends, Request, APIRouter
 
 from ..auth import bearer_auth
 
@@ -11,9 +10,9 @@ router = APIRouter(prefix="/bots", tags=["fxbot-bots"], dependencies=[Depends(be
 
 
 @router.get("")
-async def list_bots() -> dict[str, list[dict[str, str]]]:
+async def list_bots(request: Request) -> dict[str, list[dict[str, str]]]:
     """列出在线 Bot。"""
     bots = []
-    for bot_id, bot in get_bots().items():
-        bots.append({"self_id": str(bot_id), "adapter": bot.adapter.get_name()})
+    for bot in request.app.state.runtime.bots:
+        bots.append({"self_id": bot.bot_id, "adapter": bot.platform})
     return {"bots": bots}

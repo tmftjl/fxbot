@@ -10,7 +10,7 @@ from typing import Any
 from pathlib import Path
 from collections.abc import Callable, Awaitable
 
-from nonebot import logger
+from loguru import logger
 
 from .base import ParseError
 from ..types import VideoResult
@@ -30,6 +30,11 @@ VIDEO_CODEC_RANK = {
 }
 
 _qr_login: Any | None = None
+
+
+def reset_qrcode() -> None:
+    global _qr_login
+    _qr_login = None
 
 
 async def parse(url: str) -> VideoResult:

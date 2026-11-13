@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 
 from sqlmodel import select
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import with_session
@@ -103,6 +104,12 @@ class MembershipService:
         return list(result.scalars().all())
 
     @with_session
+    async def get_code(self, session: AsyncSession, code: str) -> RenewCode | None:
+        """按精确续费码查询，不读取无关记录。"""
+        result = await session.execute(select(RenewCode).where(RenewCode.code == code))
+        return result.scalar_one_or_none()
+
+    @with_session
     async def delete_group(self, session: AsyncSession, group_id: str) -> bool:
         """删除会员群记录。"""
         group = await self.get_group(group_id, session=session)
@@ -120,6 +127,21 @@ class MembershipService:
         group.managed_by_bot = str(bot_id)
         group.updated_at = utc_now()
         return True
+
+    @with_session
+    async def mark_expired(self, session: AsyncSession, group_id: str) -> bool:
+        """仅将确实过期的活动记录转为过期，保留续费并发更新。"""
+        now = utc_now()
+        result = await session.execute(
+            update(MembershipGroup)
+            .where(
+                MembershipGroup.group_id == group_id,
+                MembershipGroup.status == "active",
+                MembershipGroup.expires_at <= now,
+            )
+            .values(status="expired", expired_at=now, updated_at=now)
+        )
+        return result.rowcount == 1
 
     @with_session
     async def extend_group(
@@ -218,6 +240,19 @@ class MembershipService:
         if renew_code.used_count >= renew_code.max_use:
             raise MembershipError("续费码使用次数已耗尽")
 
+        claimed = await session.execute(
+            update(RenewCode)
+            .where(
+                RenewCode.id == renew_code.id,
+                RenewCode.status == "active",
+                RenewCode.used_count < RenewCode.max_use,
+            )
+            .values(used_count=RenewCode.used_count + 1, updated_at=now)
+        )
+        if claimed.rowcount != 1:
+            raise MembershipError("续费码已被使用")
+        await session.refresh(renew_code)
+
         redeem_result = await self.extend_group(
             group_id,
             duration_value=renew_code.duration_value,
@@ -227,7 +262,6 @@ class MembershipService:
             code=renew_code.code,
             session=session,
         )
-        renew_code.used_count += 1
         renew_code.updated_at = now
         if renew_code.used_count >= renew_code.max_use:
             renew_code.status = "used"

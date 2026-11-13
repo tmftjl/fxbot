@@ -5,9 +5,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 from hashlib import sha1
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
-from nonebot import logger
+from loguru import logger
 
 from .proxy import Validator, ConfigProxy
 from ..utils.cache import cache
@@ -23,6 +23,12 @@ class ConfigManager:
     def __init__(self) -> None:
         self._proxies: dict[tuple[str, str], ConfigProxy] = {}
         self._bootstrapped = False
+        self._subscribers: list[Callable[[], None]] = []
+
+    def subscribe(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """显式订阅成功保存，不导入任何业务模块。"""
+        self._subscribers.append(callback)
+        return lambda: self._subscribers.remove(callback)
 
     def register(
         self,
@@ -143,18 +149,8 @@ class ConfigManager:
                 except Exception as exc:
                     logger.error(f"[Config] {proxy.namespace}/{proxy.filename} 缓存回滚失败: {exc}")
             raise
-        try:
-            from ..chat.memory.tasks import setup_memory_tasks
-
-            setup_memory_tasks()
-        except Exception as exc:
-            logger.warning(f"[Config] 聊天后台任务重配置失败: {exc}")
-        try:
-            from ..membership.tasks import setup_membership_tasks
-
-            setup_membership_tasks()
-        except Exception as exc:
-            logger.warning(f"[Config] 会员定时任务重配置失败: {exc}")
+        for callback in tuple(self._subscribers):
+            callback()
 
     def _registered_plugin_names(self) -> set[str]:
         """返回已注册插件配置命名空间。"""

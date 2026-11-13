@@ -6,10 +6,7 @@ from typing import Any
 from dataclasses import field, dataclass
 from collections.abc import Callable, Awaitable
 
-try:
-    from pydantic import BaseModel
-except ImportError:  # pragma: no cover
-    BaseModel = object  # type: ignore
+from pydantic import BaseModel
 
 ToolHandler = Callable[..., str | dict[str, Any] | Any | Awaitable[Any]]
 

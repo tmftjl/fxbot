@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from nonebot import logger
+from loguru import logger
 
 from .paths import package_root
 from ._host.host_config import load_amemorix_config
@@ -67,12 +67,9 @@ class AMemorixRuntime:
                 self._error = ""
                 return
             self._stopping = True
+            self._error = "长期记忆内核关闭尚未完成"
             try:
                 await kernel.shutdown()
-            except Exception as exc:
-                self._error = f"{type(exc).__name__}: {exc}"
-                logger.opt(exception=True).warning("[A_Memorix] 内核关闭失败")
-            else:
                 self._kernel = None
                 self._started = False
                 self._error = ""

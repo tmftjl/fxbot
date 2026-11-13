@@ -2,79 +2,13 @@
 
 from __future__ import annotations
 
-import ast
 import json
 from typing import Any
 from pathlib import Path
 
 from .types import perm_entry_default
 from ..utils.cache import cache
-from ..utils.paths import config_dir, built_in_plugins_dir
-
-
-def scan_plugins_for_permissions() -> dict[str, Any]:
-    """扫描内置子插件，生成权限配置初始结构。"""
-    result: dict[str, Any] = {"top": perm_entry_default(), "sub_plugins": {}}
-    sub_map = result["sub_plugins"]
-    base = built_in_plugins_dir()
-
-    if not base.exists():
-        return result
-
-    for plugin_dir in base.iterdir():
-        if not plugin_dir.is_dir() or not (plugin_dir / "__init__.py").exists():
-            continue
-        plugin_name = plugin_dir.name
-        node = sub_map.setdefault(plugin_name, {"top": perm_entry_default(), "commands": {}})
-        commands = node.setdefault("commands", {})
-        for file_path in plugin_dir.rglob("*.py"):
-            _scan_file_for_commands(file_path, commands)
-    return result
-
-
-def _scan_file_for_commands(file_path: Path, commands: dict[str, Any]) -> None:
-    """扫描单个 Python 文件中 P.on_* 和 P.permission_cmd 的命令名。"""
-    try:
-        tree = ast.parse(file_path.read_text(encoding="utf-8").lstrip("\ufeff"))
-    except Exception:
-        return
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
-            continue
-        if func.value.id != "P":
-            continue
-
-        if func.attr == "permission_cmd":
-            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                commands.setdefault(node.args[0].value, perm_entry_default())
-            continue
-
-        if func.attr == "on" or func.attr.startswith("on_"):
-            command_name: str | None = None
-            level = "member"
-            scene = "all"
-            for kw in node.keywords:
-                if kw.arg == "name" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                    command_name = kw.value.value
-                elif kw.arg == "level":
-                    level = _scan_enum_value(kw.value, "PermLevel") or level
-                elif kw.arg == "scene":
-                    scene = _scan_enum_value(kw.value, "PermScene") or scene
-            if command_name:
-                commands.setdefault(command_name, perm_entry_default(level=level, scene=scene))
-
-
-def _scan_enum_value(node: ast.AST, enum_name: str) -> str | None:
-    """读取 PermLevel/PermScene 的枚举字面量。"""
-    if not isinstance(node, ast.Attribute):
-        return None
-    if not isinstance(node.value, ast.Name) or node.value.id != enum_name:
-        return None
-    return node.attr.lower()
+from ..utils.paths import config_dir
 
 
 class PermissionStorage:
@@ -95,7 +29,7 @@ class PermissionStorage:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         if not self._path.exists():
             self._path.write_text(
-                json.dumps(scan_plugins_for_permissions(), ensure_ascii=False, indent=2),
+                json.dumps({"top": perm_entry_default(), "sub_plugins": {}}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 

@@ -6,7 +6,7 @@ import json
 import asyncio
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 from .store import tool_result_store
 from ..capabilities import condense_threshold, capabilities_config

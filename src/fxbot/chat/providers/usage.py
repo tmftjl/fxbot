@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from nonebot import logger
+from loguru import logger
 from sqlmodel import Field, SQLModel, select
 from sqlalchemy import func, delete
 from sqlalchemy.ext.asyncio import AsyncSession

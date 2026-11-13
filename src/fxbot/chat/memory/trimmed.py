@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 from collections import OrderedDict
 
-from nonebot import logger
+from loguru import logger
 
 from .config import expression_config
 from .jargon import learn_jargon
@@ -27,6 +27,15 @@ class TrimmedLearning:
         self.generations: dict[str, int] = {}
         self.ingest_tasks: dict[str, set[asyncio.Task]] = {}
         self.blocked: set[tuple[str, str]] = set()
+        self.stopping = False
+
+    def start(self) -> None:
+        """上一个生命周期的学习任务必须已结束。"""
+        tasks = [*self.tasks.values(), *(task for group in self.ingest_tasks.values() for task in group)]
+        if any(not task.done() for task in tasks):
+            raise RuntimeError("后台学习仍有活动任务")
+        self.tasks.clear()
+        self.ingest_tasks.clear()
         self.stopping = False
 
     def collect(self, tenant: str, messages: list[dict[str, Any]]) -> None:
@@ -71,7 +80,15 @@ class TrimmedLearning:
 
         task = asyncio.create_task(ingest())
         self.ingest_tasks.setdefault(tenant, set()).add(task)
-        task.add_done_callback(lambda done: self.ingest_tasks.get(tenant, set()).discard(done))
+        task.add_done_callback(lambda done: self._ingested(tenant, done))
+
+    def _ingested(self, tenant: str, task: asyncio.Task) -> None:
+        """完成后删除空任务组，不能把空集合当作遗留工作。"""
+        tasks = self.ingest_tasks.get(tenant)
+        if tasks is not None:
+            tasks.discard(task)
+            if not tasks:
+                self.ingest_tasks.pop(tenant)
 
     def schedule(self) -> None:
         """沿用 MaiBot 的每会话互斥与全局并发限制。"""

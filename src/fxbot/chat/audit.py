@@ -8,7 +8,7 @@ from weakref import WeakSet
 from contextvars import Context
 from collections.abc import Mapping, Callable
 
-from nonebot import logger
+from loguru import logger
 
 if TYPE_CHECKING:
     from .hooks import ChatHookContext

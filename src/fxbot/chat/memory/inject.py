@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 from .state import is_ready
 from .config import jargon_config, expression_config, tenant_learn_enabled

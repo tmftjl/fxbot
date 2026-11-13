@@ -7,7 +7,7 @@ from typing import Any
 from datetime import datetime
 from dataclasses import dataclass
 
-from ...adapter import HistoryMessage, fetch_group_history
+from ...core import BotClient, SessionTarget, HistoryMessage
 from ...utils.tz import SHANGHAI_TZ
 
 
@@ -26,18 +26,17 @@ def day_window(days: int, *, end: int, label: str) -> HistoryWindow:
 
 
 async def collect_messages(
-    bot: Any,
-    group_id: str,
+    bot: BotClient,
+    target: SessionTarget,
     window: HistoryWindow,
     *,
     limit: int,
     filter_self: bool,
 ) -> list[HistoryMessage]:
     """拉取窗口内消息；机器人自己的发言可选排除。"""
-    messages = await fetch_group_history(bot, group_id, start_time=window.start, limit=limit)
-    self_id = str(getattr(bot, "self_id", "") or "")
-    if filter_self and self_id:
-        messages = [message for message in messages if message.user_id != self_id]
+    messages = await bot.fetch_group_history(target, start_time=window.start, end_time=window.end, limit=limit)
+    if filter_self:
+        messages = [message for message in messages if message.user_id != bot.bot_id]
     return [message for message in messages if window.start <= message.timestamp < window.end]
 
 

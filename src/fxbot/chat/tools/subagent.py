@@ -12,7 +12,7 @@ import asyncio
 from typing import Any
 from dataclasses import field, dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from .types import ToolError, ToolContext
 from .result import tool_result_content
@@ -72,6 +72,13 @@ class _TaskManager:
     def __init__(self) -> None:
         self._tasks: dict[str, SubagentTask] = {}
         self._counter = 0
+        self._stopping = False
+
+    def open(self) -> None:
+        """允许新任务前确认旧任务已退出，丢弃上一生命周期的任务结果。"""
+        if any(task.handle is not None and not task.handle.done() for task in self._tasks.values()):
+            raise RuntimeError("子代理仍有活动任务")
+        self._tasks.clear()
         self._stopping = False
 
     def running_count(self, session_id: str) -> int:

@@ -12,7 +12,7 @@ from copy import deepcopy
 from typing import Any
 from dataclasses import dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from .planner import planner_config
 from .memory.prompts import learning_prompt

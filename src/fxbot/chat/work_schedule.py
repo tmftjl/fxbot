@@ -7,7 +7,7 @@ import asyncio
 from typing import Any
 from datetime import date, datetime
 
-from nonebot import logger
+from loguru import logger
 
 from ..config import get_manager as get_config_manager
 from ..utils.tz import now, as_shanghai

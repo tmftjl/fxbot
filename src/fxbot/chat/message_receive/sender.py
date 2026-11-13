@@ -9,11 +9,13 @@ import random
 import asyncio
 from time import perf_counter
 from typing import Any
+from pathlib import Path
 from functools import partial
 
-from nonebot import logger
+from loguru import logger
 
 from ..typo import TypoText, apply_typo, typo_config
+from ...core import Message, Capability, MessageSegment
 from ..emoji import mark_used, emoji_by_hash
 from ..hooks import ChatHookContext, guard, notify, hook_context
 from ..trace import turn_trace
@@ -21,7 +23,6 @@ from ..types import ChatRequest, ChatResponse, is_proactive
 from ..voice import synthesize, tts_enabled
 from ..memory import state as memory_state
 from ..session import history_enabled
-from ...adapter import build_message, supports_reply, build_reply_segment, build_message_segment
 from ..memory.models import ChatTurnItem, utc_now_naive
 from ..session_hooks import session_policy
 from ..work_schedule import can_reply
@@ -48,13 +49,8 @@ def parts(response: ChatResponse) -> list[str]:
 
 
 def _receipt_id(receipt: Any) -> str | None:
-    """取发送回执里的平台消息 ID，兼容字典与使用 id 字段的适配器。"""
-    if isinstance(receipt, dict):
-        value = receipt.get("message_id") or receipt.get("id")
-    else:
-        value = getattr(receipt, "message_id", None)
-        if value is None:
-            value = getattr(receipt, "id", None)
+    """平台客户端与控制台统一返回 message_id 回执。"""
+    value = receipt["message_id"]
     return str(value) if value is not None else None
 
 
@@ -73,7 +69,7 @@ def _always_alive() -> bool:
 
 def _bot_id(runtime: Any) -> str:
     """Bot 自身发送账号；引用计数用它判断上一条是不是自己说的。"""
-    return str(getattr(getattr(runtime, "bot", None), "self_id", "") or "")
+    return runtime.bot.bot_id if runtime.bot is not None else ""
 
 
 def _should_quote(request: ChatRequest, runtime: Any, part: str) -> bool:
@@ -92,42 +88,24 @@ def _should_quote(request: ChatRequest, runtime: Any, part: str) -> bool:
     return quote
 
 
-def first_payload(service: Any, request: ChatRequest, runtime: Any, part: str, user_ids: list[str]) -> Any:
-    """首段可带引用段与开头的 @ 段；构造失败时降级为纯文本。"""
+def first_payload(service: Any, request: ChatRequest, runtime: Any, part: str, user_ids: list[str]) -> Message | str:
+    """按平台已声明的能力构造消息，不以异常探测协议。"""
     request.metadata["sent_quote_id"] = ""
-    bot = getattr(runtime, "bot", None)
-    if bot is None:
+    if runtime.bot is None:
         return part
-    segments: list[Any] = []
-    if _should_quote(request, runtime, part):
-        try:
-            if supports_reply(bot):
-                target = str(request.metadata.get("reply_target_id") or request.message_id or "")
-                segments.append(build_reply_segment(bot, target))
-                request.metadata["sent_quote_id"] = target
-        except Exception:
-            logger.opt(exception=True).debug("[Chat] 引用构造失败，降级为纯文本")
-    if user_ids:
-        try:
-            segments.extend(build_message_segment(bot, "at", user_id) for user_id in user_ids)
-        except Exception:
-            logger.opt(exception=True).debug("[Chat] @ 段构造失败，降级为纯文本")
-            request.metadata["sent_quote_id"] = ""
-            return part
-    if not segments:
-        return part
-    try:
-        segments.append(build_message_segment(bot, "text", part))
-        return build_message(bot, *segments)
-    except Exception:
-        logger.opt(exception=True).debug("[Chat] 首段构造失败，降级为纯文本")
-        request.metadata["sent_quote_id"] = ""
-        return part
+    segments = []
+    if _should_quote(request, runtime, part) and Capability.REPLY in runtime.bot.capabilities:
+        target = str(request.metadata.get("reply_target_id") or request.message_id or "")
+        segments.append(MessageSegment.reply(target))
+        request.metadata["sent_quote_id"] = target
+    segments.extend(MessageSegment.mention(user_id) for user_id in user_ids)
+    segments.append(MessageSegment.text(part))
+    return Message(segments)
 
 
-async def send_pictures(service: Any, request: ChatRequest, response: ChatResponse, runtime: Any, matcher: Any) -> None:
+async def send_pictures(service: Any, request: ChatRequest, response: ChatResponse, runtime: Any, sender: Any) -> None:
     """正文成功后依序附图，成功回执才进入可见历史，清空后停止发送。"""
-    bot = getattr(runtime, "bot", None)
+    bot = runtime.bot
     if bot is None:
         return
     for index, picture in enumerate(response.metadata.get("attach_pictures", [])):
@@ -164,7 +142,7 @@ async def send_pictures(service: Any, request: ChatRequest, response: ChatRespon
                         visible=False,
                     )
                 return
-            receipt = await matcher.send(build_message(bot, build_message_segment(bot, "image", picture)))
+            receipt = await sender.send(Message([MessageSegment.image(picture)]))
         except Exception:
             logger.opt(exception=True).warning("[Chat] 回复附图发送失败")
             if persisted_id is not None:
@@ -190,15 +168,15 @@ async def send_pictures(service: Any, request: ChatRequest, response: ChatRespon
 
 
 async def send_voice(
-    runtime: Any, matcher: Any, text: str, alive: Any = None, *, context: ChatHookContext | None = None
+    runtime: Any, sender: Any, text: str, alive: Any = None, *, context: ChatHookContext | None = None
 ) -> bool:
     """给刚发出的文字补一条同内容语音；未开启、失败或轮次已失效时只跳过。"""
-    if getattr(runtime, "bot", None) is None or not tts_enabled():
+    if runtime.bot is None or not tts_enabled():
         return False
     if not await guard("send_guard", context or ChatHookContext("", phase="send"), kind="voice", text=text):
         return False
     audio = await synthesize(text)
-    bot = getattr(runtime, "bot", None)
+    bot = runtime.bot
     if audio is None or bot is None or not (alive or _always_alive)():
         return False
     if not await guard("send_guard", context or ChatHookContext("", phase="send"), kind="voice", text=text):
@@ -206,24 +184,18 @@ async def send_voice(
     if not (alive or _always_alive)():
         return False
     try:
-        segment = build_message_segment(bot, "record", audio)
-        await matcher.send(build_message(bot, segment))
+        await sender.send(Message([MessageSegment.voice(audio)]))
     except Exception:
         logger.opt(exception=True).debug("[Chat] 语音发送失败，已跳过")
         return False
     return True
 
 
-def correction_payload(runtime: Any, text: str, message_id: str | None) -> Any:
-    """纠正消息可引用刚发出的错字消息；构造失败时降级为纯文本。"""
-    bot = getattr(runtime, "bot", None)
-    if bot is None or not message_id:
+def correction_payload(runtime: Any, text: str, message_id: str | None) -> Message | str:
+    """仅在平台声明引用能力时构造引用。"""
+    if runtime.bot is None or not message_id or Capability.REPLY not in runtime.bot.capabilities:
         return text
-    try:
-        return build_message(bot, build_reply_segment(bot, message_id), build_message_segment(bot, "text", text))
-    except Exception:
-        logger.opt(exception=True).debug("[Chat] 纠正引用构造失败，降级为纯文本")
-        return text
+    return Message([MessageSegment.reply(message_id), MessageSegment.text(text)])
 
 
 def _quote_correction() -> bool:
@@ -240,7 +212,7 @@ def _quote_correction() -> bool:
 
 async def send_correction(
     runtime: Any,
-    matcher: Any,
+    sender: Any,
     text: str,
     message_id: str | None,
     alive: Any = None,
@@ -258,7 +230,7 @@ async def send_correction(
         return
     payload = correction_payload(runtime, text, message_id if _quote_correction() else None)
     try:
-        await matcher.send(payload)
+        await sender.send(payload)
     except Exception:
         logger.opt(exception=True).debug("[Chat] 纠正消息发送失败，已跳过")
 
@@ -268,7 +240,7 @@ async def deliver_emoji(
     request: ChatRequest,
     response: ChatResponse,
     runtime: Any,
-    matcher: Any,
+    sender: Any,
     row: Any,
     sequence: int,
     *,
@@ -277,7 +249,7 @@ async def deliver_emoji(
     """发送成功后记录表情的使用、平台回执和可见历史。"""
     if response.metadata.get("emoji_sent") or not _alive(service, request, response):
         return False
-    bot = getattr(runtime, "bot", None)
+    bot = runtime.bot
     if bot is None:
         return False
     content = f"[表情包: {row.description}]" if row.description else "[表情包]"
@@ -313,13 +285,13 @@ async def deliver_emoji(
                     request.session_id, identifier, generation=response.epoch, send_status="skipped", visible=False
                 )
             return False
-        segment = build_message_segment(bot, "image", row.path)
+        segment = MessageSegment.image(await asyncio.to_thread(Path(row.path).read_bytes))
         segments = [segment]
         quoted = False
-        if target_id and supports_reply(bot):
-            segments.insert(0, build_reply_segment(bot, target_id))
+        if target_id and Capability.REPLY in bot.capabilities:
+            segments.insert(0, MessageSegment.reply(target_id))
             quoted = True
-        receipt = await matcher.send(build_message(bot, *segments))
+        receipt = await sender.send(Message(segments))
     except Exception:
         logger.opt(exception=True).warning("[Chat] 表情发送失败")
         if identifier is not None:
@@ -354,13 +326,13 @@ async def send_emoji(
     request: ChatRequest,
     response: ChatResponse,
     runtime: Any,
-    matcher: Any,
+    sender: Any,
     sent: int,
     alive: Any = None,
 ) -> None:
     """正文发送后只交付 Planner 明确指定的表情附件。"""
     alive = alive or _always_alive
-    bot = getattr(runtime, "bot", None)
+    bot = runtime.bot
     if bot is None or not alive():
         return
     attached = str(response.metadata.get("attach_emoji") or "")
@@ -372,19 +344,19 @@ async def send_emoji(
                 request,
                 response,
                 runtime,
-                matcher,
+                sender,
                 row,
                 len(parts(response)) + len(response.metadata.get("attach_pictures", [])) + 1,
             )
         return
 
 
-async def send_parts(service: Any, request: ChatRequest, response: ChatResponse, runtime: Any, matcher: Any) -> str:
+async def send_parts(service: Any, request: ChatRequest, response: ChatResponse, runtime: Any, sender: Any) -> str:
     """发送回复并将交付终态补入生成阶段的追踪。"""
     started = perf_counter()
     delivery: dict[str, Any] = {"sent_parts": 0, "failed_index": None, "cancelled": False, "error": ""}
     try:
-        return await _send_parts(service, request, response, runtime, matcher, delivery)
+        return await _send_parts(service, request, response, runtime, sender, delivery)
     except asyncio.CancelledError:
         delivery["cancelled"] = True
         raise
@@ -449,7 +421,7 @@ async def record_send_trace(
 
 
 async def _send_parts(
-    service: Any, request: ChatRequest, response: ChatResponse, runtime: Any, matcher: Any, delivery: dict[str, Any]
+    service: Any, request: ChatRequest, response: ChatResponse, runtime: Any, sender: Any, delivery: dict[str, Any]
 ) -> str:
     """逐段发送；同租户发送期间不交错，任何一段失效后不再继续。"""
     send_queue = parts(response)
@@ -495,7 +467,7 @@ async def _send_parts(
                 else typo.text
             )
             try:
-                receipt = await matcher.send(payload)
+                receipt = await sender.send(payload)
             except Exception as exc:
                 logger.opt(exception=True).warning(f"[Chat] 回复第 {index + 1} 段发送失败: {exc}")
                 delivery["failed_index"] = index
@@ -513,15 +485,15 @@ async def _send_parts(
             sent_texts.append(typo.text)
             await notify("part_sent", hook_context(request, phase="send"), text=typo.text, part_index=index)
             if not direct:
-                await send_voice(runtime, matcher, body, alive, context=hook_context(request, phase="send"))
+                await send_voice(runtime, sender, body, alive, context=hook_context(request, phase="send"))
             if typo.correction:
                 await send_correction(
-                    runtime, matcher, typo.correction, receipt_id, alive, context=hook_context(request, phase="send")
+                    runtime, sender, typo.correction, receipt_id, alive, context=hook_context(request, phase="send")
                 )
         if sent_texts and not direct:
             if delivery.get("failed_index") is None and not delivery.get("cancelled"):
-                await send_pictures(service, request, response, runtime, matcher)
-            await send_emoji(service, request, response, runtime, matcher, len(sent_texts), alive)
+                await send_pictures(service, request, response, runtime, sender)
+            await send_emoji(service, request, response, runtime, sender, len(sent_texts), alive)
     reply_text = "\n".join(sent_texts)
     if sent_texts and not direct and history_enabled(request.is_group):
         chat_writeback.on_reply(

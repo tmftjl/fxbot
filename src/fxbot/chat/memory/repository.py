@@ -7,7 +7,7 @@ from typing import Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
-from nonebot import logger
+from loguru import logger
 from sqlmodel import select
 from sqlalchemy import case, func, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession

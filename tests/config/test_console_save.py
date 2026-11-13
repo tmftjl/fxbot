@@ -204,11 +204,7 @@ class ConsoleConfigSaveTests(unittest.IsolatedAsyncioTestCase):
     def test_successful_multi_namespace_save_updates_files_and_memory(self) -> None:
         updated = deepcopy(self.valid)
         updated["chat"]["max_context_size"] += 1
-        with (
-            patch("fxbot.chat.memory.tasks.setup_memory_tasks"),
-            patch("fxbot.membership.tasks.setup_membership_tasks"),
-        ):
-            self.manager.save_console_configs({"system": updated, "example": {"enabled": False}})
+        self.manager.save_console_configs({"system": updated, "example": {"enabled": False}})
         for proxy, expected in ((self.system, updated), (self.plugin, {"enabled": False})):
             with self.subTest(namespace=proxy.namespace):
                 self.assertEqual(proxy.storage.read(strict=True), expected)

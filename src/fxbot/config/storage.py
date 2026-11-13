@@ -8,8 +8,9 @@ from typing import Any
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from nonebot import logger
+from loguru import logger
 
+from .errors import ConfigFormatError
 from ..utils.paths import config_dir
 
 
@@ -35,13 +36,13 @@ class ConfigStorage:
             return {}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             if strict:
-                raise
+                raise ConfigFormatError("配置文件必须是有效的 UTF-8 JSON") from exc
             logger.warning(f"[Config] Invalid JSON in {self.path}: {exc}")
             return {}
         if strict and not isinstance(data, dict):
-            raise ValueError("配置必须是对象")
+            raise ConfigFormatError("配置必须是对象")
         return data if isinstance(data, dict) else {}
 
     def write(self, data: dict[str, Any]) -> None:

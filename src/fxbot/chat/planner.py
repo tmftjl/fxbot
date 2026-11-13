@@ -7,7 +7,7 @@ import json
 from typing import Any
 from dataclasses import dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from .types import ChatRequest
 from ..config import get_manager as get_config_manager

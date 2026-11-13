@@ -7,7 +7,7 @@ import sqlite3
 from typing import Any, TypeVar, Callable, Awaitable, ParamSpec, Concatenate
 from functools import wraps
 
-from nonebot import logger
+from loguru import logger
 from sqlmodel import Field, SQLModel, select
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -33,73 +33,70 @@ sqlite_semaphore: asyncio.Semaphore | None = None
 _db_init_lock = asyncio.Lock()
 _db_initialized = False
 
-# 全局迁移语句列表，其他模块可以往里追加 SQL
-exec_list: list[str] = []
-
 
 async def init_database() -> None:
-    """初始化 SQLite 数据库并创建表结构。"""
+    """初始化连接池及已登记模型，失败时释放部分资源并直接抛出。"""
     global _db_initialized, engine, async_maker, sqlite_semaphore
-    if _db_initialized:
-        return
-
     async with _db_init_lock:
         if _db_initialized:
             return
+        if engine is not None:
+            raise RuntimeError("数据库连接资源尚未释放")
+        candidate = create_async_engine(
+            DB_URL,
+            echo=False,
+            pool_recycle=1800,
+            connect_args={"check_same_thread": False},
+        )
 
-        logger.info("[DB] Initializing SQLite database...")
+        @event.listens_for(candidate.sync_engine, "connect")
+        def configure_sqlite(connection: sqlite3.Connection, record: Any) -> None:
+            """为每条连接设置确定的 SQLite 会话参数。"""
+            cursor = connection.cursor()
+            try:
+                for statement in (
+                    "PRAGMA journal_mode=WAL",
+                    "PRAGMA synchronous=NORMAL",
+                    "PRAGMA busy_timeout=5000",
+                    "PRAGMA cache_size=20000",
+                    "PRAGMA temp_store=MEMORY",
+                    "PRAGMA mmap_size=134217728",
+                    "PRAGMA optimize",
+                ):
+                    cursor.execute(statement)
+            finally:
+                cursor.close()
+
+        ready = False
         try:
-            eng = create_async_engine(
-                DB_URL,
-                echo=False,
-                pool_recycle=1800,
-                connect_args={"check_same_thread": False},
-            )
-
-            @event.listens_for(eng.sync_engine, "connect")
-            def _set_pragmas(
-                dbapi_connection: sqlite3.Connection,
-                _connection_record: Any,
-            ) -> None:
-                cur = dbapi_connection.cursor()
-                cur.execute("PRAGMA journal_mode=WAL")
-                cur.execute("PRAGMA synchronous=NORMAL")
-                cur.execute("PRAGMA busy_timeout=5000")
-                cur.execute("PRAGMA cache_size=20000")
-                cur.execute("PRAGMA temp_store=MEMORY")
-                cur.execute("PRAGMA mmap_size=134217728")
-                cur.execute("PRAGMA optimize")
-                cur.close()
-
-            engine = eng
+            async with candidate.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            engine = candidate
+            async_maker = async_sessionmaker(candidate, expire_on_commit=False, class_=AsyncSession)
             sqlite_semaphore = asyncio.Semaphore(20)
-            async_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-
-            async with engine.begin() as conn:
-                await conn.run_sync(SQLModel.metadata.create_all)
-
-            if exec_list:
-                logger.info(f"[DB] 执行 {len(exec_list)} 条迁移语句...")
-                async with engine.begin() as conn:
-                    from sqlalchemy import text
-
-                    for sql in exec_list:
-                        try:
-                            await conn.execute(text(sql))
-                            logger.debug(f"[DB] 迁移成功: {sql[:50]}...")
-                        except Exception as e:
-                            logger.debug(f"[DB] 迁移跳过 (可能已存在): {sql[:50]}... | {e}")
-
             _db_initialized = True
-            logger.info("[DB] SQLite initialized successfully")
-        except Exception as e:
-            logger.exception(f"[DB] Initialization failed: {e}")
-            raise ValueError("[DB] Initialization failed, please check environment and dependencies")
+            ready = True
+            logger.info("[DB] SQLite initialized")
+        finally:
+            if not ready:
+                await candidate.dispose()
 
 
 def is_initialized() -> bool:
     """数据库是否已初始化。"""
     return _db_initialized
+
+
+async def close_database() -> None:
+    """释放连接池并清空可用状态，失败不伪装成关闭成功。"""
+    global engine, async_maker, sqlite_semaphore, _db_initialized
+    async with _db_init_lock:
+        _db_initialized = False
+        if engine is not None:
+            await engine.dispose()
+        engine = None
+        async_maker = None
+        sqlite_semaphore = None
 
 
 def with_session(

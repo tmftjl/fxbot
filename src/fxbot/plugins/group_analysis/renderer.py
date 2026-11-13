@@ -12,7 +12,7 @@ from datetime import datetime
 from functools import lru_cache
 
 from PIL import Image, ImageDraw
-from nonebot import logger
+from loguru import logger
 
 from .atri import build_atri_html
 from ...utils.tz import SHANGHAI_TZ

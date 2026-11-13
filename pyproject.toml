@@ -4,15 +4,17 @@ version = "0.1.0"
 description = "FxBot standalone messaging application"
 requires-python = ">=3.10"
 dependencies = [
+    "loguru>=0.7.3",
     "pydantic",
     "sqlmodel==0.0.42",
     "sqlalchemy",
     "aiosqlite",
     "httpx[socks]",
+    "cryptography>=43.0.3",
     "openai>=1.0.0",
     "fastapi",
     "uvicorn",
-    "websockets",
+    "websockets>=15",
     "Pillow>=10.1",
     "numpy>=2.2.6",
     "scipy>=1.7.0",
@@ -22,18 +24,12 @@ dependencies = [
     "faiss-cpu>=1.11.0",
     "playwright>=1.40",
     "psutil>=5.9.0",
-    "arclet-alconna>=1.8.35,<2.0",
-    "matplotlib>=3.7.0",
     "pypinyin>=0.44.0,<1.0.0",
-    "python-dateutil>=2.8.2",
-    "PyYAML>=6.0",
-    "rapidfuzz>=3.9.0",
     "curl_cffi>=0.13.0,<1.0.0,!=0.14.0",
-    "bilibili-api-python>=17.4.1,<18.0.0",
 ]
 
 [project.optional-dependencies]
-dev = ["build", "setuptools>=61", "wheel", "ruff"]
+dev = ["build", "setuptools>=61", "wheel", "ruff", "packaging"]
 
 [project.scripts]
 fxbot = "fxbot.runtime.cli:main"
@@ -52,11 +48,14 @@ include = ["fxbot", "fxbot.*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-"*" = ["resources/**/*", "resource/**/*", "*.json"]
-fxbot = ["resources/**/*", "console/web/dist/**/*"]
-"fxbot.chat" = ["prompts/*.prompt"]
-"fxbot.chat.amemorix" = ["prompts/**/*.prompt"]
-"fxbot.plugins.help" = ["resources/**/*"]
-"fxbot.plugins.wuwa_emoji" = ["char_alias.json"]
-"fxbot.plugins.video_parser.parsers" = ["a_bogus.cjs"]
-"fxbot.plugins.infinite_gen2" = ["LICENSE"]
+"*" = [
+    "resources/**/*",
+    "resource/**/*",
+    "prompts/*.prompt",
+    "prompts/**/*.prompt",
+    "web/dist/**/*",
+    "*.json",
+    "*.cjs",
+    "LICENSE",
+    "requirements.txt",
+]

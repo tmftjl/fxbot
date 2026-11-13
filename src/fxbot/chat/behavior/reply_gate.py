@@ -13,7 +13,7 @@ from datetime import datetime
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 
-from nonebot import logger
+from loguru import logger
 
 from ...config import SYSTEM_DEFAULTS, get_manager as get_config_manager
 from ..bindings import TALK_VALUE, get_binding

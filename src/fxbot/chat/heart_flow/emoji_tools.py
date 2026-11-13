@@ -8,7 +8,7 @@ from typing import Any
 from itertools import count
 from dataclasses import replace
 
-from nonebot import logger
+from loguru import logger
 from pydantic import BaseModel
 
 from ..emoji import emoji_by_hash, emoji_catalog, emoji_collage, emoji_grid_shape
@@ -95,7 +95,7 @@ async def send_selected(service: Any, context: Any, reasoning: str, *, target_id
     rows = await emoji_catalog(request.session_id)
     if not rows:
         return {"ok": False, "error": "当前会话没有可用表情"}
-    matcher = getattr(context.runtime, "matcher", None)
+    matcher = getattr(context.runtime, "sender", None)
     bot = getattr(context.runtime, "bot", None)
     if matcher is None or bot is None:
         return {"ok": False, "error": "当前没有可用的发送目标"}

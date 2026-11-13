@@ -1,101 +1,28 @@
-"""入群验证：新成员限时回答图片验证码，答错或超时移出群。"""
+"""入群验证码的精确身份、限时状态及原生处理。"""
 
 from __future__ import annotations
 
 import io
-import json
 import time
 import random
-import asyncio
-from typing import Any
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageFont
-from nonebot import logger, on_notice, on_message
-from nonebot.rule import Rule
-from nonebot.params import RegexGroup
-from nonebot.matcher import Matcher
-from nonebot.adapters import Bot, Event
+from loguru import logger
 
-from . import P
-from ...adapter import (
-    UnsupportedCapability,
-    selfBot,
-    normalize_id,
-    platform_bot,
-    build_message,
-    event_user_id,
-    event_group_id,
-    event_plain_text,
-    build_message_segment,
-)
-from ...permission import PermLevel, PermScene
-from ...utils.cache import cache
+from ...core import Message, BotClient, Capability, SessionTarget, HandlerContext, MessageSegment, UnsupportedCapability
+from .service import GroupAdminService
+from ...core.plugin import Service, on_event, on_regex, scheduled, on_message
 from ...utils.paths import data_dir, package_root
-from ...permission.message_policy import should_process_fxbot_message
+from ...runtime.actions import ActionFailed
+from ...utils.json_file import read_json, write_json
 
-_CONFIG_FILE = data_dir("group_admin") / "join_verify.json"
-_CONFIG_KEY = ("join_verify", "configs")
 _TIMEOUT = 180
 _ATTEMPTS = 2
-_KICK = True
-_SWEEP_INTERVAL = 3.0
 _DIGITS = "23456789"
-_FONT_PATH = package_root() / "resources" / "fonts" / "MSGothic.ttc"
+_FONT_PATH = package_root() / "resources/fonts/MSGothic.ttc"
+_fonts = {}
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
-
-_fonts: dict[int, ImageFont.FreeTypeFont] = {}
-_sweeper: asyncio.Task[None] | None = None
-
-
-@dataclass
-class _Pending:
-    """一个人的待验证状态。"""
-
-    key: tuple[str, str, str, str]
-    bot: Any
-    group_id: str
-    user_id: str
-    code: str
-    attempts: int
-    tries: int
-    kick: bool
-    deadline: float
-
-
-_pending: dict[tuple[str, str, str, str], _Pending] = {}
-
-
-def _read_configs() -> dict[str, bool]:
-    """从磁盘读取各群的开关状态。"""
-    try:
-        data = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        logger.opt(exception=True).warning("[JoinVerify] 读取配置失败")
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {str(key): bool(value.get("enabled")) for key, value in data.items() if isinstance(value, dict)}
-
-
-def _load_configs() -> dict[str, bool]:
-    """读取各群的开关状态，按进程内缓存复用。"""
-    return cache.remember(_CONFIG_KEY, _read_configs)
-
-
-def _group_enabled(group_id: str) -> bool:
-    return _load_configs().get(str(group_id), False)
-
-
-def _set_enabled(group_id: str, enabled: bool) -> None:
-    configs = dict(_load_configs())
-    configs[str(group_id)] = enabled
-    _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = {key: {"enabled": value} for key, value in configs.items()}
-    _CONFIG_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    cache.set(_CONFIG_KEY, configs)
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
@@ -135,181 +62,186 @@ def _render_captcha(code: str) -> bytes:
     return buffer.getvalue()
 
 
-def _platform(bot: Any) -> str:
-    adapter = getattr(bot, "adapter", None)
-    get_name = getattr(adapter, "get_name", None)
-    return str(get_name() or "unknown") if callable(get_name) else "unknown"
+@dataclass
+class Pending:
+    target: SessionTarget
+    bot: BotClient
+    user_id: str
+    code: str
+    tries: int
+    deadline: float
 
 
-def _pending_key(bot: Any, event: Any) -> tuple[str, str, str, str] | None:
-    group_id = normalize_id(event_group_id(event))
-    user_id = normalize_id(event_user_id(event))
-    if not group_id or not user_id:
-        return None
-    return (_platform(bot), str(getattr(bot, "self_id", "") or ""), group_id, user_id)
+class JoinVerification(Service):
+    def __init__(self, service: GroupAdminService) -> None:
+        self.service = service
+        self.path = data_dir("group_admin") / "join_verify.json"
+        self.pending: dict[tuple[str, str], Pending] = {}
+
+    def configs(self) -> dict:
+        data = read_json(self.path, dict)
+        if not isinstance(data, dict):
+            raise ValueError("入群验证配置必须为对象")
+        for key, item in data.items():
+            if (
+                SessionTarget.from_key(key).kind != "group"
+                or not isinstance(item, dict)
+                or set(item) != {"enabled"}
+                or type(item.get("enabled")) is not bool
+            ):
+                raise ValueError("入群验证必须明确群身份和布尔开关")
+        return data
+
+    def enabled(self, target: SessionTarget) -> bool:
+        return self.configs().get(target.key(), {}).get("enabled", False)
+
+    async def toggle(self, context: HandlerContext) -> None:
+        data = self.configs()
+        enabled = "开启" in context.arguments
+        if enabled and Capability.MODERATION not in context.bot.capabilities:
+            await context.finish("当前平台不支持自动入群验证")
+        data[context.event.target.key()] = {"enabled": enabled}
+        write_json(self.path, data)
+        if not enabled:
+            for key in [key for key in self.pending if key[0] == context.event.target.key()]:
+                self.pending.pop(key)
+        await context.finish(f"已{'开启' if enabled else '关闭'}进群验证")
+
+    async def joined(self, context: HandlerContext) -> None:
+        event, bot = context.event, context.bot
+        target = event.target
+        key = (target.key(), event.user_id)
+        if not self.enabled(target) or event.user_id == bot.bot_id or key in self.pending:
+            return
+        if self.service.protected(target, event.user_id):
+            return
+        try:
+            self.service._online(bot, target)
+            own = await bot.member_role(target.target_id, bot.bot_id)
+            role = await bot.member_role(target.target_id, event.user_id)
+        except (ActionFailed, UnsupportedCapability, TimeoutError, OSError, ValueError):
+            logger.opt(exception=True).warning("无法确认入群成员身份，本次不执行自动验证")
+            return
+        if own not in {"admin", "owner"} or role != "member":
+            return
+        code = "".join(random.SystemRandom().choice(_DIGITS) for _ in range(4))
+        image = _render_captcha(code)
+        pending = Pending(target, bot, event.user_id, code, 0, time.monotonic() + _TIMEOUT)
+        self.pending[key] = pending
+        try:
+            await context.send(
+                Message(
+                    [
+                        MessageSegment.mention(event.user_id),
+                        MessageSegment.text(
+                            f" 请在 {_TIMEOUT} 秒内回复图片中的 4 位数字；答错 {_ATTEMPTS} 次或超时将移出。"
+                        ),
+                        MessageSegment.image(image),
+                    ]
+                )
+            )
+        except BaseException:
+            if self.pending.get(key) is pending:
+                self.pending.pop(key)
+            raise
+
+    def has_pending(self, event) -> bool:
+        return event.is_group and (event.target.key(), event.user_id) in self.pending
+
+    async def left(self, context: HandlerContext) -> None:
+        self.pending.pop((context.event.target.key(), context.event.user_id), None)
+
+    async def _notify(self, record: Pending, text: str) -> None:
+        if self.service.application.is_registered(record.bot):
+            await record.bot.send(
+                record.target,
+                Message(
+                    [
+                        MessageSegment.mention(record.user_id),
+                        MessageSegment.text(" " + text),
+                    ]
+                ),
+            )
+
+    async def _failed(self, record: Pending, reason: str) -> None:
+        if not self.enabled(record.target) or not self.service.application.is_registered(record.bot):
+            return
+        try:
+            removed = await self.service.automatic_kick(record.bot, record.target, record.user_id)
+        except (ActionFailed, UnsupportedCapability, TimeoutError, OSError, ValueError):
+            logger.opt(exception=True).warning("入群验证未完成自动移出")
+            removed = False
+        await self._notify(record, reason + ("，已移出本群" if removed else "，请管理员手动处理"))
+
+    async def answer(self, context: HandlerContext) -> None:
+        key = (context.event.target.key(), context.event.user_id)
+        record = self.pending.get(key)
+        if record is None:
+            return
+        if record.bot is not context.bot or not self.enabled(record.target):
+            self.pending.pop(key)
+            return
+        if record.deadline <= time.monotonic():
+            self.pending.pop(key)
+            await self._failed(record, "验证超时")
+            return
+        answer = "".join(context.event.message.plain_text().translate(_FULLWIDTH_DIGITS).split())
+        if answer == record.code:
+            self.pending.pop(key)
+            await self._notify(record, "验证通过，欢迎加入！")
+            return
+        if not answer:
+            await self._notify(record, "请回复图中 4 位数字")
+            return
+        record.tries += 1
+        if record.tries < _ATTEMPTS:
+            await self._notify(record, f"答案不对，还有 {_ATTEMPTS - record.tries} 次机会")
+            return
+        self.pending.pop(key)
+        await self._failed(record, "验证未通过")
+
+    async def sweep(self) -> None:
+        for key, record in tuple(self.pending.items()):
+            if record.deadline <= time.monotonic() and self.pending.get(key) is record:
+                self.pending.pop(key)
+                await self._failed(record, "验证超时")
+
+    async def close(self) -> None:
+        self.pending.clear()
 
 
-def _is_pending(bot: Bot, event: Event) -> bool:
-    key = _pending_key(bot, event)
-    return key is not None and key in _pending
-
-
-async def _is_group_admin(bot: Any, group_id: str, user_id: str) -> bool:
-    """群主和管理员不验证；查不到身份时按普通成员处理。"""
-    try:
-        role = await platform_bot(bot).get_group_member_role(group_id, user_id)
-    except Exception:
-        return False
-    return str(role or "") in {"admin", "owner", "administrator"}
-
-
-async def _kick(bot: Any, group_id: str, user_id: str) -> bool:
-    try:
-        await platform_bot(bot).kick(group_id, user_id)
-        return True
-    except UnsupportedCapability:
-        logger.info(f"[JoinVerify] 当前平台不支持自动移出: group={group_id}")
-        return False
-    except Exception as exc:
-        logger.opt(exception=True).warning(f"[JoinVerify] 移出成员失败: group={group_id} user={user_id} err={exc}")
-        return False
-
-
-async def _notify(bot: Any, group_id: str, user_id: str, text: str) -> None:
-    """在群里 @ 某人发一条提示。"""
-    try:
-        await platform_bot(bot).send_group_message(
-            group_id,
-            build_message(
-                bot,
-                build_message_segment(bot, "at", user_id),
-                build_message_segment(bot, "text", f" {text}"),
-            ),
-        )
-    except Exception as exc:
-        logger.opt(exception=True).warning(f"[JoinVerify] 发送提示失败: group={group_id} err={exc}")
-
-
-def _ensure_sweeper() -> None:
-    global _sweeper
-    if _sweeper is None:
-        _sweeper = asyncio.create_task(_sweep_loop())
-
-
-async def _sweep_loop() -> None:
-    """待验证为空时自动退出，下次入群再拉起。"""
-    global _sweeper
-    try:
-        while _pending:
-            await asyncio.sleep(_SWEEP_INTERVAL)
-            now = time.monotonic()
-            for record in [item for item in _pending.values() if item.deadline <= now]:
-                if _pending.pop(record.key, None) is not None:
-                    await _expire(record)
-    finally:
-        _sweeper = None
-
-
-async def _expire(record: _Pending) -> None:
-    if record.kick and await _kick(record.bot, record.group_id, record.user_id):
-        await _notify(record.bot, record.group_id, record.user_id, "验证超时，已移出本群")
-    else:
-        await _notify(record.bot, record.group_id, record.user_id, "验证超时，请管理员手动处理")
-
-
-join_notice = on_notice(priority=10, block=False, rule=Rule(should_process_fxbot_message))
-
-
-@join_notice.handle()
-async def _handle_join(bot: Bot, event: Event) -> None:
-    """新成员入群时发验证码。"""
-    join_info = selfBot.extract_group_member_add(event)
-    if not join_info:
-        return
-    group_id = join_info["group_id"]
-    user_id = join_info["user_id"]
-    if not group_id or not user_id or user_id == str(getattr(bot, "self_id", "") or ""):
-        return
-    if not _group_enabled(group_id):
-        return
-    key = (_platform(bot), str(getattr(bot, "self_id", "") or ""), group_id, user_id)
-    if key in _pending:
-        return
-    if await _is_group_admin(bot, group_id, user_id):
-        return
-    code = "".join(random.SystemRandom().choice(_DIGITS) for _ in range(4))
-    image = await asyncio.to_thread(_render_captcha, code)
-    _pending[key] = _Pending(
-        key=key,
-        bot=bot,
-        group_id=group_id,
-        user_id=user_id,
-        code=code,
-        attempts=_ATTEMPTS,
-        tries=0,
-        kick=_KICK,
-        deadline=time.monotonic() + _TIMEOUT,
-    )
-    _ensure_sweeper()
-    hint = f" 请在 {_TIMEOUT} 秒内回复图中 4 位数字，答错 {_ATTEMPTS} 次或超时将被移出本群。"
-    await selfBot.send(
-        event,
-        build_message(
-            bot,
-            build_message_segment(bot, "at", user_id),
-            build_message_segment(bot, "text", hint),
-            build_message_segment(bot, "image", image),
-        ),
-    )
-
-
-answer_matcher = on_message(priority=1, block=True, rule=Rule(_is_pending) & Rule(should_process_fxbot_message))
-
-
-@answer_matcher.handle()
-async def _handle_answer(bot: Bot, event: Event, matcher: Matcher) -> None:
-    """验证期间该成员的所有消息都在这里消费，不再进入命令和 AI。"""
-    key = _pending_key(bot, event)
-    record = _pending.get(key) if key else None
-    if record is None:
-        return
-    answer = "".join(str(event_plain_text(event) or "").translate(_FULLWIDTH_DIGITS).split())
-    if not answer:
-        await _notify(bot, record.group_id, record.user_id, f"请在 {_TIMEOUT} 秒内回复图中的 4 位数字")
-        return
-    if answer == record.code:
-        _pending.pop(key, None)
-        await _notify(bot, record.group_id, record.user_id, "验证通过，欢迎加入！")
-        await matcher.finish()
-    record.tries += 1
-    remaining = record.attempts - record.tries
-    if remaining > 0:
-        await _notify(bot, record.group_id, record.user_id, f"答案不对，还有 {remaining} 次机会")
-        await matcher.finish()
-    _pending.pop(key, None)
-    if record.kick and await _kick(bot, record.group_id, record.user_id):
-        await _notify(bot, record.group_id, record.user_id, "验证未通过，已移出本群")
-    else:
-        await _notify(bot, record.group_id, record.user_id, "验证未通过，可能是人机，请管理员手动处理")
-    await matcher.finish()
-
-
-verify_cmd = P.on_regex(
-    r"^[#＃](开启|关闭)进群验证\s*$",
-    name="join_verify",
-    display_name="进群验证",
-    priority=5,
-    block=True,
-    level=PermLevel.ADMIN,
-    scene=PermScene.GROUP,
+@on_regex(
+    r"^[#＃](开启|关闭)进群验证\s*$", name="join_verify", display_name="进群验证开关", level="admin", scene="group"
 )
+async def toggle(context):
+    await context.service(verification).toggle(context)
 
 
-@verify_cmd.handle()
-async def _handle_verify_cmd(matcher: Matcher, event: Event, groups: tuple = RegexGroup()) -> None:
-    group_id = normalize_id(event_group_id(event))
-    if not group_id:
-        await matcher.finish("请在群聊中使用")
-    enabled = bool(groups) and groups[0] == "开启"
-    _set_enabled(group_id, enabled)
-    await matcher.finish(f"已{'开启' if enabled else '关闭'}进群验证")
+@on_event("member_joined", name="join_notice", display_name="入群验证", scene="group", priority=10)
+async def joined(context):
+    await context.service(verification).joined(context)
+
+
+@on_event("member_left", name="left", scene="group", priority=0)
+async def left(context):
+    await context.service(verification).left(context)
+
+
+async def has_pending(context):
+    return context.service(verification).has_pending(context.event)
+
+
+@on_message(name="verification_answer", scene="group", priority=1, when=has_pending)
+async def answer(context):
+    await context.service(verification).answer(context)
+
+
+def verification(runtime):
+    service = JoinVerification(GroupAdminService(runtime.application, runtime.authorizer))
+    service.configs()
+    return service
+
+
+@scheduled(interval=3, name="join_verify")
+async def sweep(context):
+    await context.service(verification).sweep()

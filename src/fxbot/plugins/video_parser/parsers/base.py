@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import html
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from ..types import VideoResult
 from ..config import cfg_platforms
@@ -64,39 +64,37 @@ def _text_variants(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys((first, second, third)))
 
 
+def _platform_for_url(url: str) -> str | None:
+    if re.fullmatch(r"BV[0-9A-Za-z]{10}|av\d{6,}", url, re.I):
+        return "bilibili"
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return None
+    groups = {
+        "douyin": ("douyin.com", "iesdouyin.com"),
+        "kuaishou": ("kuaishou.com", "chenzhongtech.com"),
+        "xiaohongshu": ("xiaohongshu.com", "xhslink.com"),
+        "weibo": ("weibo.com", "weibo.cn"),
+        "bilibili": ("bilibili.com", "b23.tv", "bili2233.cn"),
+    }
+    host = parsed.hostname
+    for platform, hosts in groups.items():
+        if any(host == domain or host.endswith("." + domain) for domain in hosts):
+            return platform
+    return None
+
+
 def _is_supported_url(url: str) -> bool:
-    """判断 URL 是否属于已支持的平台。"""
-    lower = url.lower()
-    return any(marker in lower for marker in SUPPORTED_URL_MARKERS)
+    return _platform_for_url(url) is not None
 
 
 def can_parse_url(url: str) -> bool:
-    """判断 URL 当前是否可以解析。"""
     return _match_enabled_platform(url) is not None
 
 
 def _match_enabled_platform(url: str) -> str | None:
-    """匹配当前启用的平台。"""
-    platforms = cfg_platforms()
-    lower = url.lower()
-
-    if platforms.get("douyin", True) and ("douyin.com" in lower or "iesdouyin.com" in lower):
-        return "douyin"
-    if platforms.get("kuaishou", True) and ("kuaishou.com" in lower or "chenzhongtech.com" in lower):
-        return "kuaishou"
-    if platforms.get("xiaohongshu", True) and ("xiaohongshu.com" in lower or "xhslink.com" in lower):
-        return "xiaohongshu"
-    if platforms.get("weibo", True) and ("weibo.com" in lower or "weibo.cn" in lower):
-        return "weibo"
-    if platforms.get("bilibili", True) and (
-        "bilibili.com" in lower
-        or "b23.tv" in lower
-        or "bili2233.cn" in lower
-        or re.fullmatch(r"BV[0-9A-Za-z]{10}", url)
-        or re.fullmatch(r"av\d{6,}", url, re.IGNORECASE)
-    ):
-        return "bilibili"
-    return None
+    platform = _platform_for_url(url)
+    return platform if platform and cfg_platforms()[platform] else None
 
 
 async def parse_url(url: str) -> VideoResult:

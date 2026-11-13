@@ -1,345 +1,144 @@
-"""续费、查到期和控制台登录命令。"""
+"""直接注册到核心路由的会员自助和管理命令。"""
 
 from __future__ import annotations
 
 import re
-from typing import Any
 from datetime import datetime, timezone
 
-from nonebot import get_bots, get_driver
-from sqlmodel import select
-from nonebot.matcher import Matcher
-from nonebot.adapters import Bot, Event
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from ..db import with_session
-from .guard import membership_guard
-from .models import MembershipGroup
-from ..config import get_manager as get_config_manager
-from ..plugin import Plugin
+from ..core import Event, SessionTarget, HandlerContext
+from .guard import MembershipGuard
+from .tasks import MembershipMaintenance
+from ..config import ConfigManager
 from .contact import renewal_contact_text, format_membership_expiry
-from .service import MembershipError, membership_service
-from ..adapter import selfBot, normalize_id, event_user_id, event_group_id, event_plain_text
-from ..permission import PermLevel, PermScene
+from .service import MembershipError, MembershipService
 from ..console.auth import rotate_console_token
-
-P = Plugin("membership", category="system", display_name="会员系统")
-
-_UNIT_TO_SERVICE = {"天": "day", "月": "month", "年": "year"}
-_SERVICE_TO_UNIT = {
-    "day": "天",
-    "days": "天",
-    "d": "天",
-    "month": "月",
-    "months": "月",
-    "m": "月",
-    "year": "年",
-    "years": "年",
-    "y": "年",
-}
+from ..core.application import Application
+from ..runtime.settings import Settings
 
 
-class _MembershipCommandStore:
-    """会员命令数据库操作。"""
+class MembershipCommands:
+    """显式持有业务依赖，处理器只接收核心上下文。"""
 
-    @with_session
-    async def adjust_managed_bots(self, session: AsyncSession, groups_by_bot: dict[str, list[Any]]) -> tuple[int, int]:
-        result = await session.execute(select(MembershipGroup))
-        rows = {row.group_id: row for row in result.scalars().all()}
-        updated_count = 0
-        unchanged_count = 0
+    def __init__(
+        self,
+        application: Application,
+        config: ConfigManager,
+        service: MembershipService,
+        guard: MembershipGuard,
+        settings: Settings,
+        maintenance: MembershipMaintenance,
+    ) -> None:
+        """绑定本应用的依赖，不查询全局框架注册表。"""
+        self.application = application
+        self.config = config
+        self.service = service
+        self.guard = guard
+        self.settings = settings
+        self.maintenance = maintenance
 
-        for bot_id, groups in groups_by_bot.items():
-            for item in groups:
-                group_id = normalize_id(
-                    item.get("group_id") if isinstance(item, dict) else getattr(item, "group_id", None)
-                )
-                if not group_id or group_id not in rows:
-                    continue
-                row = rows[group_id]
-                if row.managed_by_bot == str(bot_id):
-                    unchanged_count += 1
-                    continue
-                row.managed_by_bot = str(bot_id)
-                updated_count += 1
+    async def owner(self, event: Event) -> bool:
+        """管理命令同时要求私聊和明确的完整主人身份。"""
+        identity = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
+        return event.target.kind == "private" and identity in self.config.get_system()["system"]["superusers"]
 
-        return updated_count, unchanged_count
+    def install(self) -> None:
+        """注册自助命令和独立保护的管理命令。"""
+        router = self.application.router
+        router.regex("membership:renew", r"^ww续费[A-Za-z0-9_]+$", self.renew)
+        router.regex("membership:expiry", r"^ww到期$", self.expiry)
+        router.regex("membership:prompt", r"^ww(?:拉群|续费)$", self.prompt)
+        router.regex("membership:generate", r"^ww生成续费码\d+(?:天|月|年)$", self.generate, permission=self.owner)
+        router.regex("membership:console_login", r"^今汐登录$", self.console_login, permission=self.owner)
+        router.regex("membership:adjust", r"^ww续费调整$", self.adjust_bots, permission=self.owner)
+        router.regex("membership:check", r"^ww检查会员$", self.check, permission=self.owner)
 
+    async def renew(self, context: HandlerContext) -> None:
+        """在当前完整群身份下兑换，成功后立即刷新门禁缓存。"""
+        if not context.event.is_group:
+            await context.finish("续费码只能在群聊中使用哦")
+        group = context.event.target.key()
+        code = context.arguments.removeprefix("ww续费")
+        row = await self.service.get_code(code)
+        if row is None or row.status != "active" or row.used_count >= row.max_use:
+            await context.finish("该续费码无效或已被使用")
+        try:
+            result = await self.service.redeem_code(
+                code,
+                group,
+                operator_user_id=context.event.user_id,
+                managed_by_bot=context.event.target.bot_key(),
+            )
+        except MembershipError:
+            await context.finish("该续费码当前不可用，请联系管理员核对")
+        await self.guard.invalidate(group)
+        units = {"day": "天", "month": "月", "year": "年"}
+        duration = f"{row.duration_value}{units[row.duration_unit]}"
+        date = format_membership_expiry(result.after_expires_at)
+        await context.finish(f"本群会员已成功续费{duration}，到期时间：{date}")
 
-_command_store = _MembershipCommandStore()
-
-console_login_cmd = P.on_regex(
-    r"^今汐登录$",
-    name="console_login",
-    display_name="控制台登录",
-    priority=5,
-    block=True,
-    level=PermLevel.SUPERUSER,
-    scene=PermScene.PRIVATE,
-    log=True,
-)
-
-gen_code_cmd = P.on_regex(
-    r"^ww生成续费码(\d+)(天|月|年)$",
-    name="membership_generate_code",
-    display_name="生成续费码",
-    priority=5,
-    block=True,
-    level=PermLevel.SUPERUSER,
-    scene=PermScene.PRIVATE,
-    log=True,
-)
-
-renew_cmd = P.on_regex(
-    r"^ww续费([A-Za-z0-9_]+)$",
-    name="membership_renew",
-    display_name="续费",
-    priority=5,
-    block=True,
-    log=True,
-)
-
-expiry_cmd = P.on_regex(
-    r"^ww到期$",
-    name="membership_expiry",
-    display_name="查到期",
-    priority=5,
-    block=True,
-    log=True,
-)
-
-prompt_cmd = P.on_regex(
-    r"^ww(拉群|续费)$",
-    name="membership_prompt",
-    display_name="续费提示",
-    priority=5,
-    block=True,
-    log=True,
-)
-
-adjust_bot_cmd = P.on_regex(
-    r"^ww续费调整$",
-    name="membership_adjust_bot",
-    display_name="续费调整",
-    priority=5,
-    block=True,
-    level=PermLevel.SUPERUSER,
-    scene=PermScene.PRIVATE,
-    log=True,
-)
-
-manual_check_cmd = P.on_regex(
-    r"^ww检查会员$",
-    name="membership_manual_check",
-    display_name="检查会员",
-    priority=5,
-    block=True,
-    level=PermLevel.SUPERUSER,
-    scene=PermScene.PRIVATE,
-    log=True,
-)
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    """将 datetime 转为 UTC aware 对象。"""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _format_cn(value: datetime | None) -> str:
-    """格式化旧版会员命令时间。"""
-    return "永久" if value is None else format_membership_expiry(value)
-
-
-def _days_remaining(value: datetime) -> int:
-    """按自然日计算剩余天数。"""
-    expires_at = _as_utc(value)
-    if expires_at is None:
-        return 999999
-    return (expires_at.date() - datetime.now(timezone.utc).date()).days
-
-
-def _membership_cfg() -> dict[str, Any]:
-    """读取会员配置。"""
-    cfg = get_config_manager().get_system()
-    return cfg["membership"]
-
-
-def _console_url(token: str) -> str:
-    """生成控制台登录地址。"""
-    path = "/fxbot"
-    host = str(get_driver().config.host)
-    port = int(get_driver().config.port)
-    return f"http://{host}:{port}{path}?token={token}"
-
-
-def _code_unit(unit: str) -> str:
-    """转换中文续费单位。"""
-    return _UNIT_TO_SERVICE[unit]
-
-
-def _row_unit_cn(unit: str) -> str:
-    """转换续费码单位为中文。"""
-    return _SERVICE_TO_UNIT.get(str(unit).lower(), str(unit))
-
-
-def _is_private(event: Any) -> bool:
-    """判断是否为私聊事件。"""
-    return event_group_id(event) is None
-
-
-async def _find_code(code: str):
-    """按续费码查找当前记录。"""
-    rows = await membership_service.list_codes()
-    target = str(code).strip()
-    for row in rows:
-        if row.code == target:
-            return row
-    return None
-
-
-@console_login_cmd.handle()
-async def _handle_console_login(matcher: Matcher, event: Event) -> None:
-    """处理控制台登录命令。"""
-    if not _is_private(event):
-        await matcher.finish("请在私聊使用该命令")
-    token = rotate_console_token()
-    await matcher.finish(f"控制台登录地址：{_console_url(token)}")
-
-
-@gen_code_cmd.handle()
-async def _handle_generate_code(matcher: Matcher, event: Event) -> None:
-    """处理生成续费码命令。"""
-    if not _is_private(event):
-        await matcher.finish("为安全起见，请在私聊生成续费码")
-    matched = event_plain_text(event)
-    match = re.match(r"^ww生成续费码(\d+)(天|月|年)$", matched)
-    if not match:
-        await matcher.finish("格式错误")
-    length = int(match.group(1))
-    unit = match.group(2)
-    try:
-        row = await membership_service.generate_code(
-            duration_value=length,
-            duration_unit=_code_unit(unit),
-            max_use=1,
-        )
-    except MembershipError as exc:
-        await matcher.finish(str(exc))
-    public_code = f"ww续费{row.code}"
-    await matcher.finish(
-        f"已生成续费码（默认一次性）：{public_code}\n请将其发送到需要开通/续费的群聊中（首次开通也使用此码）"
-    )
-
-
-@renew_cmd.handle()
-async def _handle_renew(matcher: Matcher, bot: Bot, event: Event) -> None:
-    """处理群续费命令。"""
-    group_id = normalize_id(event_group_id(event))
-    if not group_id:
-        await matcher.finish("续费码只能在群聊中使用哦")
-
-    matched = event_plain_text(event)
-    match = re.match(r"^ww续费([A-Za-z0-9_]+)$", matched)
-    if not match:
-        await matcher.finish("格式错误")
-    code = match.group(1)
-
-    row = await _find_code(code)
-    if row is None or row.status != "active" or row.used_count >= row.max_use:
-        await matcher.finish("该续费码无效或已被使用")
-    try:
-        result = await membership_service.redeem_code(
-            code,
-            group_id,
-            operator_user_id=normalize_id(event_user_id(event)),
-            managed_by_bot=str(bot.self_id),
-        )
-        await membership_guard.invalidate(group_id)
-    except MembershipError as exc:
-        await matcher.finish(str(exc))
-
-    duration = f"{row.duration_value}{_row_unit_cn(row.duration_unit)}"
-    await matcher.finish(f"本群会员已成功续费{duration}，到期时间：{_format_cn(result.after_expires_at)}")
-
-
-@expiry_cmd.handle()
-async def _handle_expiry(matcher: Matcher, event: Event) -> None:
-    """处理到期查询命令。"""
-    group_id = normalize_id(event_group_id(event))
-    if not group_id:
-        await matcher.finish("该指令需在群聊中使用")
-
-    try:
-        group = await membership_service.get_group(group_id)
-    except Exception:
-        await matcher.finish("记录损坏，无法解析到期时间")
-
-    if group is None:
-        await matcher.finish("未找到本群的会员记录")
-
-    expires_at = _as_utc(group.expires_at)
-    if expires_at is None:
-        status = "有效"
-    else:
-        days = _days_remaining(expires_at)
-        if days < 0 or group.status != "active":
+    async def expiry(self, context: HandlerContext) -> None:
+        """直接查询群会员，不依赖已经放行的门禁缓存。"""
+        if not context.event.is_group:
+            await context.finish("该指令需在群聊中使用")
+        group = await self.service.get_group(context.event.target.key())
+        if group is None:
+            await context.finish("未找到本群的会员记录")
+        expires = group.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        days = (expires.date() - datetime.now(timezone.utc).date()).days if expires else None
+        if group.status != "active" or days is not None and days < 0:
             status = "已到期"
         elif days == 0:
             status = "今天到期"
         else:
-            status = f"有效(剩余{days}天)"
+            status = "有效" if days is None else f"有效(剩余{days}天)"
+        date = "永久" if expires is None else format_membership_expiry(expires)
+        reply = f"本群会员状态：{status}\n到期时间：{date}"
+        if expires is not None:
+            reply += f"\n{renewal_contact_text()}"
+        await context.finish(reply)
 
-    reply = f"本群会员状态：{status}\n到期时间：{_format_cn(group.expires_at)}"
-    if group.expires_at is not None:
-        reply += f"\n{renewal_contact_text()}"
-    await matcher.finish(reply)
+    async def prompt(self, context: HandlerContext) -> None:
+        """提供首次开通和续费入口。"""
+        await context.finish("如需首次开通或续费，请联系管理员购买续费码，在群内直接发送即可生效")
 
+    async def generate(self, context: HandlerContext) -> None:
+        """仅主人私聊生成一次性续费码。"""
+        match = re.fullmatch(r"ww生成续费码(\d+)(天|月|年)", context.arguments)
+        duration = int(match[1])
+        if duration <= 0:
+            await context.finish("续费时长必须大于零")
+        units = {"天": "day", "月": "month", "年": "year"}
+        row = await self.service.generate_code(duration_value=duration, duration_unit=units[match[2]], max_use=1)
+        await context.finish(f"已生成一次性续费码：ww续费{row.code}\n请在需要开通或续费的群中发送")
 
-@prompt_cmd.handle()
-async def _handle_prompt(matcher: Matcher) -> None:
-    """处理续费提示命令。"""
-    await matcher.finish("如需首次开通或续费,请联系管理员购买续费码（会员开通码），在群内直接发送即可生效")
+    async def console_login(self, context: HandlerContext) -> None:
+        """仅向主人私聊发送重置后的控制台访问令牌。"""
+        token = rotate_console_token()
+        await context.finish(f"控制台登录地址：http://{self.settings.host}:{self.settings.port}/fxbot?token={token}")
 
+    async def check(self, context: HandlerContext) -> None:
+        """主人显式触发一次会员维护。"""
+        result = await self.maintenance.process()
+        await context.finish(f"已处理过期{result.expired}个群，退出{result.left}个群")
 
-@adjust_bot_cmd.handle()
-async def _handle_adjust_bot(matcher: Matcher, event: Event) -> None:
-    """处理续费调整命令。"""
-    if not _is_private(event):
-        await matcher.finish("续费调整命令请在私聊使用")
-
-    bots = get_bots()
-    if not bots:
-        await matcher.finish("当前无在线机器人，无法执行续费调整")
-
-    failed_bots: list[str] = []
-    groups_by_bot: dict[str, list[Any]] = {}
-
-    for bot_id, bot in bots.items():
-        try:
-            groups_by_bot[str(bot_id)] = list(await selfBot.get_group_list())
-        except Exception:
-            failed_bots.append(str(bot_id))
-            continue
-
-    updated_count, unchanged_count = await _command_store.adjust_managed_bots(groups_by_bot)
-
-    await membership_guard.reload_all_cache()
-    result_msg = f"续费调整完成\n更新: {updated_count} 个群\n未变: {unchanged_count} 个群"
-    if failed_bots:
-        result_msg += f"\n失败bot: {', '.join(failed_bots)}"
-    await matcher.finish(result_msg)
-
-
-@manual_check_cmd.handle()
-async def _handle_manual_check(matcher: Matcher, event: Event) -> None:
-    """手动执行会员检查。"""
-    if not _is_private(event):
-        await matcher.finish("会员检查命令请在私聊使用")
-    from .tasks import check_and_process_memberships
-
-    result = await check_and_process_memberships()
-    await matcher.finish(f"已处理过期{result.expired}个群，退出{result.left}个群")
+    async def adjust_bots(self, context: HandlerContext) -> None:
+        """根据完整平台会话身份校准已登记群的管理连接。"""
+        records = {row.group_id: row for row in await self.service.list_groups()}
+        changed = unchanged = 0
+        for bot in self.application.bots:
+            groups = await bot.get_groups()
+            for group in groups:
+                target = SessionTarget(bot.platform, bot.bot_id, "group", str(group["group_id"]))
+                row = records.get(target.key())
+                if row is None:
+                    continue
+                manager = target.bot_key()
+                if row.managed_by_bot == manager:
+                    unchanged += 1
+                else:
+                    await self.service.update_managed_bot(row.group_id, manager)
+                    changed += 1
+                    await self.guard.invalidate(row.group_id)
+        await context.finish(f"续费调整完成\n更新: {changed} 个群\n未变: {unchanged} 个群")

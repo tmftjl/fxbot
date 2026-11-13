@@ -13,8 +13,9 @@ from datetime import datetime
 from contextlib import nullcontext
 from collections.abc import Callable
 
-from nonebot import logger
+from loguru import logger
 
+from ..core import Capability
 from .hooks import ChatHookContext, guard, notify, hook_context, filter_reply_text, system_prompt_sections
 from .tools import ToolRuntime, subagent as subagent_module, tool_result_store
 from .trace import TurnTrace, turn_trace
@@ -25,7 +26,6 @@ from .vision import describe_images, vision_configured
 from ..config import get_manager as get_config_manager
 from .replyer import prompt, generator
 from .session import ChatSessionStore, history_limit, default_session_store
-from ..adapter import get_bot_group_role
 from .personas import get_persona_text, effective_persona_name
 from ..utils.tz import now
 from .providers import LLMResponse
@@ -235,12 +235,12 @@ class ChatService:
             logger.debug(f"[Chat] 回复已被新触发取代，取消发送: session={request.session_id}")
             await sender_module.record_send_trace(request, response, cancelled=True)
             return False
-        matcher = getattr(runtime, "matcher", None)
-        if matcher is None:
+        sender = runtime.sender if runtime is not None else None
+        if sender is None:
             logger.warning("[Chat] 缺少发送目标，已跳过发送")
             await sender_module.record_send_trace(request, response, error="缺少发送目标", failed_index=0)
             return False
-        return bool(await self._send_parts(request, response, runtime, matcher))
+        return bool(await self._send_parts(request, response, runtime, sender))
 
     async def _pause_turn(self, request: ChatRequest, seconds: float) -> bool:
         """锁外等待；被同一用户的新触发取代时作废本轮，新消息可提前唤醒。"""
@@ -286,11 +286,11 @@ class ChatService:
                 logger.debug(f"[Chat] Focus 回复已被新触发取代，取消发送: session={request.session_id}")
                 await sender_module.record_send_trace(request, response, cancelled=True)
                 return ""
-            matcher = getattr(runtime, "matcher", None)
-            if matcher is None:
+            sender = runtime.sender
+            if sender is None:
                 await sender_module.record_send_trace(request, response, error="缺少发送目标", failed_index=0)
                 return ""
-            sent_text = await self._send_parts(request, response, runtime, matcher)
+            sent_text = await self._send_parts(request, response, runtime, sender)
             if not is_valid():
                 return ""
             return sent_text
@@ -344,16 +344,16 @@ class ChatService:
         return response
 
     async def _send_emoji(
-        self, request: ChatRequest, response: ChatResponse, runtime: ToolRuntime | None, matcher: Any, sent: int
+        self, request: ChatRequest, response: ChatResponse, runtime: ToolRuntime | None, sender: Any, sent: int
     ) -> None:
         """正文发送后补一条表情；失败只降级，不影响正文。"""
-        await sender_module.send_emoji(self, request, response, runtime, matcher, sent)
+        await sender_module.send_emoji(self, request, response, runtime or ToolRuntime(), sender, sent)
 
     async def _send_parts(
-        self, request: ChatRequest, response: ChatResponse, runtime: ToolRuntime | None, matcher: Any
+        self, request: ChatRequest, response: ChatResponse, runtime: ToolRuntime | None, sender: Any
     ) -> str:
         """逐段发送；同租户发送期间不交错，任何一段失效后不再继续。"""
-        return await sender_module.send_parts(self, request, response, runtime, matcher)
+        return await sender_module.send_parts(self, request, response, runtime or ToolRuntime(), sender)
 
     async def ensure_hydrated(self, session_id: str, *, is_group: bool = True) -> None:
         """接入触发前恢复历史与持久化代次，供路由捕获准确的 generation。"""
@@ -675,6 +675,7 @@ class ChatService:
 
     async def _direct_reply(self, request: ChatRequest, runtime: ToolRuntime | None, provider: Any) -> ChatResponse:
         """只用人格原文、直聊系统段、可见短期历史与当前消息调用回复模型。"""
+        runtime = runtime or ToolRuntime()
         chat_cfg = get_config_manager().get_system()["chat"]
         epoch = (
             request.accepted_epoch
@@ -687,7 +688,7 @@ class ChatService:
             request.metadata.get("persona_name") or effective_persona_name(request.session_id, chat_cfg.get("persona"))
         )
         request.metadata["bot_name"] = name
-        request.metadata["bot_id"] = str(getattr(getattr(runtime, "bot", None), "self_id", "") or "")
+        request.metadata["bot_id"] = runtime.bot.bot_id if runtime.bot is not None else ""
         content: str | list[dict[str, Any]] = request.text
         if request.images:
             content = [{"type": "text", "text": request.text}] if request.text else []
@@ -782,10 +783,14 @@ class ChatService:
         proactive = is_proactive(request)
         user_content = prompt.build_user_content(request)
         current_content = prompt.truncate_content(user_content)
-        request.metadata["bot_group_role"] = await get_bot_group_role(getattr(runtime, "bot", None), request.group_id)
+        request.metadata["bot_group_role"] = (
+            await runtime.bot.bot_group_role(request.group_id)
+            if runtime.bot is not None and request.group_id and Capability.GROUP_ROLE in runtime.bot.capabilities
+            else None
+        )
         effective_persona, persona_text = prompt.build_persona_text(request, chat_cfg, behavior)
         request.metadata["bot_name"] = effective_persona
-        request.metadata["bot_id"] = str(getattr(getattr(runtime, "bot", None), "self_id", "") or "")
+        request.metadata["bot_id"] = runtime.bot.bot_id if runtime.bot is not None else ""
 
         description_task = None
         try:

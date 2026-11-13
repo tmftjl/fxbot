@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from loguru import logger
 from fastapi import Depends, APIRouter, HTTPException
 
 from ..auth import bearer_auth
@@ -27,6 +28,7 @@ async def update_permissions(payload: dict[str, Any]) -> dict[str, Any]:
     """保存权限配置。"""
     try:
         get_storage().save(payload)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, ValueError):
+        logger.opt(exception=True).error("权限配置保存失败")
+        raise HTTPException(status_code=500, detail="权限配置保存失败") from None
     return {"success": True}

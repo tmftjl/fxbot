@@ -1,142 +1,67 @@
-"""NapCat 图片外显功能。"""
+"""应用级图片外显策略，不修改平台消息类。"""
 
 from __future__ import annotations
 
 import random
-from typing import Any
 
-from nonebot import logger, get_driver
-from nonebot.matcher import Matcher
-from nonebot.adapters import Event
+import httpx
 
 from .config import get_config, save_config, cfg_image_display
-from ...plugin import Plugin
-from ...adapter import selfBot
-from ...permission import PermLevel, PermScene
+from ...core.types import Message, MessageSegment
 from ...utils.http import get_shared_async_client
-
-P = Plugin(
-    "entertain",
-    display_name="娱乐",
-    enabled=True,
-    level=PermLevel.LOW,
-    scene=PermScene.ALL,
-)
-
-_hitokoto_cache = "Ciallo~"
-_original_image: Any = None
-_patched = False
+from ...core.plugin import on_regex, outgoing, scheduled
 
 
-async def _fetch_hitokoto(api_url: str) -> str:
-    """从一言接口刷新外显文本缓存。"""
-    global _hitokoto_cache
-    try:
-        client = await get_shared_async_client()
-        response = await client.get(api_url)
-        response.raise_for_status()
-        text = response.text.strip()
-    except Exception:
-        logger.opt(exception=True).debug("[NapCat] 获取图片外显一言失败")
-        return _hitokoto_cache
-    if text:
-        _hitokoto_cache = text
-    return _hitokoto_cache
+class ImageDisplay:
+    def __init__(self):
+        self.cached_text = "Ciallo~"
+
+    def transform(self, bot, target, message: Message) -> Message:
+        cfg = cfg_image_display()
+        if bot.platform != "onebot11" or not cfg["enabled"]:
+            return message
+        text = cfg["text"] if cfg["type"] == 1 else self.cached_text if cfg["type"] == 2 else random.choice(cfg["list"])
+        return Message(
+            [
+                MessageSegment("image", {**part.data, "summary": text}) if part.type == "image" else part
+                for part in message.segments
+            ]
+        )
+
+    async def refresh(self) -> None:
+        cfg = cfg_image_display()
+        if not cfg["enabled"] or cfg["type"] != 2 or not cfg["api"]:
+            return
+        try:
+            response = await (await get_shared_async_client()).get(cfg["api"])
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return
+        if text := response.text.strip():
+            self.cached_text = text[:512]
+
+    async def handle(self, context) -> None:
+        if context.bot.platform != "onebot11":
+            await context.finish("当前平台不支持图片外显")
+        cfg = get_config()
+        cfg["image_display"]["enabled"] = "开启" in context.arguments
+        save_config(cfg)
+        await context.send("已开启图片外显" if cfg["image_display"]["enabled"] else "已关闭图片外显")
 
 
-def _get_summary_text(cfg: dict[str, Any]) -> str:
-    """生成图片外显文本。"""
-    display_type = int(cfg["type"])
-    if display_type == 1:
-        return str(cfg["text"])
-    if display_type == 2:
-        return _hitokoto_cache
-    if display_type == 3:
-        items = cfg["list"]
-        if isinstance(items, list) and items:
-            return str(random.choice(items))
-        return "[图片]"
-    return "Ciallo~"
+@on_regex(r"^[#＃](开启|关闭)图片外显", name="toggle_image_display", display_name="图片外显开关", level="superuser")
+async def toggle_image_display(context):
+    await display.handle(context)
 
 
-def enable_image_summary() -> bool:
-    """启用 OneBot V11 图片外显补丁。"""
-    global _original_image, _patched
-
-    try:
-        message_segment = selfBot.message_segment_class()
-    except RuntimeError:
-        logger.debug("[NapCat] 当前没有唯一 Bot，跳过图片外显初始化")
-        return False
-    if message_segment is None:
-        logger.debug("[NapCat] OneBot V11 未安装，跳过图片外显补丁")
-        return False
-    if _patched:
-        return True
-
-    _original_image = message_segment.image
-
-    def _patched_image(file: Any, *args: Any, **kwargs: Any):
-        segment = _original_image(file, *args, **kwargs)
-        if cfg_image_display()["enabled"]:
-            segment.data["summary"] = _get_summary_text(cfg_image_display())
-        return segment
-
-    message_segment.image = _patched_image
-    _patched = True
-    logger.info("[NapCat] 图片外显功能已启用")
-    return True
+display = ImageDisplay()
 
 
-def disable_image_summary() -> bool:
-    """关闭 OneBot V11 图片外显补丁。"""
-    global _patched
-
-    try:
-        message_segment = selfBot.message_segment_class()
-    except RuntimeError:
-        return False
-    if message_segment is None or _original_image is None:
-        return False
-    if _patched:
-        message_segment.image = _original_image
-        _patched = False
-        logger.info("[NapCat] 图片外显功能已关闭")
-    return True
+@outgoing
+def image_summary(bot, target, message):
+    return display.transform(bot, target, message)
 
 
-toggle_cmd = P.on_regex(
-    r"^[#＃](开启|关闭)图片外显",
-    name="toggle_image_display",
-    display_name="图片外显开关",
-    priority=5,
-    block=True,
-    level=PermLevel.SUPERUSER,
-    scene=PermScene.ALL,
-)
-
-
-@toggle_cmd.handle()
-async def _handle_toggle(matcher: Matcher, event: Event) -> None:
-    """处理图片外显开关。"""
-    text = str(event.get_plaintext()) if hasattr(event, "get_plaintext") else ""
-    enabled = "开启" in text
-    cfg = get_config()
-    cfg["image_display"]["enabled"] = enabled
-    save_config(cfg)
-
-    ok = enable_image_summary() if enabled else disable_image_summary()
-    status = "开启" if enabled else "关闭"
-    if not ok and enabled:
-        await matcher.finish("OneBot V11 未安装，无法开启图片外显")
-    await matcher.finish(f"已{status}图片外显")
-
-
-@get_driver().on_startup
-async def _init_image_display() -> None:
-    """启动时初始化图片外显状态。"""
-    cfg = cfg_image_display()
-    if cfg["enabled"] and int(cfg["type"]) == 2:
-        await _fetch_hitokoto(str(cfg["api"]))
-    if cfg["enabled"]:
-        enable_image_summary()
+@scheduled(interval=600, name="image_display")
+async def refresh(context):
+    await display.refresh()

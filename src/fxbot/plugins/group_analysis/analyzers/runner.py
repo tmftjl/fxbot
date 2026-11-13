@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from nonebot import logger
+from loguru import logger
 
 from .quote import GoldenQuoteAnalyzer
 from .title import UserTitleAnalyzer
@@ -71,7 +71,7 @@ async def analyze(
     quote_messages = [msg for msg in messages if 2 <= len(msg["content"]) <= 500]
     usage: dict[str, int] = {}
     try:
-        async with fallback_provider("utils") as model:
+        async with fallback_provider("utils", group_id) as model:
             results = await asyncio.gather(
                 TopicAnalyzer(model, int(flags["max_topics"]), persona).analyze(messages)
                 if topic_enabled

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from nonebot import logger
+from loguru import logger
 
 from ....config import get_manager
 from ....utils.paths import config_dir
@@ -86,9 +86,7 @@ class ModelConfigView:
                     api_provider=str(name),
                 )
             )
-            api_providers.append(
-                APIProvider(name=str(name), base_url=str(raw.get("base_url") or ""))
-            )
+            api_providers.append(APIProvider(name=str(name), base_url=str(raw.get("base_url") or "")))
             if provider_type == "embedding" and model_name:
                 embedding_models.append(model_name)
         self.models = models
