@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from ...core import BotClient, SessionTarget, HistoryMessage
 from ...utils.tz import SHANGHAI_TZ
+from ...core.capabilities import Capability
 
 
 @dataclass(slots=True)
@@ -34,7 +35,9 @@ async def collect_messages(
     filter_self: bool,
 ) -> list[HistoryMessage]:
     """拉取窗口内消息；机器人自己的发言可选排除。"""
-    messages = await bot.fetch_group_history(target, start_time=window.start, end_time=window.end, limit=limit)
+    messages = await bot.capabilities.require(Capability.HISTORY).fetch_group_history(
+        target, start_time=window.start, end_time=window.end, limit=limit
+    )
     if filter_self:
         messages = [message for message in messages if message.user_id != bot.bot_id]
     return [message for message in messages if window.start <= message.timestamp < window.end]

@@ -1,18 +1,23 @@
-"""显式注册、顺序执行的消息路由。"""
+"""按优先级分组、同组并发执行的消息路由。"""
 
 from __future__ import annotations
 
-import re
 import logging
-from typing import Any
+from typing import Any, Unpack, TypeVar, NoReturn, TypedDict
+from itertools import groupby
 from dataclasses import field, dataclass
-from collections.abc import Mapping, Callable, Awaitable
+from collections.abc import Callable, Awaitable
 
 from .types import Event, Message, BotClient
 from .context import bind_event, reset_event
+from .matching import Match, MatchResult, event_match, regex_match, command_match, message_match
+from .services import ServiceScope
+from .contracts import ApplicationServices
+from .concurrency import run_concurrently
 
 logger = logging.getLogger(__name__)
 Guard = Callable[[Event], Awaitable[bool]]
+T = TypeVar("T")
 
 
 class _Finished(Exception):
@@ -25,21 +30,26 @@ class HandlerContext:
 
     bot: BotClient
     event: Event
-    arguments: str
-    services: Mapping[str, Any] = field(default_factory=dict)
-    runtime: Any = None
+    match: MatchResult
+    scope: ServiceScope = field(default_factory=ServiceScope)
+    app_services: ApplicationServices | None = None
+    state: dict[str, object] = field(default_factory=dict)
 
-    def service(self, factory):
-        from .services import resolve_service
+    @property
+    def arguments(self) -> str:
+        return self.match.arguments
 
-        return resolve_service(self, factory)
+    def service(self, factory: Callable[[ApplicationServices], T]) -> T:
+        if self.app_services is None:
+            raise RuntimeError("当前处理器没有应用服务上下文")
+        return self.scope.resolve(factory, self.app_services)
 
     async def send(self, message: Message | str) -> Any:
         """通过捕获的目标发送，不依赖全局当前 Bot。"""
         content = Message.text(message) if isinstance(message, str) else message
         return await self.bot.send(self.event.target, content)
 
-    async def finish(self, message: Message | str | None = None) -> None:
+    async def finish(self, message: Message | str | None = None) -> NoReturn:
         """可选发送后结束当前处理器，是否阻断由路由设置决定。"""
         if message is not None:
             await self.send(message)
@@ -47,7 +57,16 @@ class HandlerContext:
 
 
 Handler = Callable[[HandlerContext], Awaitable[None]]
-Match = Callable[[Event], str | None]
+ContextCheck = Callable[[HandlerContext], Awaitable[bool]]
+
+
+class RouteOptions(TypedDict, total=False):
+    permission: ContextCheck | None
+    rule: ContextCheck | None
+    priority: int
+    block: bool
+    scope: ServiceScope | None
+    app_services: ApplicationServices | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -68,19 +87,27 @@ class _Route:
     name: str
     handler: Handler
     match: Match
-    permission: Guard | None
-    rule: Guard | None
+    permission: ContextCheck | None
+    rule: ContextCheck | None
     priority: int
     block: bool
+    scope: ServiceScope | None
+    app_services: ApplicationServices | None
 
 
 class Router:
-    """按优先级和注册顺序执行消息处理器，同级不并发。"""
+    """优先级之间顺序推进，同级响应器并发，结果按注册顺序收集。"""
 
     def __init__(self) -> None:
         """建立实例私有的路由及预处理列表。"""
         self._routes: list[_Route] = []
         self._preprocessors: list[Guard] = []
+        self._groups: tuple[tuple[_Route, ...], ...] = ()
+
+    def validate_names(self, names: tuple[str, ...]) -> None:
+        existing = {route.name for route in self._routes}
+        if len(names) != len(set(names)) or existing.intersection(names):
+            raise ValueError("路由名称必须唯一")
 
     def add_preprocessor(self, guard: Guard) -> None:
         """注册全局准入检查，返回 False 或异常均停止事件处理。"""
@@ -92,10 +119,12 @@ class Router:
         handler: Handler,
         *,
         match: Match,
-        permission: Guard | None = None,
-        rule: Guard | None = None,
+        permission: ContextCheck | None = None,
+        rule: ContextCheck | None = None,
         priority: int = 5,
         block: bool = True,
+        scope: ServiceScope | None = None,
+        app_services: ApplicationServices | None = None,
     ) -> None:
         """注册显式匹配函数，无权限函数表示公开路由。"""
         if not isinstance(name, str) or not name or any(route.name == name for route in self._routes):
@@ -104,56 +133,33 @@ class Router:
             raise ValueError("路由优先级必须为整数")
         if not isinstance(block, bool):
             raise ValueError("路由阻断设置必须为布尔值")
-        self._routes.append(_Route(name, handler, match, permission, rule, priority, block))
-
-    def command(self, name: str, command: str, handler: Handler, **options: Any) -> None:
-        """注册大小写敏感的完整命令词，参数必须由空白分隔，前缀需显式给出。"""
-        if not isinstance(command, str) or not command or any(char.isspace() for char in command):
-            raise ValueError("命令词必须非空且不含空白")
-
-        def match(event: Event) -> str | None:
-            """返回命令参数，未命中返回 None。"""
-            if not event.is_message:
-                return None
-            words = event.message.plain_text().strip().split(maxsplit=1)
-            if not words or words[0] != command:
-                return None
-            return words[1] if len(words) == 2 else ""
-
-        self.add(name, handler, match=match, **options)
-
-    def message(self, name: str, handler: Handler, **options: Any) -> None:
-        """注册通用消息处理，规则通过后将文本作为参数。"""
-        self.add(
-            name,
-            handler,
-            match=lambda event: event.message.plain_text() if event.is_message else None,
-            **options,
+        self._routes.append(_Route(name, handler, match, permission, rule, priority, block, scope, app_services))
+        self._groups = tuple(
+            tuple(group)
+            for _, group in groupby(
+                sorted(self._routes, key=lambda route: route.priority), key=lambda route: route.priority
+            )
         )
 
-    def regex(self, name: str, pattern: str, handler: Handler, **options: Any) -> None:
-        """注册文本正则路由，参数为匹配到的完整文本。"""
-        expression = re.compile(pattern)
+    def command(self, name: str, command: str, handler: Handler, **options: Unpack[RouteOptions]) -> None:
+        self.add(name, handler, match=command_match(command, prefixes=("",)), **options)
 
-        def match(event: Event) -> str | None:
-            """非消息事件不参与文本匹配。"""
-            if not event.is_message:
-                return None
-            result = expression.search(event.message.plain_text())
-            return result.group(0) if result is not None else None
+    def message(self, name: str, handler: Handler, **options: Unpack[RouteOptions]) -> None:
+        self.add(name, handler, match=message_match, **options)
 
-        self.add(name, handler, match=match, **options)
+    def regex(self, name: str, pattern: str, handler: Handler, **options: Unpack[RouteOptions]) -> None:
+        self.add(name, handler, match=regex_match(pattern, strip=False), **options)
 
-    def event(self, name: str, event_type: str, handler: Handler, **options: Any) -> None:
-        """按规范化事件类型注册通知处理器。"""
-        self.add(name, handler, match=lambda event: "" if event.event_type == event_type else None, **options)
+    def event(self, name: str, event_type: str, handler: Handler, **options: Unpack[RouteOptions]) -> None:
+        self.add(name, handler, match=event_match(event_type), **options)
 
     async def dispatch(self, bot: BotClient, event: Event) -> DispatchResult:
         """分发单条事件，异常闭锁、取消传播，并在全部退出路径恢复上下文。"""
         token = bind_event(bot, event)
         handled: list[str] = []
         denied: list[str] = []
-        routes = sorted(self._routes, key=lambda route: route.priority)
+        failed: list[str] = []
+        groups = self._groups
         preprocessors = tuple(self._preprocessors)
         try:
             for guard in preprocessors:
@@ -163,24 +169,43 @@ class Router:
                 except Exception:
                     logger.exception("事件准入检查失败")
                     return DispatchResult(failed=("preprocessor",), blocked=True, rejected=True)
-            for route in routes:
-                try:
-                    arguments = route.match(event)
-                    if arguments is None or (route.rule is not None and await route.rule(event) is not True):
-                        continue
-                    if route.permission is not None and await route.permission(event) is not True:
-                        denied.append(route.name)
-                        continue
-                    handled.append(route.name)
-                    try:
-                        await route.handler(HandlerContext(bot, event, arguments))
-                    except _Finished:
-                        pass
-                except Exception:
-                    logger.exception("路由执行失败: %s", route.name)
-                    return DispatchResult(tuple(handled), tuple(denied), (route.name,), blocked=True)
-                if route.block:
-                    return DispatchResult(tuple(handled), tuple(denied), blocked=True)
+            for group in groups:
+                results = await run_concurrently(self._dispatch_route(route, bot, event) for route in group)
+                for result in results:
+                    handled.extend(result.handled)
+                    denied.extend(result.denied)
+                    failed.extend(result.failed)
+                if any(result.blocked for result in results):
+                    return DispatchResult(tuple(handled), tuple(denied), tuple(failed), blocked=True)
             return DispatchResult(tuple(handled), tuple(denied))
         finally:
             reset_event(token)
+
+    async def _dispatch_route(self, route: _Route, bot: BotClient, event: Event) -> DispatchResult:
+        handled: tuple[str, ...] = ()
+        try:
+            arguments = route.match(event)
+            if arguments is None:
+                return DispatchResult()
+            if not isinstance(arguments, MatchResult):
+                raise TypeError("匹配器必须返回 MatchResult 或 None")
+            context = HandlerContext(
+                bot,
+                event,
+                arguments,
+                route.scope if route.scope is not None else ServiceScope(),
+                route.app_services,
+            )
+            if route.permission is not None and await route.permission(context) is not True:
+                return DispatchResult(denied=(route.name,))
+            if route.rule is not None and await route.rule(context) is not True:
+                return DispatchResult()
+            handled = (route.name,)
+            try:
+                await route.handler(context)
+            except _Finished:
+                pass
+            return DispatchResult(handled=handled, blocked=route.block)
+        except Exception:
+            logger.exception("路由执行失败: %s", route.name)
+            return DispatchResult(handled=handled, failed=(route.name,), blocked=True)

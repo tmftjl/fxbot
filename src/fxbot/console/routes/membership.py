@@ -8,11 +8,13 @@ from datetime import datetime, timezone, timedelta
 from loguru import logger
 from fastapi import Depends, Request, APIRouter, HTTPException
 
+from fxbot.core.errors import ActionFailed
+
 from ..auth import bearer_auth
 from ...core import Message, SessionTarget
 from ..dependencies import runtime_for
-from ...runtime.actions import ActionFailed
 from ...membership.guard import membership_guard
+from ...core.capabilities import Capability
 from ...membership.contact import renewal_contact_text, format_membership_expiry
 from ...membership.service import MembershipError, membership_service
 
@@ -229,7 +231,7 @@ async def leave_group(payload: dict[str, Any], request: Request) -> dict[str, in
     if row is None:
         raise HTTPException(status_code=404, detail="群不存在")
     bot, target = _online_group_bot(request, group_id)
-    await bot.leave_group(target.target_id)
+    await bot.capabilities.require(Capability.GROUP_DIRECTORY).leave_group(target.target_id)
     await membership_service.delete_group(group_id)
     await membership_guard.invalidate(group_id)
     return {"left": 1}

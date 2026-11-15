@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...config import get_manager
-from .ui_schema import DEFAULTS
+from .defaults import DEFAULTS
 from ...core.types import SessionTarget
 
 

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from fastapi.testclient import TestClient
 
-from fxbot.core import Message, BotClient, SessionTarget, MessageSegment, UnsupportedCapability
+from fxbot.core import Message, BotClient, Capability, SessionTarget, MessageSegment, UnsupportedCapability
 from fxbot.core.context import bind_event, reset_event
 from fxbot.core.application import Application
 from fxbot.platforms.qq.api import QQHTTP, AUTH_URL, QQAPIError
@@ -305,9 +305,9 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_botclient_protocol_and_unsupported_actions_make_no_request(self):
         self.assertIsInstance(self.bot, BotClient)
         with self.assertRaises(UnsupportedCapability):
-            await self.bot.ban("group", "user", 60)
+            await self.bot.capabilities.require(Capability.MODERATION).ban("group", "user", 60)
         with self.assertRaises(UnsupportedCapability):
-            await self.bot.get_groups()
+            await self.bot.capabilities.require(Capability.GROUP_DIRECTORY).get_groups()
         self.api.request.assert_not_awaited()
 
     async def test_passive_reply_uses_current_event_and_increments_msg_seq(self):
@@ -444,6 +444,26 @@ class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
         self.connection.receive(payload(message_id="second"))
         await self.connection.events.queue.join()
         self.assertEqual(len(self.connection.events.seen), 2)
+
+    async def test_webhook_later_event_runs_while_first_is_waiting(self):
+        entered, later, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        self.addCleanup(release.set)
+
+        async def capture(ctx):
+            if ctx.event.message_id == "slow":
+                entered.set()
+                await release.wait()
+            else:
+                later.set()
+
+        self.app.router.message("capture", capture)
+        self.connection.receive(payload(message_id="slow"))
+        await asyncio.wait_for(entered.wait(), 1)
+        self.connection.receive(payload(message_id="fast"))
+        await asyncio.wait_for(later.wait(), 1)
+        self.assertFalse(release.is_set())
+        release.set()
+        await asyncio.wait_for(self.connection.events.queue.join(), 1)
 
     async def test_close_cancels_inflight_handler_and_releases_http(self):
         entered = asyncio.Event()

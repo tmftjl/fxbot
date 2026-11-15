@@ -1,6 +1,7 @@
 # FxBot
 
 独立消息应用，当前正在直接替换旧框架运行链路，不提供旧路径别名或桥接层。
+运行要求 Python 3.11 及以上；核心本身只使用标准库。
 
 ## 目录
 
@@ -11,17 +12,14 @@ src/fxbot/
   core/             标准库核心：事件、路由、插件与生命周期
   platforms/        独立平台协议编解码与客户端
   runtime/          网络服务、协议连接与命令行
-  adapter/          尚待替换的平台业务适配
   chat/             AI 与记忆
   config/           业务配置
   console/          控制台后端及 web 前端
   db/               数据模型
   membership/       会员
   permission/       权限
-  plugin/           尚待替换的业务插件封装
-  plugins/          内置业务插件与显式原生安装清单
+  plugins/          自动发现的业务插件与声明
   resources/        公共资源
-  system_control/   系统管理
   utils/            通用工具
 tests/              测试
 scripts/            开发工具
@@ -44,28 +42,38 @@ uv pip install -r src/fxbot/plugins/video_parser/requirements.txt
 
 下载资源、缓存、配置和数据库统一写入所属项目的 `data/`，不读取路径环境变量。
 源码运行从 `src/fxbot/` 定位仓库根目录；安装包运行以当前工作项目为根目录。
-例如洛克运行时图标位于 `data/rocom/resources/`；仓库自带的图鉴模板、字体和属性图标
-仍保留在 `src/fxbot/plugins/rocom/resources/`，不会移动到数据目录。
+下载资源不写入包目录；随包提供的模板、字体和图标不移动到数据目录。
+尚未迁移的洛克等插件及其自带资源已归档到本机 `temp/legacy-plugins/`，不参与打包。
 
 在仓库根目录运行，测试会显式加载 `src/`：
 
 ```powershell
 .venv/Scripts/python.exe -I -S -X utf8 -m unittest discover -s tests/migration -t .
 .venv/Scripts/python.exe -m unittest discover -s tests -t .
+uvx --from "mypy>=1.10,<2" mypy
 .venv/Scripts/python.exe -m build --no-isolation --outdir temp/packages
 ```
 
 应用入口为安装后的 `fxbot` 命令或 `python -m fxbot`。
 令牌、Bot 白名单和监听设置读取 `data/config/runtime/config.json`，不读取环境变量。
 CLI 的 `--host` 和 `--port` 可显式覆盖监听地址与端口。
+事件入口每个连接默认最多并发处理 8 条消息，运行配置 `event_concurrency` 可调整；
+`queue_size` 单独控制等待队列。同优先级响应器并发，`block` 只阻止更低优先级，
+同一响应器的多个 `.handle()` 仍顺序执行。同一会话不保证消息处理完成顺序。
 独立入口已安装会员、权限、AI 聊天、会话命令与撤回处理；聊天与长期记忆维护使用原生调度器。
 控制台已挂载聊天、长期记忆与网页独立对话接口，业务设置仍使用 `data/config/` 下原有配置。
 共享服务仍在同一进程使用，应用统一负责启动和有序关闭；启动服务不会自动安装插件依赖。
 插件放在 src/fxbot/plugins 下即可自动发现，不需要 JSON 声明、扫描配置或手动注册清单。
-插件目录的 __init__.py 声明 __plugin_meta__ 中文元信息，命令使用 @on_command / @on_regex，
-事件使用 @on_event / @on_message。核心按目录名统一注册路由、权限和控制台展示。
+插件目录的 __init__.py 声明 __plugin_meta__ 中文元信息；on_command / on_regex / on_event /
+on_message 创建响应器，通过 @matcher.handle() 注册处理器。核心按目录名统一注册路由、权限和控制台展示。
+支持多处理器、Rule 的 AND 组合、Permission 的 OR 组合，以及 matcher.send() / matcher.finish()。
+响应器选项只读，支持明确类型的内建参数绑定；ctx.match 保留正则捕获组，ctx.app_services 表示应用服务。
+写法与约束见 [插件开发](docs/plugin-development.md)，旧的 @on_command(...) 函数装饰器已移除。
 周期业务使用 @scheduled(interval=60, run_on_start=True)，任务执行、取消和等待清理由核心负责。
 无需 setup、configure、Plugin 对象、JSON 或根打包配置清单。
+`BotClient` 只要求身份、发送与能力注册表；业务通过 `capabilities.require(Capability.X)`
+取得明确的可选接口，不要求每个平台实现一组只会报错的占位方法。
+`ctx.service(factory)` 按工厂对象身份在当前应用内缓存，应用关闭时统一释放受管服务。
 群管理/入群验证、娱乐和视频解析已接入原生路由，不再依赖 NoneBot。
 群管理遇到未知成员身份时拒绝操作；音乐扫码仅在私聊进行；点赞固定为每日一次、最多十个。
 点赞记录保持 Bot QQ 号 → 用户 QQ 号的结构；运势按用户 ID 保存，同一用户当天跨 Bot 共享。
@@ -141,6 +149,6 @@ intents 默认订阅普通群/C2C 消息及频道 AT 消息，即 (1 << 25) | (1
 `onebot11:100:group:300`。旧的裸用户/群 ID 不能直接混入新权限判定；未知归属不会被自动猜测，
 应先明确平台和 Bot，再备份并迁移数据。独立入口不会把旧黑名单不匹配当作公开权限。
 
-依赖声明已移除 NoneBot，但尚未迁移的业务源码和旧业务测试仍引用它；
-这些模块尚不能在无 NoneBot 环境下使用，也未接入新的运行入口。
+运行源码与依赖声明已移除 NoneBot；尚未迁移的业务和旧测试归档在本机 `temp/legacy-*`，
+不参与当前导入、测试和打包，后续迁移需按新核心契约实现。
 完整业务迁移尚未完成，不能视为生产部署版本。

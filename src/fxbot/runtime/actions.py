@@ -8,21 +8,25 @@ from typing import Any
 from dataclasses import dataclass
 from collections.abc import Callable, Awaitable
 
-
-class BotOffline(ConnectionError):
-    """传输已关闭，不能提交动作。"""
+from ..core.errors import BotOffline, ActionFailed
 
 
-class ActionFailed(RuntimeError):
-    """平台动作失败，不携带上游响应内容。"""
-
-
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _Request:
     """一项请求独占响应 Future 和执行任务。"""
 
     response: asyncio.Future
     execution: asyncio.Task
+    cancellation_requested: bool = False
+
+    def cancel(self) -> None:
+        if not self.cancellation_requested and not self.execution.done():
+            self.cancellation_requested = True
+            self.execution.cancel()
+
+    async def wait_closed(self) -> None:
+        self.cancel()
+        await asyncio.gather(self.execution, return_exceptions=True)
 
 
 class ActionBroker:
@@ -58,7 +62,8 @@ class ActionBroker:
             return await response
 
         execution = asyncio.create_task(execute(), name=f"protocol.action:{action}")
-        self._requests[echo] = _Request(response, execution)
+        request = _Request(response, execution)
+        self._requests[echo] = request
         try:
             done, _ = await asyncio.wait(
                 (execution, self._offline), timeout=self._timeout, return_when=asyncio.FIRST_COMPLETED
@@ -70,8 +75,7 @@ class ActionBroker:
             return execution.result()
         finally:
             self._requests.pop(echo)
-            execution.cancel()
-            await asyncio.gather(execution, return_exceptions=True)
+            await request.wait_closed()
             if not response.done():
                 response.cancel()
             elif not response.cancelled():
@@ -94,6 +98,6 @@ class ActionBroker:
             self._offline.set_result(None)
         requests = tuple(self._requests.values())
         for request in requests:
-            request.execution.cancel()
+            request.cancel()
             request.response.cancel()
         await asyncio.gather(*(request.execution for request in requests), return_exceptions=True)

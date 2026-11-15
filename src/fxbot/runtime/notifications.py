@@ -6,9 +6,10 @@ from collections.abc import Callable
 
 from loguru import logger
 
+from fxbot.core.errors import ActionFailed
+
 from ..core import Message, SessionTarget, UnsupportedCapability
 from ..config import ConfigManager
-from .actions import ActionFailed
 from ..core.application import Application
 from ..membership.guard import MembershipGuard
 from ..permission.authorization import Authorizer

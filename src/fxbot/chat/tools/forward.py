@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from fxbot.core.errors import ActionFailed
+
 from .types import ToolError, ToolContext
 from ...core import BotClient, Capability, UnsupportedCapability
 from .runtime import ToolRuntime
 from .registry import tool
-from ...runtime.actions import ActionFailed
 from ..memory.repository import chat_repository
 
 MAX_NODES = 100
@@ -24,7 +25,7 @@ async def _root_id(context: ToolContext, runtime: ToolRuntime, msg_id: str) -> s
         if event.reply is None or msg_id != event.reply.message_id:
             if not context.session_id or await chat_repository.message_by_identity(context.session_id, msg_id) is None:
                 raise ToolError("只能读取当前会话内已记录的消息。")
-        ids = await bot.get_forward_ids(msg_id)
+        ids = await bot.capabilities.require(Capability.FORWARD).get_forward_ids(msg_id)
     else:
         ids = [
             segment.data["id"]
@@ -52,14 +53,14 @@ def _path(value: Any) -> list[int]:
 
 async def _nodes_at(bot: BotClient, root_id: str, path: list[int]) -> list[dict[str, Any]]:
     """按 path 逐层展开，返回目标层的节点。"""
-    nodes = await bot.get_forward_messages(root_id)
+    nodes = await bot.capabilities.require(Capability.FORWARD).get_forward_messages(root_id)
     for depth, step in enumerate(path):
         if step >= len(nodes):
             raise ToolError(f"path 第 {depth + 1} 个序号 {step} 超出范围，当前层共 {len(nodes)} 条。")
         nested = nodes[step].get("forwards") or []
         if not nested:
             raise ToolError(f"path 第 {depth + 1} 个序号指向的不是嵌套转发。")
-        nodes = await bot.get_forward_messages(nested[0])
+        nodes = await bot.capabilities.require(Capability.FORWARD).get_forward_messages(nested[0])
     return nodes
 
 

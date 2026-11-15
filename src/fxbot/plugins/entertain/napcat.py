@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 
 from ...utils.tz import today_str
-from ...core.types import Capability
 from ...core.plugin import on_command
 from ...core.router import HandlerContext
 from ...utils.paths import data_dir
 from ...utils.json_file import read_json, write_json
+from ...core.capabilities import Capability
 
 _lock = asyncio.Lock()
 
@@ -50,7 +50,7 @@ class Likes:
             record = records.get(bot.bot_id, {}).get(user_id)
             if record and record["date"] == today and record["count"] > 0:
                 return f"今天已经为你点赞 {record['count']} 次啦，明天再来吧！"
-            await bot.like(user_id, times)
+            await bot.capabilities.require(Capability.LIKE).like(user_id, times)
             records.setdefault(bot.bot_id, {})[user_id] = {"date": today, "count": times}
             write_json(self.path, records)
         return f"已为你点赞 {times} 次，记得回我哟！"
@@ -59,7 +59,10 @@ class Likes:
         await context.send(await self.send(context.bot, context.event.user_id))
 
 
-@on_command("赞我", name="like", display_name="QQ点赞", level="all")
+like_matcher = on_command("赞我", name="like", display_name="QQ点赞", level="all")
+
+
+@like_matcher.handle()
 async def like(context):
     await likes.handle(context)
 

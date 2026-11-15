@@ -53,8 +53,10 @@ class Application:
         self._cancellation_requests: set[asyncio.Task] = set()
         self._message_transforms: list[Callable[[BotClient, SessionTarget, Message], Message]] = []
         self._connections: dict[tuple[str, str], _Connection] = {}
+        self._retiring_connections: dict[int, _Connection] = {}
         self.plugin_metadata: dict[str, Any] = {}
         self.command_metadata: dict[str, dict[str, str]] = {}
+        self.plugin_extensions: dict[str, dict[str, Callable[[], object]]] = {}
         self._shutdown: asyncio.Task | None = None
 
     @property
@@ -124,6 +126,14 @@ class Application:
         connection = self._connections.get(key)
         if connection is not None and connection.bot is bot:
             del self._connections[key]
+        self._retiring_connections.pop(id(bot), None)
+
+    def retire(self, bot: BotClient) -> None:
+        """释放在线身份但保留关闭所有权，允许旧连接清理期间重新连接。"""
+        key = (bot.platform, bot.bot_id)
+        connection = self._connections.get(key)
+        if connection is not None and connection.bot is bot:
+            self._retiring_connections[id(bot)] = self._connections.pop(key)
 
     def is_registered(self, bot: BotClient) -> bool:
         """旧连接退出后，捕获它的后台任务不能误用同 ID 的新连接。"""
@@ -191,8 +201,9 @@ class Application:
             async with AsyncExitStack() as cleanup:
                 cleanup.push_async_callback(self._resources.aclose)
                 cleanup.push_async_callback(self._cancel_tasks)
-                for connection in self._connections.values():
+                for connection in (*self._connections.values(), *self._retiring_connections.values()):
                     cleanup.push_async_callback(connection.close)
         finally:
             self._connections.clear()
+            self._retiring_connections.clear()
             self._state = ApplicationState.STOPPED

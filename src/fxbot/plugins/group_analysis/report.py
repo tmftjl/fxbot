@@ -18,6 +18,8 @@ from PIL import Image
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 
+from fxbot.core.errors import ActionFailed
+
 from ...core import BotClient, Capability, SessionTarget, UnsupportedCapability
 from .config import get_config, is_enabled, group_allowed, resolve_persona
 from .models import GroupAnalysisReport, utc_now_naive
@@ -27,7 +29,6 @@ from .analyzers import analyze
 from ...utils.tz import now
 from ...chat.media import load_image_bytes
 from ...utils.paths import data_dir
-from ...runtime.actions import ActionFailed
 
 _RUNNING: set[str] = set()
 _AVATARS: dict[str, str] = {}
@@ -71,7 +72,7 @@ async def group_name_for(bot: BotClient, target: SessionTarget) -> str:
     if Capability.TARGET_LOOKUP not in bot.capabilities:
         return ""
     try:
-        return await bot.target_name(target)
+        return await bot.capabilities.require(Capability.TARGET_LOOKUP).target_name(target)
     except (UnsupportedCapability, ActionFailed, TimeoutError, OSError):
         logger.opt(exception=True).debug("群聊日报名称查询暂不可用")
         return ""
@@ -109,7 +110,7 @@ async def _attach_avatars(bot: BotClient, analysis: dict[str, Any]) -> None:
         user_id = str(item.get("user_id") or "")
         if not user_id:
             continue
-        url = bot.avatar_url(user_id)
+        url = bot.capabilities.require(Capability.AVATAR).avatar_url(user_id)
         if url:
             user_urls[user_id] = str(url)
     if not user_urls:

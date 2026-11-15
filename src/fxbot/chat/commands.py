@@ -12,7 +12,10 @@ from .service import chat_service
 from .bindings import PERSONA, PROVIDER, get_binding, set_binding
 from .personas import DEFAULT_PERSONA, load_personas
 from .providers import provider_manager
+from ..core.matcher import Matcher, MatcherOptions, bind_matchers
+from ..core.matching import MatchResult
 from .message_adapter import session_id_for_event
+from ..core.permission import Permission
 from ..core.application import Application
 from ..permission.types import PermLevel
 from .behavior.reply_gate import (
@@ -221,16 +224,30 @@ def install(application: Application, authorizer: Authorizer) -> None:
     async def proactive(context: HandlerContext) -> None:
         await _handle_proactive(context.bot, context.event, context, authorizer)
 
+    definitions = []
     for name, parser, handler, permission in (
         ("persona", _persona_name, persona, management),
         ("provider", _provider_name, provider, owner),
         ("clear", lambda text: "" if _strip_prefix(text.strip()) == "清空对话" else None, clear, management),
         ("proactive", _proactive_argument, proactive, authorizer.guard("chat")),
     ):
-        application.router.add(
-            f"chat:{name}",
-            handler,
-            match=lambda event, parse=parser: parse(event.message.plain_text()) if event.is_message else None,
-            permission=permission,
-            priority=5,
+
+        def match(event, parse=parser):
+            if not event.is_message:
+                return None
+            value = parse(event.message.plain_text())
+            return MatchResult(value) if value is not None else None
+
+        display_names = {
+            "persona": "切换人格",
+            "provider": "切换模型",
+            "clear": "清空对话",
+            "proactive": "主动回复设置",
+        }
+        matcher = Matcher(
+            match,
+            MatcherOptions(name=name, display_name=display_names[name], permission=Permission.for_event(permission)),
         )
+        matcher.handle()(handler)
+        definitions.append(matcher.snapshot())
+    bind_matchers(application, "chat", tuple(definitions))

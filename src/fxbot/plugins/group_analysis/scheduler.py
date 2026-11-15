@@ -71,4 +71,4 @@ def daily_plan(context):
 
 @scheduled(plan=daily_plan, watch_config=True, name="daily")
 async def daily(context):
-    await ReportSchedule(context.runtime.application, context.notifications).run()
+    await ReportSchedule(context.app_services.application, context.notifications).run()

@@ -8,6 +8,7 @@ from .policy import FeaturePolicy
 from ..config import ConfigManager
 from .helpers import upsert_plugin_defaults, upsert_command_defaults
 from .storage import PermissionStorage
+from .validation import validate_entry
 from ..core.router import Guard
 from ..core.commands import Command
 
@@ -64,13 +65,7 @@ class Authorizer:
         if separator and not isinstance(node.get("commands", {}).get(command), dict):
             return None
         for entry in self.policy.entries(permissions, feature):
-            for kind in ("whitelist", "blacklist"):
-                scope = entry.get(kind, {})
-                for key, target_kind in (("users", "private"), ("groups", "group")):
-                    for identity in scope.get(key, []):
-                        target = SessionTarget.from_key(identity)
-                        if target.kind != target_kind:
-                            raise ValueError("权限身份类型与列表不匹配")
+            validate_entry(entry)
         return permissions
 
     async def check_target(self, feature: str, target: SessionTarget) -> bool:

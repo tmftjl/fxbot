@@ -7,7 +7,7 @@ from typing import Any
 
 from .codec import _id, parse_message
 from ...core import Capability, SessionTarget, HistoryMessage
-from .client import OneBot11Client
+from .client import ActionSender, FileUploader, OneBot11Client
 
 PAGE_SIZE = 100
 MAX_PAGES = 100
@@ -68,7 +68,13 @@ def history_message(raw: dict[str, Any], target: SessionTarget) -> HistoryMessag
 class NapCatClient(OneBot11Client):
     """明确选中 NapCat 后才授予历史读取能力。"""
 
-    capabilities = OneBot11Client.capabilities | {Capability.HISTORY, Capability.ESSENCE, Capability.MUTED_MEMBERS}
+    def __init__(self, bot_id: str, sender: ActionSender, *, file_uploader: FileUploader | None = None) -> None:
+        super().__init__(bot_id, sender, file_uploader=file_uploader)
+        self.capabilities = (
+            self.capabilities.provide(Capability.HISTORY, self)
+            .provide(Capability.ESSENCE, self)
+            .provide(Capability.MUTED_MEMBERS, self)
+        )
 
     async def set_essence(self, message_id: str, *, enabled: bool) -> Any:
         return await self.call(

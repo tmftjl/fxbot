@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 from hashlib import sha1
 from collections.abc import Callable, Iterable
@@ -10,7 +9,6 @@ from collections.abc import Callable, Iterable
 from loguru import logger
 
 from .proxy import Validator, ConfigProxy
-from ..utils.cache import cache
 from ..utils.paths import config_dir
 from .system_defaults import SYSTEM_DEFAULTS, validate_system_config
 
@@ -113,41 +111,23 @@ class ConfigManager:
             value = payload[namespace]
             if not isinstance(value, dict):
                 raise ValueError(f"{namespace} 配置必须是对象")
-            proxy._validated(value)
+            proxy.validate(value)
             pending.append((proxy, value))
-        snapshots = []
-        for proxy, _ in pending:
-            files = []
-            for path in (proxy.path, proxy.history_storage.path):
-                try:
-                    content = path.read_bytes()
-                except FileNotFoundError:
-                    content = None
-                files.append((path, content))
-            snapshots.append((files, deepcopy(proxy._last_valid), cache.get(proxy._cache_key)))
+        snapshots = [proxy.snapshot() for proxy, _ in pending]
         attempted = []
         try:
-            for (proxy, value), snapshot in zip(pending, snapshots):
+            for (proxy, value), snapshot in zip(pending, snapshots, strict=True):
                 attempted.append((proxy, snapshot))
                 proxy.save(value)
-        except Exception:
-            for proxy, (files, last_valid, cached) in reversed(attempted):
-                for path, content in files:
-                    try:
-                        if content is None:
-                            path.unlink(missing_ok=True)
-                        else:
-                            path.write_bytes(content)
-                    except Exception as exc:
-                        logger.error(f"[Config] {path} 配置回滚失败: {exc}")
-                proxy._last_valid = last_valid
+        except Exception as error:
+            failures = []
+            for proxy, snapshot in reversed(attempted):
                 try:
-                    if cached is None:
-                        cache.pop(proxy._cache_key)
-                    else:
-                        cache.set(proxy._cache_key, cached)
-                except Exception as exc:
-                    logger.error(f"[Config] {proxy.namespace}/{proxy.filename} 缓存回滚失败: {exc}")
+                    proxy.restore(snapshot)
+                except Exception as restore_error:
+                    failures.append(restore_error)
+            if failures:
+                raise ExceptionGroup("配置保存及回滚失败", [error, *failures]) from None
             raise
         for callback in tuple(self._subscribers):
             callback()

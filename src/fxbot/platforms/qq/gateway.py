@@ -154,7 +154,12 @@ class QQGateway:
             ),
         )
         stream = QQEventStream(
-            self.application, client, bot_user_id=self._bot_user_id, capacity=self.settings.queue_size, seen=self._seen
+            self.application,
+            client,
+            bot_user_id=self._bot_user_id,
+            capacity=self.settings.queue_size,
+            concurrency=self.settings.event_concurrency,
+            seen=self._seen,
         )
         stream.start(self.close)
         self._stream = stream
@@ -175,7 +180,7 @@ class QQGateway:
             raise GatewayProtocolError("QQ Dispatch 序列号倒退")
         if seq in self._pending:
             return
-        if len(self._pending) >= self.settings.queue_size + 1:
+        if len(self._pending) >= self.settings.queue_size + self.settings.event_concurrency:
             raise GatewayReconnect("QQ 待处理事件达到容量")
         self._pending[seq] = False
         try:
@@ -184,6 +189,19 @@ class QQGateway:
             self._pending.pop(seq, None)
             raise GatewayReconnect("QQ 事件队列已满") from None
         self._received = seq
+
+    async def _receive_before(self, socket, deadline):
+        """给已经缓冲的帧一次读取机会，超时或取消时回收接收任务。"""
+        receiver = asyncio.create_task(socket.recv(), name=f"qq:{self.app_id}:receive")
+        try:
+            done, _ = await asyncio.wait((receiver,), timeout=max(0, deadline - asyncio.get_running_loop().time()))
+            if receiver not in done:
+                raise asyncio.TimeoutError
+            return receiver.result()
+        finally:
+            if not receiver.done():
+                receiver.cancel()
+            await asyncio.gather(receiver, return_exceptions=True)
 
     async def session(self, socket):
         self._received = self._committed
@@ -232,7 +250,7 @@ class QQGateway:
                 raise GatewayProtocolError("QQ 网关事件消费者已停止")
             deadline = heartbeat_at if authenticated else authenticate_until
             try:
-                frame = decode_frame(await asyncio.wait_for(socket.recv(), max(0, deadline - loop.time())))
+                frame = decode_frame(await self._receive_before(socket, deadline))
             except asyncio.TimeoutError:
                 if not authenticated:
                     raise GatewayReconnect("QQ 网关鉴权等待超时") from None

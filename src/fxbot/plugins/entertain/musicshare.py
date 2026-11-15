@@ -909,17 +909,26 @@ class Music(Service):
             await context.send(Message([MessageSegment.voice(url)]))
 
 
-@on_regex(Music.LOGIN, name="music_login", display_name="音乐登录", level="all", priority=4)
+login_matcher = on_regex(Music.LOGIN, name="music_login", display_name="音乐登录", level="all", priority=4)
+
+
+@login_matcher.handle()
 async def login(context):
     await context.service(music).login(context)
 
 
-@on_regex(Music.POLL, name="music_login_poll", display_name="音乐登录状态", level="all", priority=4)
+poll_matcher = on_regex(Music.POLL, name="music_login_poll", display_name="音乐登录状态", level="all", priority=4)
+
+
+@poll_matcher.handle()
 async def poll(context):
     await context.service(music).poll(context)
 
 
-@on_regex(Music.SEARCH, name="search", display_name="点歌", level="all")
+search_matcher = on_regex(Music.SEARCH, name="search", display_name="点歌", level="all")
+
+
+@search_matcher.handle()
 async def search(context):
     await context.service(music).search(context)
 
@@ -928,13 +937,16 @@ async def has_selection(context):
     return context.service(music).match_select(context.event) is not None
 
 
-@on_message(name="select", display_name="选择歌曲", level="all", when=has_selection)
+select_matcher = on_message(name="select", display_name="选择歌曲", level="all", rule=has_selection)
+
+
+@select_matcher.handle()
 async def select(context):
     from dataclasses import replace
 
     index = context.service(music).match_select(context.event)
     if index is not None:
-        await context.service(music).select(replace(context, arguments=index))
+        await context.service(music).select(replace(context, match=replace(context.match, arguments=index)))
 
 
 def music(runtime):

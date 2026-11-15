@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import httpx
 from loguru import logger
 
+from fxbot.core.errors import ActionFailed
+
 from ..core import Event, BotClient, Capability, QuotedMessage, MessageSegment, UnsupportedCapability
 from .media import load_images, max_image_count
 from .types import MentionRef, ChatRequest, TriggerKind, InboundSegment
@@ -18,7 +20,6 @@ from ..utils.tz import now, to_naive_utc
 from ..utils.cache import cache
 from .session_hooks import resolve_session_id
 from .message_context import quote_preview
-from ..runtime.actions import ActionFailed
 
 _RESOURCE_ERRORS = (UnsupportedCapability, ActionFailed, TimeoutError, OSError, httpx.HTTPError)
 
@@ -32,7 +33,7 @@ async def _image_entries(bot: BotClient, segments: list[MessageSegment]) -> list
     for index, segment in enumerate(segments):
         if segment.type == "image":
             try:
-                source = await bot.resolve_media(segment)
+                source = await bot.capabilities.require(Capability.MEDIA).resolve_media(segment)
             except _RESOURCE_ERRORS:
                 logger.opt(exception=True).debug("[Chat] 图片来源不可读取")
                 continue
@@ -79,7 +80,7 @@ async def _reply_info(bot: BotClient, event: Event) -> QuotedMessage | None:
     if saved is not None:
         return saved["info"]
     try:
-        info = await bot.get_reply(event)
+        info = await bot.capabilities.require(Capability.REPLY).get_reply(event)
     except _RESOURCE_ERRORS:
         logger.opt(exception=True).warning("[Chat] 引用消息暂不可读取")
         return None
@@ -100,7 +101,9 @@ def mention_flags(bot: BotClient, event: Event) -> tuple[bool, bool]:
 
 async def _member_name(bot: BotClient, group_id: str, user_id: str) -> str:
     try:
-        return " ".join((await bot.member_name(group_id, user_id)).split())[:32]
+        return " ".join(
+            (await bot.capabilities.require(Capability.MEMBER_LOOKUP).member_name(group_id, user_id)).split()
+        )[:32]
     except _RESOURCE_ERRORS:
         logger.opt(exception=True).debug("[Chat] 成员昵称查询暂不可用")
         return ""

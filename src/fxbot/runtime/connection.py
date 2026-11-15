@@ -9,9 +9,11 @@ from contextlib import AsyncExitStack
 from collections.abc import Callable, Awaitable
 
 from fxbot.core import Event, BotClient, UnsupportedCapability
+from fxbot.core.errors import BotOffline
 from fxbot.core.application import Application, ApplicationState
+from fxbot.core.concurrency import run_concurrently
 
-from .actions import BotOffline, ActionBroker
+from .actions import ActionBroker
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,7 @@ class WireProtocol(Protocol):
 
 
 class ProtocolConnection:
-    """组合动作请求代理与顺序事件消费者，关闭操作只有一个所有者。"""
+    """组合动作请求代理与有界并发事件消费者，关闭操作只有一个所有者。"""
 
     def __init__(
         self,
@@ -68,11 +70,19 @@ class ProtocolConnection:
         if self._worker is not None or self._closing is not None:
             raise RuntimeError("连接不能重复启动")
         self.application.register(self.client, close=self.close)
-        self._worker = self.application.spawn(self._consume(), name=f"{self.client.platform}:{self.client.bot_id}")
+        self._worker = self.application.spawn(
+            run_concurrently(self._consume() for _ in range(self._settings.event_concurrency)),
+            name=f"{self.client.platform}:{self.client.bot_id}",
+        )
 
     async def call(self, action: str, params: dict[str, Any]) -> Any:
         """仅允许运行中的已登记连接提交动作。"""
-        if self._worker is None or self._closing is not None or self.application.state is not ApplicationState.RUNNING:
+        if (
+            self._worker is None
+            or self._worker.done()
+            or self._closing is not None
+            or self.application.state is not ApplicationState.RUNNING
+        ):
             raise BotOffline("Bot 离线")
         return await self.actions.call(action, params)
 
@@ -92,7 +102,7 @@ class ProtocolConnection:
             self._queue.put_nowait(event)
 
     async def _consume(self) -> None:
-        """顺序分发，动作代理独立接收响应以避免读写互锁。"""
+        """每个消费者只处理一条在途事件，动作响应不占业务执行槽位。"""
         while True:
             event = await self._queue.get()
             try:
@@ -103,6 +113,7 @@ class ProtocolConnection:
     async def close(self, code: int = 1001) -> None:
         """并发关闭共享一次资源回收，取消等待者不影响关闭本身。"""
         if self._closing is None:
+            self.application.retire(self.client)
             self._closing = asyncio.create_task(self._close(code), name=f"{self.client.platform}.close")
         await asyncio.shield(self._closing)
 

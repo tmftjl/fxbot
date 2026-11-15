@@ -28,7 +28,9 @@ async def update_permissions(payload: dict[str, Any]) -> dict[str, Any]:
     """保存权限配置。"""
     try:
         get_storage().save(payload)
-    except (OSError, ValueError):
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except OSError:
         logger.opt(exception=True).error("权限配置保存失败")
         raise HTTPException(status_code=500, detail="权限配置保存失败") from None
     return {"success": True}

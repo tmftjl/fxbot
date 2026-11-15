@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Any, Protocol, runtime_checkable
-from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from datetime import datetime, timezone
 from dataclasses import field, dataclass
 from urllib.parse import quote, unquote
@@ -15,25 +13,8 @@ class UnsupportedCapability(RuntimeError):
     """当前平台或客户端不支持请求的能力。"""
 
 
-class Capability(Enum):
-    """平台明确声明的可选能力，不通过失败探测猜测。"""
-
-    REPLY = "reply"
-    MEMBER_LOOKUP = "member_lookup"
-    REFERENCE_LOOKUP = "reference_lookup"
-    FORWARD = "forward"
-    FILE = "file"
-    GROUP_ROLE = "group_role"
-    TARGET_LOOKUP = "target_lookup"
-    HISTORY = "history"
-    AVATAR = "avatar"
-    MODERATION = "moderation"
-    ESSENCE = "essence"
-    MUTED_MEMBERS = "muted_members"
-    FORWARD_SEND = "forward_send"
-    LIKE = "like"
-    VIDEO = "video"
-    QQ_PROFILE = "qq_profile"
+if TYPE_CHECKING:
+    from .capabilities import Capabilities
 
 
 @dataclass(slots=True, frozen=True)
@@ -209,95 +190,14 @@ class Event:
 
 @runtime_checkable
 class BotClient(Protocol):
-    """平台连接必须提供的最小客户端能力。"""
+    """平台只需实现消息发送；可选操作由独立能力提供者负责。"""
 
     platform: str
     bot_id: str
-    capabilities: frozenset[Capability]
+    capabilities: Capabilities
     message_transform: Callable[[SessionTarget, Message], Message]
 
-    async def send(self, target: SessionTarget, message: Message) -> Any:
-        """向目标发送消息。"""
-
-    async def call(self, action: str, **params: Any) -> Any:
-        """调用平台能力；不支持时抛出 UnsupportedCapability。"""
-
-    async def get_groups(self) -> list[dict[str, Any]]:
-        """查询当前连接的群列表。"""
-
-    async def member_role(self, group_id: str, user_id: str) -> str:
-        """查询并验证群成员真实身份，不把未知身份当成管理员。"""
-
-    async def get_member(self, group_id: str, user_id: str) -> dict[str, Any]:
-        """查询当前连接的群成员。"""
-
-    async def get_user(self, user_id: str) -> dict[str, Any]:
-        """查询平台用户资料。"""
-
-    async def ban(self, group_id: str, user_id: str, duration: int) -> Any:
-        """禁言或以零时长解除禁言。"""
-
-    async def kick(self, group_id: str, user_id: str, *, reject_add_request: bool = False) -> Any:
-        """从当前群移出成员。"""
-
-    async def set_admin(self, group_id: str, user_id: str, *, enabled: bool) -> Any:
-        """调整成员管理员身份。"""
-
-    async def set_whole_ban(self, group_id: str, *, enabled: bool) -> Any:
-        """调整全群禁言。"""
-
-    async def set_special_title(self, group_id: str, user_id: str, title: str) -> Any:
-        """设置平台群头衔。"""
-
-    async def delete_message(self, message_id: str) -> Any:
-        """撤回当前平台的消息。"""
-
-    async def set_essence(self, message_id: str, *, enabled: bool) -> Any:
-        """设置或取消精华消息。"""
-
-    async def get_muted_members(self, group_id: str) -> list[dict[str, Any]]:
-        """读取平台明确提供的禁言成员及到期时刻。"""
-
-    async def like(self, user_id: str, times: int) -> Any:
-        """平台好友点赞。"""
-
-    async def send_forward(self, target: SessionTarget, messages: list[Message]) -> Any:
-        """发送合并转发节点，平台不支持时明确拒绝。"""
-
-    async def leave_group(self, group_id: str) -> Any:
-        """退出当前平台的指定群。"""
-
-    async def get_reply(self, event: Event) -> QuotedMessage | None:
-        """读取此事件已引用的消息，不推测其他会话的目标。"""
-
-    async def resolve_media(self, segment: MessageSegment) -> str | bytes:
-        """将协议文件引用解析为明确可读取的媒体来源。"""
-
-    async def member_name(self, group_id: str, user_id: str) -> str:
-        """查询当前平台成员名称。"""
-
-    async def target_name(self, target: SessionTarget) -> str:
-        """查询此连接所属会话的展示名称。"""
-
-    async def fetch_group_history(
-        self, target: SessionTarget, *, start_time: int, end_time: int, limit: int
-    ) -> list[HistoryMessage]:
-        """读取明确群会话的时间窗口；失败不得作为空历史返回。"""
-
-    def avatar_url(self, user_id: str) -> str:
-        """返回平台明确支持的成员头像地址。"""
-
-    async def bot_group_role(self, group_id: str) -> str | None:
-        """查询机器人自己的群角色；不支持的平台明确拒绝。"""
-
-    async def send_file(self, target: SessionTarget, path: Path, name: str) -> Any:
-        """向明确会话发送本地生成的文件。"""
-
-    async def get_forward_messages(self, forward_id: str) -> list[dict[str, Any]]:
-        """读取平台明确支持的合并转发内容。"""
-
-    async def get_forward_ids(self, message_id: str) -> list[str]:
-        """从指定消息查找转发 ID，不将查询失败当成另一种 ID。"""
+    async def send(self, target: SessionTarget, message: Message) -> Any: ...
 
 
 class ReplySender(Protocol):

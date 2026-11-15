@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from ..core import HandlerContext
+from ..core.matcher import bind_matchers
+from ..core.commands import on_event
 from .message_adapter import session_id_for_event
 from .memory.lifecycle import handle_recall
 from ..core.application import Application
@@ -19,4 +21,6 @@ def install(application: Application) -> None:
             session_id_for_event(context.bot, event), event.message_id, operator=event.metadata.get("operator_id")
         )
 
-    application.router.event("chat:recall", "message_deleted", recall, priority=10, block=False)
+    notice = on_event("message_deleted", name="recall", display_name="同步撤回", priority=10, block=False)
+    notice.handle()(recall)
+    bind_matchers(application, "chat", (notice.snapshot(),))

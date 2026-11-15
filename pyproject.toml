@@ -2,7 +2,7 @@
 name = "fxbot"
 version = "0.1.0"
 description = "FxBot standalone messaging application"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "loguru>=0.7.3",
     "pydantic",
@@ -29,7 +29,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "setuptools>=61", "wheel", "ruff", "packaging"]
+dev = ["build", "setuptools>=61", "wheel", "ruff", "packaging", "mypy>=1.10,<2"]
+
+[tool.mypy]
+files = ["src/fxbot/core"]
+check_untyped_defs = true
+follow_imports = "skip"
+ignore_missing_imports = true
 
 [project.scripts]
 fxbot = "fxbot.runtime.cli:main"

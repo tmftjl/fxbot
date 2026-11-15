@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from fxbot.core import HandlerContext
+from fxbot.core.matcher import Matcher, MatcherOptions, bind_matchers
+from fxbot.core.matching import command_match
+from fxbot.core.permission import Permission
 from fxbot.core.application import Application
 
 from ..permission.authorization import Authorizer
@@ -15,4 +18,11 @@ def install(application: Application, authorizer: Authorizer) -> None:
         """回复连通性检查。"""
         await context.finish("pong")
 
-    application.router.command("ping", "/ping", ping, permission=authorizer.guard("runtime:ping"))
+    matcher = Matcher(
+        command_match("/ping", prefixes=("",)),
+        MatcherOptions(
+            name="ping", display_name="连通性检查", permission=Permission.for_event(authorizer.guard("runtime:ping"))
+        ),
+    )
+    matcher.handle()(ping)
+    bind_matchers(application, "runtime", (matcher.snapshot(),))

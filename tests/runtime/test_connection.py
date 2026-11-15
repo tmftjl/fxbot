@@ -6,7 +6,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock
 
-from fxbot.runtime.actions import BotOffline, ActionFailed
+from fxbot.core.errors import BotOffline, ActionFailed
 from fxbot.core.application import Application
 from fxbot.runtime.settings import Settings
 from fxbot.runtime.connection import ProtocolConnection

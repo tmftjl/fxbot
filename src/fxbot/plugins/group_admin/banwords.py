@@ -7,11 +7,12 @@ import hashlib
 
 from loguru import logger
 
+from fxbot.core.errors import ActionFailed
+
 from ...core import Event, SessionTarget, HandlerContext, UnsupportedCapability
 from .service import GroupAdminService
 from ...core.plugin import on_regex, on_message
 from ...utils.paths import data_dir
-from ...runtime.actions import ActionFailed
 from ...utils.json_file import read_json, write_json
 
 
@@ -159,60 +160,94 @@ class Banwords:
             logger.opt(exception=True).warning("违禁词命中，但无法确认安全处罚条件")
 
 
-@on_regex(
+banword_add_matcher = on_regex(
     r"^[#＃]新增(精确|模糊|正则)?(禁|踢|撤)?违禁词\s*(.+)",
     name="banword_add",
     display_name="新增违禁词",
     level="admin",
     scene="group",
 )
+
+
+@banword_add_matcher.handle()
 async def banword_add(context: HandlerContext) -> None:
-    await banwords(context.runtime).handle("banword_add", context)
+    await banwords(context.app_services).handle("banword_add", context)
 
 
-@on_regex(r"^[#＃]删除违禁词\s*(.+)", name="banword_del", display_name="删除违禁词", level="admin", scene="group")
+banword_del_matcher = on_regex(
+    r"^[#＃]删除违禁词\s*(.+)", name="banword_del", display_name="删除违禁词", level="admin", scene="group"
+)
+
+
+@banword_del_matcher.handle()
 async def banword_del(context: HandlerContext) -> None:
-    await banwords(context.runtime).handle("banword_del", context)
+    await banwords(context.app_services).handle("banword_del", context)
 
 
-@on_regex(r"^[#＃]清空违禁词$", name="banword_clear", display_name="清空违禁词", level="admin", scene="group")
+banword_clear_matcher = on_regex(
+    r"^[#＃]清空违禁词$", name="banword_clear", display_name="清空违禁词", level="admin", scene="group"
+)
+
+
+@banword_clear_matcher.handle()
 async def banword_clear(context: HandlerContext) -> None:
-    await banwords(context.runtime).handle("banword_clear", context)
+    await banwords(context.app_services).handle("banword_clear", context)
 
 
-@on_regex(r"^[#＃]违禁词列表$", name="banword_list", display_name="违禁词列表", level="admin", scene="group")
+banword_list_matcher = on_regex(
+    r"^[#＃]违禁词列表$", name="banword_list", display_name="违禁词列表", level="admin", scene="group"
+)
+
+
+@banword_list_matcher.handle()
 async def banword_list(context: HandlerContext) -> None:
-    await banwords(context.runtime).handle("banword_list", context)
+    await banwords(context.app_services).handle("banword_list", context)
 
 
-@on_regex(r"^[#＃]开启违禁词$", name="banword_on", display_name="开启违禁词", level="admin", scene="group")
+banword_on_matcher = on_regex(
+    r"^[#＃]开启违禁词$", name="banword_on", display_name="开启违禁词", level="admin", scene="group"
+)
+
+
+@banword_on_matcher.handle()
 async def banword_on(context: HandlerContext) -> None:
-    await banwords(context.runtime).handle("banword_on", context)
+    await banwords(context.app_services).handle("banword_on", context)
 
 
-@on_regex(r"^[#＃]关闭违禁词$", name="banword_off", display_name="关闭违禁词", level="admin", scene="group")
+banword_off_matcher = on_regex(
+    r"^[#＃]关闭违禁词$", name="banword_off", display_name="关闭违禁词", level="admin", scene="group"
+)
+
+
+@banword_off_matcher.handle()
 async def banword_off(context: HandlerContext) -> None:
-    await banwords(context.runtime).handle("banword_off", context)
+    await banwords(context.app_services).handle("banword_off", context)
 
 
-@on_regex(
+banword_mute_time_matcher = on_regex(
     r"^[#＃]设置违禁词禁言时间\s*(\d+)$",
     name="banword_mute_time",
     display_name="违禁词禁言时长",
     level="admin",
     scene="group",
 )
+
+
+@banword_mute_time_matcher.handle()
 async def banword_mute_time(context: HandlerContext) -> None:
-    await banwords(context.runtime).handle("banword_mute_time", context)
+    await banwords(context.app_services).handle("banword_mute_time", context)
 
 
 async def matches_banword(context):
-    return await banwords(context.runtime).rule(context.event)
+    return await banwords(context.app_services).rule(context.event)
 
 
-@on_message(name="banword_interceptor", scene="group", priority=0, when=matches_banword)
+intercept_matcher = on_message(name="banword_interceptor", scene="group", priority=0, rule=matches_banword)
+
+
+@intercept_matcher.handle()
 async def intercept(context):
-    await banwords(context.runtime).intercept(context)
+    await banwords(context.app_services).intercept(context)
 
 
 def banwords(runtime):

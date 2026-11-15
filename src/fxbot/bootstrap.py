@@ -14,6 +14,7 @@ from .console import account, log_store, log_stream
 from .chat.lifecycle import ChatLifecycle
 from .core.scheduler import Scheduler
 from .membership.gate import MembershipGate
+from .console.commands import install as install_console_commands
 from .membership.guard import membership_guard
 from .membership.tasks import MembershipMaintenance
 from .runtime.commands import install
@@ -22,6 +23,7 @@ from .membership.service import membership_service
 from .permission.helpers import upsert_plugin_defaults, upsert_command_defaults
 from .permission.storage import get_storage
 from .membership.commands import MembershipCommands
+from .console.chat_channel import console_chat
 from .platforms.qq.service import QQService
 from .runtime.notifications import NotificationService
 from .permission.authorization import Authorizer
@@ -74,9 +76,15 @@ def create_runtime(settings: Settings) -> Runtime:
     application.router.add_preprocessor(MembershipGate(config, membership_guard))
     application.router.add_preprocessor(MessagePolicy(config))
     MembershipCommands(application, config, membership_service, membership_guard, settings, maintenance).install()
+    install_console_commands(application, config, settings)
     install(application, authorizer)
-    load_plugins(PluginContext(application, scheduler, authorizer, notifications), discover_plugins())
+    load_plugins(PluginContext(application, scheduler, authorizer, notifications, config), discover_plugins())
     chat.install(authorizer)
+
+    async def start_console() -> None:
+        console_chat.start()
+
+    application.resource(start_console, console_chat.stop)
     qq = QQService(application, settings)
     application.resource(qq.start, qq.close)
     return Runtime(application, config, maintenance, scheduler, authorizer, chat, qq)

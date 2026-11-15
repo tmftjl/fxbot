@@ -6,7 +6,7 @@ from typing import Any
 
 from ...core import SessionTarget
 from ...config import get_manager
-from .ui_schema import DEFAULTS
+from .defaults import DEFAULTS
 
 
 def validate_config(value: dict[str, Any]) -> None:

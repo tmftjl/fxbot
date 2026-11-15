@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from loguru import logger
 
 from . import emoji as emoji_module
-from ..core import Event, BotClient, ReplySender, HandlerContext, current_runtime
+from ..core import Event, BotClient, ReplySender, HandlerContext
 from .focus import focus_mode_manager
 from .hooks import ChatHookContext, guard, notify, has_chat_hooks
 from .tools import ToolRuntime
@@ -20,8 +20,10 @@ from .access import id_allowlist as _id_allowlist
 from ..config import get_manager as get_config_manager
 from .service import chat_service, history_limit
 from .personas import effective_persona_name
+from ..core.matcher import bind_matchers
 from .session_hooks import direct_reply_mode
 from .work_schedule import can_reply
+from ..core.commands import on_message
 from .behavior.quote import quote_counter
 from .message_adapter import (
     message_text,
@@ -380,11 +382,11 @@ async def _handle_ai_fallback(
 def install(application: Application, authorizer: Authorizer) -> None:
     """显式安装群上下文和 AI 兜底路由，保留防抖与 Focus 调度。"""
 
-    async def context_rule(event: Event) -> bool:
-        return await authorizer.check("chat", event) and await _context_rule(current_runtime().bot, event)
+    async def context_rule(context: HandlerContext) -> bool:
+        return await authorizer.check("chat", context.event) and await _context_rule(context.bot, context.event)
 
-    async def reply_rule(event: Event) -> bool:
-        return await authorizer.check("chat", event) and await _ai_fallback_rule(current_runtime().bot, event)
+    async def reply_rule(context: HandlerContext) -> bool:
+        return await authorizer.check("chat", context.event) and await _ai_fallback_rule(context.bot, context.event)
 
     async def context(context: HandlerContext) -> None:
         await _handle_context(context.bot, context.event, application, authorizer)
@@ -392,5 +394,8 @@ def install(application: Application, authorizer: Authorizer) -> None:
     async def reply(context: HandlerContext) -> None:
         await _handle_ai_fallback(context.bot, context.event, context, application, authorizer)
 
-    application.router.message("chat:context", context, rule=context_rule, priority=98, block=False)
-    application.router.message("chat:reply", reply, rule=reply_rule, priority=99)
+    collect = on_message(name="context", display_name="记录群聊上下文", rule=context_rule, priority=98, block=False)
+    answer = on_message(name="reply", display_name="AI回复", rule=reply_rule, priority=99)
+    collect.handle()(context)
+    answer.handle()(reply)
+    bind_matchers(application, "chat", (collect.snapshot(), answer.snapshot()))

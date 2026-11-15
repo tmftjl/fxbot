@@ -7,8 +7,10 @@ from typing import Any
 from pathlib import Path
 
 from .types import perm_entry_default
+from .validation import validate_permissions
 from ..utils.cache import cache
 from ..utils.paths import config_dir
+from ..config.storage import ConfigStorage
 
 
 class PermissionStorage:
@@ -36,7 +38,8 @@ class PermissionStorage:
     def _read(self) -> dict[str, Any]:
         """从磁盘读取权限配置。"""
         data = json.loads(self._path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        validate_permissions(data)
+        return data
 
     def load(self) -> dict[str, Any]:
         """加载权限配置，按进程内缓存复用。"""
@@ -50,16 +53,15 @@ class PermissionStorage:
 
     def save(self, data: dict[str, Any]) -> None:
         """保存权限配置并同步缓存。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        validate_permissions(data)
+        storage = ConfigStorage("permissions", path=self._path)
+        storage.write(data)
         cache.set(self._cache_key, data)
         self._dirty = False
 
     def mark_dirty(self, data: dict[str, Any]) -> None:
         """标记权限配置为待写入。"""
+        validate_permissions(data)
         cache.set(self._cache_key, data)
         self._dirty = True
 

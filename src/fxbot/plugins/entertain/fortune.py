@@ -216,7 +216,10 @@ def _get_or_create_today_fortune(user_id: str) -> tuple[dict[str, Any], bool]:
     return record, True
 
 
-@on_regex(r"^([#＃]|/)(?:今日运势|运势|抽签)", name="today", level="all")
+handle_matcher = on_regex(r"^([#＃]|/)(?:今日运势|运势|抽签)", name="today", level="all")
+
+
+@handle_matcher.handle()
 async def handle(context: HandlerContext) -> None:
     event = context.event
     data, _ = _get_or_create_today_fortune(event.user_id)

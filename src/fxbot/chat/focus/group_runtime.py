@@ -724,7 +724,7 @@ class FocusGroupRuntime:
             request = member.request
             try:
                 request.metadata["bot_group_role"] = (
-                    await member.bot.bot_group_role(request.group_id)
+                    await member.bot.capabilities.require(Capability.GROUP_ROLE).bot_group_role(request.group_id)
                     if request.group_id and Capability.GROUP_ROLE in member.bot.capabilities
                     else None
                 )

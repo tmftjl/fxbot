@@ -18,9 +18,8 @@ class PermLevel(IntEnum):
     SUPERUSER = 5
 
     @staticmethod
-    def from_str(value: str | None) -> "PermLevel":
+    def from_str(value: str) -> "PermLevel":
         """从字符串转换权限等级。"""
-        key = str(value or "member").strip().lower()
         mapping = {
             "all": PermLevel.LOW,
             "low": PermLevel.LOW,
@@ -30,7 +29,9 @@ class PermLevel(IntEnum):
             "bot_admin": PermLevel.BOT_ADMIN,
             "superuser": PermLevel.SUPERUSER,
         }
-        return mapping.get(key, PermLevel.MEMBER)
+        if not isinstance(value, str) or value not in mapping:
+            raise ValueError(f"未知权限等级: {value!r}")
+        return mapping[value]
 
 
 class PermScene(Enum):
@@ -41,22 +42,16 @@ class PermScene(Enum):
     PRIVATE = "private"
 
     @staticmethod
-    def from_str(value: str | None) -> "PermScene":
+    def from_str(value: str) -> "PermScene":
         """从字符串转换权限场景。"""
-        key = str(value or "all").strip().lower()
         mapping = {
+            "all": PermScene.ALL,
             "group": PermScene.GROUP,
             "private": PermScene.PRIVATE,
         }
-        return mapping.get(key, PermScene.ALL)
-
-
-class Decision(Enum):
-    """策略决策。"""
-
-    ALLOW = "allow"
-    DENY = "deny"
-    SKIP = "skip"
+        if not isinstance(value, str) or value not in mapping:
+            raise ValueError(f"未知权限场景: {value!r}")
+        return mapping[value]
 
 
 @dataclass
@@ -68,29 +63,6 @@ class PermContext:
     user_level: PermLevel
     is_group: bool
     is_private: bool
-
-
-@dataclass
-class PolicyResult:
-    """权限策略评估结果。"""
-
-    decision: Decision
-    reason: str = ""
-
-    @classmethod
-    def allow(cls, reason: str = "") -> "PolicyResult":
-        """允许通过。"""
-        return cls(decision=Decision.ALLOW, reason=reason)
-
-    @classmethod
-    def deny(cls, reason: str) -> "PolicyResult":
-        """拒绝通过。"""
-        return cls(decision=Decision.DENY, reason=reason)
-
-    @classmethod
-    def skip(cls) -> "PolicyResult":
-        """跳过当前策略。"""
-        return cls(decision=Decision.SKIP)
 
 
 def perm_entry_default(level: str = "member", scene: str = "all") -> dict[str, Any]:

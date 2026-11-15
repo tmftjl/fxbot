@@ -11,9 +11,12 @@ from .tasks import MembershipMaintenance
 from ..config import ConfigManager
 from .contact import renewal_contact_text, format_membership_expiry
 from .service import MembershipError, MembershipService
-from ..console.auth import rotate_console_token
+from ..core.matcher import bind_matchers
+from ..core.commands import on_regex
+from ..core.permission import Permission
 from ..core.application import Application
 from ..runtime.settings import Settings
+from ..core.capabilities import Capability
 
 
 class MembershipCommands:
@@ -43,14 +46,20 @@ class MembershipCommands:
 
     def install(self) -> None:
         """注册自助命令和独立保护的管理命令。"""
-        router = self.application.router
-        router.regex("membership:renew", r"^ww续费[A-Za-z0-9_]+$", self.renew)
-        router.regex("membership:expiry", r"^ww到期$", self.expiry)
-        router.regex("membership:prompt", r"^ww(?:拉群|续费)$", self.prompt)
-        router.regex("membership:generate", r"^ww生成续费码\d+(?:天|月|年)$", self.generate, permission=self.owner)
-        router.regex("membership:console_login", r"^今汐登录$", self.console_login, permission=self.owner)
-        router.regex("membership:adjust", r"^ww续费调整$", self.adjust_bots, permission=self.owner)
-        router.regex("membership:check", r"^ww检查会员$", self.check, permission=self.owner)
+        owner = Permission.for_event(self.owner)
+        definitions = []
+        for name, label, pattern, handler, permission in (
+            ("renew", "会员续费", r"^ww续费[A-Za-z0-9_]+$", self.renew, None),
+            ("expiry", "会员到期查询", r"^ww到期$", self.expiry, None),
+            ("prompt", "续费帮助", r"^ww(?:拉群|续费)$", self.prompt, None),
+            ("generate", "生成续费码", r"^ww生成续费码\d+(?:天|月|年)$", self.generate, owner),
+            ("adjust", "调整会员", r"^ww续费调整$", self.adjust_bots, owner),
+            ("check", "检查会员", r"^ww检查会员$", self.check, owner),
+        ):
+            matcher = on_regex(pattern, name=name, display_name=label, permission=permission)
+            matcher.handle()(handler)
+            definitions.append(matcher.snapshot())
+        bind_matchers(self.application, "membership", tuple(definitions))
 
     async def renew(self, context: HandlerContext) -> None:
         """在当前完整群身份下兑换，成功后立即刷新门禁缓存。"""
@@ -113,11 +122,6 @@ class MembershipCommands:
         row = await self.service.generate_code(duration_value=duration, duration_unit=units[match[2]], max_use=1)
         await context.finish(f"已生成一次性续费码：ww续费{row.code}\n请在需要开通或续费的群中发送")
 
-    async def console_login(self, context: HandlerContext) -> None:
-        """仅向主人私聊发送重置后的控制台访问令牌。"""
-        token = rotate_console_token()
-        await context.finish(f"控制台登录地址：http://{self.settings.host}:{self.settings.port}/fxbot?token={token}")
-
     async def check(self, context: HandlerContext) -> None:
         """主人显式触发一次会员维护。"""
         result = await self.maintenance.process()
@@ -128,7 +132,7 @@ class MembershipCommands:
         records = {row.group_id: row for row in await self.service.list_groups()}
         changed = unchanged = 0
         for bot in self.application.bots:
-            groups = await bot.get_groups()
+            groups = await bot.capabilities.require(Capability.GROUP_DIRECTORY).get_groups()
             for group in groups:
                 target = SessionTarget(bot.platform, bot.bot_id, "group", str(group["group_id"]))
                 row = records.get(target.key())

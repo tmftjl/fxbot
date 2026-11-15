@@ -9,13 +9,14 @@ from contextlib import AsyncExitStack
 import httpx
 from fastapi import HTTPException
 
+from fxbot.core.errors import BotOffline
+
 from .api import QQHTTP
 from .codec import parse_event
 from ...core import UnsupportedCapability
 from .client import QQClient
 from .events import QQEventStream, QQEventOverflow
 from .signing import QQSigner
-from ...runtime.actions import BotOffline
 from ...core.application import ApplicationState, DuplicateBotError
 
 MAX_BODY_BYTES = 1024 * 1024
@@ -36,7 +37,11 @@ class QQWebhookConnection:
             app_id, self.api, available=lambda: not self._closed and application.is_registered(self.client)
         )
         self.events = QQEventStream(
-            application, self.client, bot_user_id=config.bot_user_id, capacity=settings.queue_size
+            application,
+            self.client,
+            bot_user_id=config.bot_user_id,
+            capacity=settings.queue_size,
+            concurrency=settings.event_concurrency,
         )
         self._closed = False
         self._close_task = None

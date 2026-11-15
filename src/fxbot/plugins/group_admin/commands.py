@@ -69,7 +69,7 @@ class GroupCommands:
         if action in {"mute_list", "unmute_all"}:
             if Capability.MUTED_MEMBERS not in bot.capabilities:
                 await context.finish("当前实现不支持禁言列表")
-            members = await bot.get_muted_members(event.target.target_id)
+            members = await bot.capabilities.require(Capability.MUTED_MEMBERS).get_muted_members(event.target.target_id)
             if action == "mute_list":
                 await context.finish(
                     "\n".join(
@@ -95,7 +95,7 @@ class GroupCommands:
         if action in {"recall_msg", "set_essence", "unset_essence"}:
             if event.reply is None:
                 await context.finish("请引用需要操作的消息")
-            reply = await bot.get_reply(event)
+            reply = await bot.capabilities.require(Capability.REPLY).get_reply(event)
             if reply is None or reply.sender_id is None:
                 await context.finish("无法确认引用消息身份，未执行")
             users = [reply.sender_id]
@@ -135,89 +135,172 @@ class GroupCommands:
         )
 
 
-@on_regex(r"^[#＃]禁言(?!列表)\s*(.*)", name="mute_member", display_name="禁言成员", level="admin", scene="group")
+mute_member_matcher = on_regex(
+    r"^[#＃]禁言(?!列表)\s*(.*)", name="mute_member", display_name="禁言成员", level="admin", scene="group"
+)
+
+
+@mute_member_matcher.handle()
 async def mute_member(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("mute_member", context)
+    await moderation(context.app_services).handle("mute_member", context)
 
 
-@on_regex(r"^[#＃]解禁\s*(.*)", name="unmute_member", display_name="解除禁言", level="admin", scene="group")
+unmute_member_matcher = on_regex(
+    r"^[#＃]解禁\s*(.*)", name="unmute_member", display_name="解除禁言", level="admin", scene="group"
+)
+
+
+@unmute_member_matcher.handle()
 async def unmute_member(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("unmute_member", context)
+    await moderation(context.app_services).handle("unmute_member", context)
 
 
-@on_regex(r"^[#＃]拉黑踢\s*(.*)", name="ban_kick_member", display_name="拉黑踢出", level="admin", scene="group")
+ban_kick_member_matcher = on_regex(
+    r"^[#＃]拉黑踢\s*(.*)", name="ban_kick_member", display_name="拉黑踢出", level="admin", scene="group"
+)
+
+
+@ban_kick_member_matcher.handle()
 async def ban_kick_member(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("ban_kick_member", context)
+    await moderation(context.app_services).handle("ban_kick_member", context)
 
 
-@on_regex(r"^[#＃]踢\s*(.*)", name="kick_member", display_name="踢出成员", level="admin", scene="group")
+kick_member_matcher = on_regex(
+    r"^[#＃]踢\s*(.*)", name="kick_member", display_name="踢出成员", level="admin", scene="group"
+)
+
+
+@kick_member_matcher.handle()
 async def kick_member(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("kick_member", context)
+    await moderation(context.app_services).handle("kick_member", context)
 
 
-@on_regex(r"^[#＃]设置头衔\s*(.*)", name="set_title", display_name="设置头衔", level="superuser", scene="group")
+set_title_matcher = on_regex(
+    r"^[#＃]设置头衔\s*(.*)", name="set_title", display_name="设置头衔", level="superuser", scene="group"
+)
+
+
+@set_title_matcher.handle()
 async def set_title(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("set_title", context)
+    await moderation(context.app_services).handle("set_title", context)
 
 
-@on_regex(r"^[#＃]全(?:体|员)禁言", name="mute_all_on", display_name="全员禁言", level="admin", scene="group")
+mute_all_on_matcher = on_regex(
+    r"^[#＃]全(?:体|员)禁言", name="mute_all_on", display_name="全员禁言", level="admin", scene="group"
+)
+
+
+@mute_all_on_matcher.handle()
 async def mute_all_on(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("mute_all_on", context)
+    await moderation(context.app_services).handle("mute_all_on", context)
 
 
-@on_regex(r"^[#＃]全(?:体|员)解禁", name="mute_all_off", display_name="关闭全员禁言", level="admin", scene="group")
+mute_all_off_matcher = on_regex(
+    r"^[#＃]全(?:体|员)解禁", name="mute_all_off", display_name="关闭全员禁言", level="admin", scene="group"
+)
+
+
+@mute_all_off_matcher.handle()
 async def mute_all_off(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("mute_all_off", context)
+    await moderation(context.app_services).handle("mute_all_off", context)
 
 
-@on_regex(r"^[#＃](?:获取|查看)?禁言列表", name="mute_list", display_name="禁言列表", level="admin", scene="group")
+mute_list_matcher = on_regex(
+    r"^[#＃](?:获取|查看)?禁言列表", name="mute_list", display_name="禁言列表", level="admin", scene="group"
+)
+
+
+@mute_list_matcher.handle()
 async def mute_list(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("mute_list", context)
+    await moderation(context.app_services).handle("mute_list", context)
 
 
-@on_regex(r"^[#＃]解除全部禁言", name="unmute_all", display_name="解除全部禁言", level="admin", scene="group")
+unmute_all_matcher = on_regex(
+    r"^[#＃]解除全部禁言", name="unmute_all", display_name="解除全部禁言", level="admin", scene="group"
+)
+
+
+@unmute_all_matcher.handle()
 async def unmute_all(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("unmute_all", context)
+    await moderation(context.app_services).handle("unmute_all", context)
 
 
-@on_regex(r"^[#＃]?我要(?:自闭|禅定)\s*(.*)", name="self_mute", display_name="自助禁言", level="all", scene="group")
+self_mute_matcher = on_regex(
+    r"^[#＃]?我要(?:自闭|禅定)\s*(.*)", name="self_mute", display_name="自助禁言", level="all", scene="group"
+)
+
+
+@self_mute_matcher.handle()
 async def self_mute(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("self_mute", context)
+    await moderation(context.app_services).handle("self_mute", context)
 
 
-@on_regex(r"^[#＃]申请头衔\s*(.*)", name="apply_title", display_name="申请头衔", level="all", scene="group")
+apply_title_matcher = on_regex(
+    r"^[#＃]申请头衔\s*(.*)", name="apply_title", display_name="申请头衔", level="all", scene="group"
+)
+
+
+@apply_title_matcher.handle()
 async def apply_title(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("apply_title", context)
+    await moderation(context.app_services).handle("apply_title", context)
 
 
-@on_regex(r"^[#＃](?:删除|取消)头衔\s*(.*)", name="remove_title", display_name="删除头衔", level="admin", scene="group")
+remove_title_matcher = on_regex(
+    r"^[#＃](?:删除|取消)头衔\s*(.*)", name="remove_title", display_name="删除头衔", level="admin", scene="group"
+)
+
+
+@remove_title_matcher.handle()
 async def remove_title(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("remove_title", context)
+    await moderation(context.app_services).handle("remove_title", context)
 
 
-@on_regex(r"^[#＃]设置管理\s*(.*)", name="set_admin", display_name="设置管理员", level="owner", scene="group")
+set_admin_matcher = on_regex(
+    r"^[#＃]设置管理\s*(.*)", name="set_admin", display_name="设置管理员", level="owner", scene="group"
+)
+
+
+@set_admin_matcher.handle()
 async def set_admin(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("set_admin", context)
+    await moderation(context.app_services).handle("set_admin", context)
 
 
-@on_regex(r"^[#＃]取消管理\s*(.*)", name="unset_admin", display_name="取消管理员", level="owner", scene="group")
+unset_admin_matcher = on_regex(
+    r"^[#＃]取消管理\s*(.*)", name="unset_admin", display_name="取消管理员", level="owner", scene="group"
+)
+
+
+@unset_admin_matcher.handle()
 async def unset_admin(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("unset_admin", context)
+    await moderation(context.app_services).handle("unset_admin", context)
 
 
-@on_regex(r"^[#＃]撤回", name="recall_msg", display_name="撤回消息", level="admin", scene="group")
+recall_msg_matcher = on_regex(r"^[#＃]撤回", name="recall_msg", display_name="撤回消息", level="admin", scene="group")
+
+
+@recall_msg_matcher.handle()
 async def recall_msg(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("recall_msg", context)
+    await moderation(context.app_services).handle("recall_msg", context)
 
 
-@on_regex(r"^[#＃](?:设置精华|设精)", name="set_essence", display_name="设置精华", level="admin", scene="group")
+set_essence_matcher = on_regex(
+    r"^[#＃](?:设置精华|设精)", name="set_essence", display_name="设置精华", level="admin", scene="group"
+)
+
+
+@set_essence_matcher.handle()
 async def set_essence(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("set_essence", context)
+    await moderation(context.app_services).handle("set_essence", context)
 
 
-@on_regex(r"^[#＃]取消精华", name="unset_essence", display_name="取消精华", level="admin", scene="group")
+unset_essence_matcher = on_regex(
+    r"^[#＃]取消精华", name="unset_essence", display_name="取消精华", level="admin", scene="group"
+)
+
+
+@unset_essence_matcher.handle()
 async def unset_essence(context: HandlerContext) -> None:
-    await moderation(context.runtime).handle("unset_essence", context)
+    await moderation(context.app_services).handle("unset_essence", context)
 
 
 def moderation(runtime):

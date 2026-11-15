@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 from fxbot.core import Event, Message, SessionTarget, current_event
 from fxbot.core.router import Router
+from fxbot.core.matching import MatchResult
 
 
 def event(text: str = "/ping", *, event_type: str = "message") -> Event:
@@ -54,14 +55,15 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order, ["first", "second", "late"])
         self.assertEqual(result.handled, tuple(order))
 
-    async def test_block_stops_same_and_lower_priority_routes(self) -> None:
-        handler, other = AsyncMock(), AsyncMock()
+    async def test_block_stops_lower_priority_but_not_same_priority_routes(self) -> None:
+        handler, other, fallback = AsyncMock(), AsyncMock(), AsyncMock()
         self.router.message("first", handler, priority=1)
         self.router.message("second", other, priority=1)
-        self.router.message("fallback", other, priority=99)
+        self.router.message("fallback", fallback, priority=99)
         result = await self.router.dispatch(self.bot, event())
-        self.assertEqual(result.handled, ("first",))
-        other.assert_not_awaited()
+        self.assertEqual(result.handled, ("first", "second"))
+        other.assert_awaited_once()
+        fallback.assert_not_awaited()
 
     async def test_permission_denial_skips_handler_not_fallback(self) -> None:
         handler, fallback = AsyncMock(), AsyncMock()
@@ -80,11 +82,14 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.denied, ("restricted",))
         handler.assert_not_awaited()
 
-    async def test_rule_miss_does_not_evaluate_permission(self) -> None:
-        permission = AsyncMock()
-        self.router.message("miss", AsyncMock(), rule=AsyncMock(return_value=False), permission=permission)
+    async def test_permission_is_checked_before_rule(self) -> None:
+        permission = AsyncMock(return_value=True)
+        rule = AsyncMock(return_value=False)
+        self.router.message("miss", AsyncMock(), rule=rule, permission=permission)
         self.assertEqual((await self.router.dispatch(self.bot, event())).handled, ())
-        permission.assert_not_awaited()
+        permission.assert_awaited_once()
+        rule.assert_awaited_once()
+        self.assertIs(permission.await_args.args[0], rule.await_args.args[0])
 
     async def test_preprocessors_run_in_order_and_reject_before_matching(self) -> None:
         order = []
@@ -133,7 +138,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
             def match(value):
                 if stage == "match":
                     raise ValueError("secret internal path")
-                return ""
+                return MatchResult()
 
             router.add("broken", handler, match=match, **options)
             if stage == "preprocessor":

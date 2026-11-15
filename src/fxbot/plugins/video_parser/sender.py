@@ -7,6 +7,7 @@ from pathlib import Path
 from .types import VideoResult
 from ...core import Message, HandlerContext, MessageSegment
 from .config import cfg_general
+from ...core.capabilities import Capability
 
 
 def _summary(result: VideoResult) -> str:
@@ -22,10 +23,10 @@ async def send_video_result(context: HandlerContext, result: VideoResult, video_
         messages.append(Message([MessageSegment.image(result.cover_url)]))
     source = video_path.read_bytes() if cfg_general()["use_base64"] else video_path.resolve().as_uri()
     messages.append(Message([MessageSegment("video", {"file": source})]))
-    await context.bot.send_forward(context.event.target, messages)
+    await context.bot.capabilities.require(Capability.FORWARD_SEND).send_forward(context.event.target, messages)
 
 
 async def send_image_result(context: HandlerContext, result: VideoResult, image_paths: list[Path]) -> None:
     messages = [Message.text(_summary(result))]
     messages.extend(Message([MessageSegment.image(path.read_bytes())]) for path in image_paths)
-    await context.bot.send_forward(context.event.target, messages)
+    await context.bot.capabilities.require(Capability.FORWARD_SEND).send_forward(context.event.target, messages)

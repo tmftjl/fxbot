@@ -263,10 +263,13 @@ class LiveCommandTests(unittest.IsolatedAsyncioTestCase):
         self.storage.load.return_value = self.permissions
         self.auth = Authorizer(self.config, self.storage)
         self.feature = bilibili_live.commands.LiveCommands(self.store)
+        self.enterContext(patch.object(bilibili_live.commands.live, "store", self.store))
         self.enterContext(patch.object(bilibili_live.commands, "store", self.store))
         with patch.object(bilibili_live, "store", self.store):
             load_plugins(
-                PluginContext(self.app, self.scheduler, self.auth, Mock(spec=NotificationService)),
+                PluginContext(
+                    self.app, self.scheduler, self.auth, Mock(spec=NotificationService), self.auth.configuration
+                ),
                 (PluginDefinition("bilibili_live", "fxbot.plugins.bilibili_live"),),
             )
             await self.app.start()
@@ -355,6 +358,7 @@ class StandaloneLiveTests(unittest.TestCase):
 
             with (
                 patch.object(bilibili_live.commands, "store", store),
+                patch.object(bilibili_live.commands.live, "store", store),
                 patch.object(bilibili_live, "store", store),
                 patch.object(get_manager(), "get_system", side_effect=lambda: deepcopy(settings)),
                 patch.object(bilibili_live.poller, "fetcher", AsyncMock(return_value=ROOM)) as fetch,

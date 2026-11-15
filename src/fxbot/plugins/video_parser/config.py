@@ -6,7 +6,7 @@ import math
 from typing import Any
 
 from ...config import get_manager
-from .ui_schema import DEFAULTS
+from .defaults import DEFAULTS
 
 
 def validate_config(data: dict[str, Any]) -> None:

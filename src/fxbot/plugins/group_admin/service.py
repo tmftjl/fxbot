@@ -6,8 +6,9 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from fxbot.core.errors import ActionFailed
+
 from ...core import Event, BotClient, Capability, SessionTarget, UnsupportedCapability
-from ...runtime.actions import ActionFailed
 from ...core.application import Application
 from ...permission.authorization import Authorizer
 
@@ -42,17 +43,21 @@ class GroupAdminService:
 
     async def _roles(self, bot: BotClient, event: Event, user_id: str, self_action: bool) -> tuple[str, str]:
         self._online(bot, event.target)
-        own = await bot.member_role(event.target.target_id, bot.bot_id)
+        own = await bot.capabilities.require(Capability.GROUP_ROLE).member_role(event.target.target_id, bot.bot_id)
         if own not in {"owner", "admin"}:
             raise Rejected("Bot 没有群管理权限")
-        operator = await bot.member_role(event.target.target_id, event.user_id)
+        operator = await bot.capabilities.require(Capability.GROUP_ROLE).member_role(
+            event.target.target_id, event.user_id
+        )
         if operator not in {"owner", "admin", "member"}:
             raise Rejected("无法确认操作者身份")
         privileged = self.protected(event.target, event.user_id)
         if not self_action and not privileged and operator not in {"owner", "admin"}:
             raise Rejected("操作者没有群管理权限")
         if user_id:
-            target_role = await bot.member_role(event.target.target_id, user_id)
+            target_role = await bot.capabilities.require(Capability.GROUP_ROLE).member_role(
+                event.target.target_id, user_id
+            )
             if target_role not in {"member", "admin", "owner"}:
                 raise Rejected("无法确认目标成员身份，未执行操作")
             if target_role == "owner":
@@ -99,25 +104,37 @@ class GroupAdminService:
             self._online(bot, event.target)
             group = event.target.target_id
             if action in {"mute_member", "self_mute", "unmute_member"}:
-                await bot.ban(group, user_id, 0 if action == "unmute_member" else duration)
+                await bot.capabilities.require(Capability.MODERATION).ban(
+                    group, user_id, 0 if action == "unmute_member" else duration
+                )
             elif action in {"kick_member", "ban_kick_member"}:
-                await bot.kick(group, user_id, reject_add_request=action == "ban_kick_member")
+                await bot.capabilities.require(Capability.MODERATION).kick(
+                    group, user_id, reject_add_request=action == "ban_kick_member"
+                )
             elif action in {"mute_all_on", "mute_all_off"}:
-                await bot.set_whole_ban(group, enabled=action == "mute_all_on")
+                await bot.capabilities.require(Capability.MODERATION).set_whole_ban(
+                    group, enabled=action == "mute_all_on"
+                )
             elif action in {"set_admin", "unset_admin"}:
-                await bot.set_admin(group, user_id, enabled=action == "set_admin")
+                await bot.capabilities.require(Capability.MODERATION).set_admin(
+                    group, user_id, enabled=action == "set_admin"
+                )
             elif action in {"set_title", "remove_title", "apply_title"}:
-                await bot.set_special_title(group, user_id, "" if action == "remove_title" else title)
+                await bot.capabilities.require(Capability.MODERATION).set_special_title(
+                    group, user_id, "" if action == "remove_title" else title
+                )
             elif action == "recall_msg":
                 if not message_id:
                     raise Rejected("请引用需要撤回的消息")
-                await bot.delete_message(message_id)
+                await bot.capabilities.require(Capability.RECALL).delete_message(message_id)
             elif action in {"set_essence", "unset_essence"}:
                 if Capability.ESSENCE not in bot.capabilities:
                     raise UnsupportedCapability("当前实现不支持精华消息")
                 if not message_id:
                     raise Rejected("请引用需要操作的消息")
-                await bot.set_essence(message_id, enabled=action == "set_essence")
+                await bot.capabilities.require(Capability.ESSENCE).set_essence(
+                    message_id, enabled=action == "set_essence"
+                )
             else:
                 raise Rejected("未知群管理操作")
         except Rejected as exc:
@@ -148,19 +165,19 @@ class GroupAdminService:
             raise ValueError("自动禁言时长无效")
         if not await self.authorizer.check_target("group_admin", target) or self.protected(target, user_id):
             return False
-        own = await bot.member_role(target.target_id, bot.bot_id)
-        role = await bot.member_role(target.target_id, user_id)
+        own = await bot.capabilities.require(Capability.GROUP_ROLE).member_role(target.target_id, bot.bot_id)
+        role = await bot.capabilities.require(Capability.GROUP_ROLE).member_role(target.target_id, user_id)
         if own not in {"owner", "admin"} or role != "member":
             return False
         if not await self.authorizer.check_target("group_admin", target) or self.protected(target, user_id):
             return False
         self._online(bot, target)
         if penalty == "kick":
-            await bot.kick(target.target_id, user_id)
+            await bot.capabilities.require(Capability.MODERATION).kick(target.target_id, user_id)
         elif penalty == "mute":
-            await bot.ban(target.target_id, user_id, duration)
+            await bot.capabilities.require(Capability.MODERATION).ban(target.target_id, user_id, duration)
         elif penalty != "recall":
             raise ValueError("未知自动群管理处罚")
         if message_id:
-            await bot.delete_message(message_id)
+            await bot.capabilities.require(Capability.RECALL).delete_message(message_id)
         return True

@@ -189,7 +189,9 @@ class ReportPluginTests(unittest.IsolatedAsyncioTestCase):
         self.feature = ReportSchedule(self.app, self.notifications)
         with patch("fxbot.plugins.group_analysis.scheduler.ReportSchedule", return_value=self.feature):
             load_plugins(
-                PluginContext(self.app, self.scheduler, self.authorizer, self.notifications),
+                PluginContext(
+                    self.app, self.scheduler, self.authorizer, self.notifications, self.authorizer.configuration
+                ),
                 (PluginDefinition("group_analysis", "fxbot.plugins.group_analysis"),),
             )
             await self.app.start()

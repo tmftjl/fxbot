@@ -22,6 +22,7 @@ class Settings:
     port: int = 8683
     action_timeout: float = 15.0
     queue_size: int = 128
+    event_concurrency: int = 8
     max_pending: int = 128
     close_timeout: float = 5.0
     onebot11_implementations: Mapping[str, str] = field(default_factory=dict)
@@ -97,7 +98,7 @@ class Settings:
         """校验有限监听和容量参数。"""
         if not isinstance(self.host, str) or not self.host:
             raise ValueError("监听地址不能为空")
-        for value in (self.port, self.queue_size, self.max_pending):
+        for value in (self.port, self.queue_size, self.event_concurrency, self.max_pending):
             if type(value) is not int or value <= 0:
                 raise ValueError("端口和容量必须为正整数")
         if self.port > 65535:

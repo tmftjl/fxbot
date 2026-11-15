@@ -8,7 +8,16 @@ from pathlib import Path
 from collections.abc import Callable, Awaitable
 
 from .codec import _id, _copy, parse_message, encode_message
-from ...core import Event, Message, Capability, QuotedMessage, SessionTarget, MessageSegment, UnsupportedCapability
+from ...core import (
+    Event,
+    Message,
+    Capability,
+    Capabilities,
+    QuotedMessage,
+    SessionTarget,
+    MessageSegment,
+    UnsupportedCapability,
+)
 
 ActionSender = Callable[[str, dict[str, Any]], Awaitable[Any]]
 FileUploader = Callable[[SessionTarget, Path, str], Awaitable[Any]]
@@ -18,22 +27,6 @@ class OneBot11Client:
     """将核心发送请求交给显式注入的协议传输函数。"""
 
     platform = "onebot11"
-    capabilities = frozenset(
-        {
-            Capability.REPLY,
-            Capability.REFERENCE_LOOKUP,
-            Capability.MEMBER_LOOKUP,
-            Capability.FORWARD,
-            Capability.GROUP_ROLE,
-            Capability.TARGET_LOOKUP,
-            Capability.AVATAR,
-            Capability.MODERATION,
-            Capability.FORWARD_SEND,
-            Capability.LIKE,
-            Capability.VIDEO,
-            Capability.QQ_PROFILE,
-        }
-    )
 
     def __init__(self, bot_id: str, sender: ActionSender, *, file_uploader: FileUploader | None = None) -> None:
         """绑定连接身份和动作传输函数。"""
@@ -41,8 +34,25 @@ class OneBot11Client:
         self._sender = sender
         self.message_transform = lambda target, message: message
         self._file_uploader = file_uploader
+        self.capabilities = (
+            Capabilities()
+            .provide(Capability.REPLY, self)
+            .provide(Capability.MEDIA, self)
+            .provide(Capability.MEMBER_LOOKUP, self)
+            .provide(Capability.GROUP_ROLE, self)
+            .provide(Capability.GROUP_DIRECTORY, self)
+            .provide(Capability.TARGET_LOOKUP, self)
+            .provide(Capability.AVATAR, self)
+            .provide(Capability.MODERATION, self)
+            .provide(Capability.RECALL, self)
+            .provide(Capability.FORWARD, self)
+            .provide(Capability.FORWARD_SEND, self)
+            .provide(Capability.LIKE, self)
+            .provide(Capability.VIDEO, self)
+            .provide(Capability.QQ_PROFILE, self)
+        )
         if file_uploader is not None:
-            self.capabilities = self.capabilities | {Capability.FILE}
+            self.capabilities = self.capabilities.provide(Capability.FILE, self)
 
     async def call(self, action: str, **params: Any) -> Any:
         """发送协议动作，网络鉴权与响应关联由传输层负责。"""
@@ -51,10 +61,6 @@ class OneBot11Client:
         data = _copy(params)
         json.dumps(data, allow_nan=False)
         return await self._sender(action, data)
-
-    async def fetch_group_history(self, target: SessionTarget, *, start_time: int, end_time: int, limit: int) -> list:
-        """V11 标准没有历史查询动作。"""
-        raise UnsupportedCapability("OneBot V11 标准不定义群历史查询，请明确配置实现类型")
 
     def avatar_url(self, user_id: str) -> str:
         return f"https://q1.qlogo.cn/g?b=qq&nk={_id(user_id)}&s=640"
@@ -205,12 +211,6 @@ class OneBot11Client:
         return await self.call(
             "set_group_special_title", group_id=int(_id(group_id)), user_id=int(_id(user_id)), special_title=title
         )
-
-    async def set_essence(self, message_id: str, *, enabled: bool) -> Any:
-        raise UnsupportedCapability("标准 V11 未声明精华消息扩展")
-
-    async def get_muted_members(self, group_id: str) -> list[dict[str, Any]]:
-        raise UnsupportedCapability("标准 V11 未声明禁言到期字段扩展")
 
     async def like(self, user_id: str, times: int) -> Any:
         if type(times) is not int or not 1 <= times <= 10:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from ..core import Event, Message, SessionTarget, current_runtime
+from ..core import Event, Message, SessionTarget, current_event_context
 from .guard import MembershipGuard
 from ..config import ConfigManager
 from .contact import renewal_contact_text, format_membership_expiry
@@ -48,5 +48,7 @@ class MembershipGate:
                     if days == 0
                     else f"本群会员将在 {days} 天后到期，到期时间：{date}。"
                 )
-                await current_runtime().bot.send(event.target, Message.text(f"{reminder}\n{renewal_contact_text()}"))
+                await current_event_context().bot.send(
+                    event.target, Message.text(f"{reminder}\n{renewal_contact_text()}")
+                )
         return True

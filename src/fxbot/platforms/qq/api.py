@@ -8,7 +8,7 @@ import asyncio
 
 import httpx
 
-from ...runtime.actions import BotOffline, ActionFailed
+from fxbot.core.errors import BotOffline, ActionFailed
 
 API_BASE = "https://api.bot.qq.com"
 AUTH_URL = "https://api.bot.qq.com/app/getAppAccessToken"
@@ -57,10 +57,12 @@ class QQHTTP:
 
     @staticmethod
     def _response(response: httpx.Response) -> dict:
+        if not 200 <= response.status_code < 300:
+            raise QQAPIError(response.status_code)
         data = response.json()
         if not isinstance(data, dict):
             raise ValueError("QQ 接口响应必须为对象")
-        if response.status_code < 200 or response.status_code >= 300 or data.get("code", 0) != 0:
+        if data.get("code", 0) != 0:
             code = data.get("code")
             raise QQAPIError(response.status_code, code if type(code) is int else None)
         return data

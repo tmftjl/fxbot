@@ -207,11 +207,11 @@ class ChatService:
         try:
             while True:
                 async with self.session_store.turn_lock(request.session_id):
-                    current_runtime = request.metadata.get("planner_runtime", runtime)
-                    response = await self._process_locked(request, current_runtime)
+                    current_event_context = request.metadata.get("planner_runtime", runtime)
+                    response = await self._process_locked(request, current_event_context)
                     pause = float(response.metadata.get("wait_seconds") or 0)
                     if not pause:
-                        sent = await self._send_generated(request, response, current_runtime)
+                        sent = await self._send_generated(request, response, current_event_context)
                         if request.metadata.pop("planner_pending", False):
                             continue
                         return sent
@@ -784,7 +784,7 @@ class ChatService:
         user_content = prompt.build_user_content(request)
         current_content = prompt.truncate_content(user_content)
         request.metadata["bot_group_role"] = (
-            await runtime.bot.bot_group_role(request.group_id)
+            await runtime.bot.capabilities.require(Capability.GROUP_ROLE).bot_group_role(request.group_id)
             if runtime.bot is not None and request.group_id and Capability.GROUP_ROLE in runtime.bot.capabilities
             else None
         )

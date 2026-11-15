@@ -7,12 +7,12 @@ import asyncio
 import tempfile
 import unittest
 from copy import deepcopy
-from types import SimpleNamespace
 from pathlib import Path
 from dataclasses import replace
 from unittest.mock import Mock, AsyncMock, patch
 
 from fxbot.core import Message, SessionTarget, HandlerContext, MessageSegment
+from fxbot.core.matching import MatchResult
 from fxbot.utils.json_file import write_json
 from fxbot.core.application import Application
 from fxbot.platforms.onebot11 import OneBot11Client, parse_event
@@ -27,7 +27,7 @@ from fxbot.plugins.video_parser.config import validate_config as validate_video
 from fxbot.plugins.video_parser.sender import send_video_result
 from fxbot.plugins.entertain.musicshare import Song, Music
 from fxbot.plugins.group_admin.banwords import Banwords
-from fxbot.plugins.group_admin.commands import GroupCommands, parse_duration
+from fxbot.plugins.group_admin.commands import parse_duration
 from fxbot.plugins.entertain.image_display import ImageDisplay
 from fxbot.plugins.group_admin.join_verify import Pending, JoinVerification
 from fxbot.plugins.video_parser.parsers.base import ParseError, find_url, can_parse_url
@@ -65,7 +65,7 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
 
     def context(self, text="", **changes):
         event = replace(self.event, message=Message.text(text), original_message=None, **changes)
-        return HandlerContext(self.bot, event, text)
+        return HandlerContext(self.bot, event, MatchResult(text))
 
     def mutations(self):
         return [(action, args) for action, args in self.calls if action.startswith(("set_", "delete_", "send_like"))]
@@ -136,17 +136,18 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_native_command_route_uses_real_mentions(self):
         self.auth.guard = lambda feature: AsyncMock(return_value=True)
-        from fxbot.core.commands import collect_handlers, register_declarations
+        from fxbot.core.plugins import LoadedPlugin, PluginContext, PluginRuntime, PluginMetadata, collect_matchers
+        from fxbot.core.scheduler import Scheduler
         from fxbot.plugins.group_admin import commands
 
-        register_declarations(
-            self.app,
-            self.auth,
-            "group_admin",
-            collect_handlers((commands,)),
-            {"moderation": GroupCommands(self.service)},
-            SimpleNamespace(application=self.app, authorizer=self.auth),
-        )
+        await self.app.stop()
+        self.app = Application()
+        self.addAsyncCleanup(self.app.stop)
+        context = PluginContext(self.app, Scheduler(self.app), self.auth, AsyncMock(), self.auth.configuration)
+        definition = LoadedPlugin("group_admin", PluginMetadata("群管理"), collect_matchers((commands,)), (), ())
+        PluginRuntime(context, definition).install()
+        await self.app.start()
+        self.app.register(self.bot, close=AsyncMock())
         event = replace(
             self.event,
             message=Message(
@@ -241,6 +242,49 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.mutations(), [])
         self.assertEqual(likes.path.read_bytes(), previous)
 
+    async def test_concurrent_join_notices_create_one_challenge(self):
+        verifier = self.verification()
+        entered, release = asyncio.Event(), asyncio.Event()
+        self.addCleanup(release.set)
+
+        async def member_role(group, user):
+            if user == "100":
+                entered.set()
+                await release.wait()
+                return "owner"
+            return "member"
+
+        self.bot.member_role = AsyncMock(side_effect=member_role)
+        context = self.context()
+        with patch("fxbot.plugins.group_admin.join_verify._render_captcha", return_value=b"image"):
+            first = asyncio.create_task(verifier.joined(context))
+            await asyncio.wait_for(entered.wait(), 1)
+            await asyncio.wait_for(verifier.joined(context), 1)
+            release.set()
+            await asyncio.wait_for(first, 1)
+        self.assertEqual(len(verifier.pending), 1)
+        self.assertEqual(len([action for action, _ in self.calls if action == "send_group_msg"]), 1)
+
+    async def test_member_leaving_during_identity_lookup_cancels_pending_challenge(self):
+        verifier = self.verification()
+        entered, release = asyncio.Event(), asyncio.Event()
+        self.addCleanup(release.set)
+
+        async def member_role(group, user):
+            entered.set()
+            await release.wait()
+            return "owner" if user == "100" else "member"
+
+        self.bot.member_role = AsyncMock(side_effect=member_role)
+        context = self.context()
+        first = asyncio.create_task(verifier.joined(context))
+        await asyncio.wait_for(entered.wait(), 1)
+        await verifier.left(context)
+        release.set()
+        await asyncio.wait_for(first, 1)
+        self.assertEqual(verifier.pending, {})
+        self.assertEqual(self.calls, [])
+
     async def test_like_persists_bot_then_user_and_preserves_other_bots(self):
         likes = Likes()
         likes.path = self.root / "likes.json"
@@ -292,7 +336,7 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             patch.object(fortune, "image_bytes", return_value=b"png"),
         ):
             await fortune.handle(self.context())
-            await fortune.handle(HandlerContext(OneBot11Client("101", AsyncMock()), other, ""))
+            await fortune.handle(HandlerContext(OneBot11Client("101", AsyncMock()), other, MatchResult("")))
             self.assertEqual(set(fortune._USER_FORTUNES), {"200"})
             self.assertEqual(render.call_args_list[0].args[1], render.call_args_list[1].args[1])
 

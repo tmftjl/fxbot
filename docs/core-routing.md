@@ -57,12 +57,14 @@ Identify 本地额度不会因为重新发现网关而补回，每次至少间�
 
 - 预处理器按注册顺序执行，必须返回严格的 `True` 才放行。
 - 命令大小写敏感，前缀由注册者显式写入命令词；命令与参数以空白分隔。
-- 路由按优先级从小到大执行，同优先级按注册顺序串行执行。
-- 匹配和规则通过后检查权限；没有权限函数表示公开，权限返回非 `True` 跳过该处理器。
+- 路由按优先级从小到大分组，同优先级并发执行；整组完成后才进入下一优先级。
+  执行完成顺序不确定，诊断结果仍按注册顺序收集。
+- 匹配后依次检查权限、响应规则，再执行处理器；没有权限函数表示公开，权限返回非 `True` 跳过该响应器。
   单个命令权限拒绝不等于全局门禁拒绝，后续公开路由仍可处理；全局门禁必须放在预处理器。
-- `block=True` 在处理器正常结束后停止所有剩余路由，包括同优先级路由。
-- `finish()` 可选发送消息并结束当前处理器，本身不改变阻断设置。
-- 规则、权限、处理器或发送发生异常时记录服务器日志并停止本次分发，不向用户发送内部异常。
+- `block=True` 阻止更低优先级路由，不取消或阻止同优先级响应器。
+- `finish()` 可选发送消息并结束当前响应器的整个处理链，本身不改变阻断设置。
+- 规则、权限、处理器或发送发生异常时记录服务器日志，不向用户发送内部异常；
+  等待同组其他响应器结束后停止向更低优先级传播，不回滚已经发生的同级操作。
 - 取消异常向上抛出；正常、拒绝、失败和取消路径都会恢复事件上下文。
 - 注册表在分发开始时取快照，处理中新增的路由或准入检查只影响下一次分发。
 
@@ -88,19 +90,28 @@ router.command("ping", "/ping", ping)
 网络传输位于 `src/fxbot/runtime/`，独立应用装配入口为 `src/fxbot/bootstrap.py`。
 V11 反向 WebSocket 地址为 `/onebot/v11/ws`，使用 Bearer 令牌和按平台隔离的白名单校验 Universal 连接。
 V12 使用 `/onebot/v12/{platform}/{bot_id}/ws`，要求 `12.*` 子协议，事件和动作都明确携带实际平台身份。
-动作通过 echo 关联响应，事件使用有界队列顺序分发；超时不自动重试。
+动作通过 echo 关联响应，事件使用有界队列和固定数量消费者并发分发；超时不自动重试。
+运行配置 event_concurrency 默认 8，限制每个连接同时处理的事件数；queue_size 默认 128，
+单独限制等待队列，不包含在途事件。值必须为正整数，设为 1 只串行处理事件，不改变同级响应器并发。
+OneBot 连接、QQ Webhook 和 QQ 网关使用同一配置，不限制独立的动作响应和心跳通路。
+QQ Resume 只提交已完成的连续前缀，后续事件先结束不能越过前面的在途事件。
+QQ 待提交序列上限为 queue_size + event_concurrency，防止慢前缀导致已完成记录无限累积。
 动作请求由 `ActionBroker` 独占管理，连接只组合请求代理、事件队列和传输关闭接口。
 应用状态使用 `ApplicationState` 枚举，连接登记必须提供关闭函数；资源栈确保部分启动失败及
 正常关闭时均释放所有已登记资源。清理失败在其余资源释放后向上抛出，不逐层吞掉异常。
 并发停止等待同一次关闭操作，取消某个等待者不取消实际清理；关闭失败不会伪装成功。
 受管任务通过 `Application.cancel(task)` 请求取消；取消请求幂等，调用方仍需等待任务退出。
 连接消费者和定时任务使用同一取消入口，避免再次取消正在执行的异步清理。
+消费者监督任务拥有固定子任务；响应器分发拥有本组子任务。父调用结束或取消前会等待子任务清理，
+不将每条消息变成脱离所有者的后台任务。连接关闭后丢弃未开始队列，已开始的写操作不自动重放。
+OneBot 关闭开始即通过 Application.retire 释放在线身份，允许同 ID 重连；
+旧连接清理仍由应用持有直至 unregister 完成，旧连接的最终注销不会移除新连接。
 
 调度器按名称保留执行槽位直到旧任务真正完成。任务重排、移除后重新添加或连续改配置时，
 同名新任务必须等待旧执行及其清理结束；只执行最后保存的定义，不补跑错过的周期。
 取消中的旧定义不会出现在公开任务列表中，但执行句柄仍由应用持有并等待回收。
 独立入口已接入配置、数据库、原生调度、会员门禁与自助命令，并挂载基础控制台。
-原生路由权限通过 `Authorizer` 直接消费核心事件；旧调用链复用同一领域策略，未被接入新分发。
+原生路由权限通过 `Authorizer` 直接消费核心事件，旧运行链路不参与分发。
 控制台的账户、Bot、会员、配置、权限、日志和缓存端点独立工作；未知 HTTP 错误统一返回通用响应。
 日志缓冲和写线程显式启停，同时采集核心标准日志和业务 Loguru 日志。
 AI 原生路由已接入应用；其余平台和旧插件尚未全部迁移，当前不是完整独立应用验收状态。
@@ -108,7 +119,7 @@ AI 原生路由已接入应用；其余平台和旧插件尚未全部迁移，�
 ## 聊天消息契约
 
 `Event.occurred_at` 是协议边界校验后的带时区时间；聊天存储转换为 naive UTC。
-语音段使用 `voice`，媒体引用通过 `BotClient.resolve_media()` 解析；业务不读取 OneBot 文件字段。
+语音段使用 `voice`，媒体引用通过 `bot.capabilities.require(Capability.MEDIA).resolve_media()` 解析；业务不读取 OneBot 文件字段。
 引用正文使用 `QuotedMessage`，平台可选能力由 `Capability` 明确声明，不通过失败重试探测。
 V11 文件上传必须显式注入 `file_uploader` 策略；标准客户端不假定远端与 FxBot 共享文件系统。
 
@@ -123,7 +134,7 @@ bootstrap 通过 `ChatLifecycle` 安装这些入口，在数据库初始化后�
 模型管理器只在明确调用 `start()` 后开放下一次应用生命周期；关闭失败的实例不能复用。
 
 控制台已挂载聊天、长期记忆和独立网页聊天接口。健康状态使用当前应用的 Bot 表与原生调度器；
-会话展示名通过 `BotClient.target_name()` 查询，必须同时匹配平台与 Bot，缓存按应用隔离。
+会话展示名通过 `bot.capabilities.require(Capability.TARGET_LOOKUP).target_name()` 查询，必须同时匹配平台与 Bot，缓存按应用隔离。
 V12 用户及成员名称使用[标准字段](https://12.onebot.dev/interface/user/actions/)，不复用 V11 的 nickname 别名。
 
 V11 转发字段按[官方消息段规范](https://github.com/botuniverse/onebot-11/blob/master/message/segment.md)读取，
@@ -132,7 +143,7 @@ V11 转发字段按[官方消息段规范](https://github.com/botuniverse/onebot
 ## 插件注册与后台通知
 
 插件不区分内置和外部。core.plugins 负责统一发现、名称校验和安装，
-core.commands 提供 Command 和 register_commands()，权限默认值由
+core.commands 提供响应器创建函数和 Command 权限声明，权限默认值由
 Authorizer.declare_commands() 写入，核心不依赖具体业务插件或权限存储实现。
 已删除 plugins/catalog.py 和 plugins/_native.py，不保留旧入口或名称别名。
 
@@ -141,15 +152,30 @@ Authorizer.declare_commands() 写入，核心不依赖具体业务插件或权�
 插件直接子包会被导入，必须提供 __plugin_meta__ = PluginMetadata(name="中文名", ...)。
 下划线开头或没有 __init__.py 的目录不作为插件；元信息错误、导入错误直接报告。
 
-命令声明使用 on_command、on_regex，事件声明使用 on_event、on_message。
-核心收集插件及其已导入子模块里定义的处理器，去重并生成目录名:命令名权限节点。
+命令声明使用 on_command、on_regex，事件声明使用 on_event、on_message，均返回 Matcher。
+通过 @matcher.handle() 顺序添加处理器；支持无参数、单个上下文或明确类型的内建参数绑定，
+不按名字猜测业务依赖。响应器参数在注册时编译，配置与匹配函数只读。
+核心收集插件及其已导入子模块中的响应器，去重并生成目录名:响应器名权限节点。
 name 参数用于稳定权限 ID，display_name 用于中文展示；on_command 的 arguments 是命令后的参数，
 on_regex 的 arguments 是完整匹配文本。权限由核心声明，插件不手工安装路由。
 控制台 /plugins、/plugins/details、/commands 从当前应用返回插件中文元信息和命令名称。
 
+Rule 使用 & 组合且全部通过，Permission 使用 | 组合且任一通过；均要求严格 True。
+自定义权限只能进一步限制，必须与统一权限节点同时通过，不能通过 OR 绕过管理权限。
+两种组合按声明顺序短路执行，不并发运行有状态检查。
+每个响应器调用只建立一次 HandlerContext；规则、权限和多处理器共享它，state 不跨事件共享。
+matcher.send/finish 从当前执行作用域取得上下文，并发和嵌套调用隔离；结束、异常、取消均恢复上下文。
+继承了上下文的后台任务在响应器结束后不能继续使用 matcher.send，后台通知应使用捕获的目标。
+
+LoadedPlugin 负责读取和验证定义，PluginRuntime 负责应用内绑定与资源所有权。
+先读取全部插件定义并检查全部路由冲突再安装，模块不保存当前应用或连接；
+响应器绑定为不可变快照，加载后禁止增添处理器。核心聊天、会员和控制台命令也通过 bind_matchers 装配。
+原 CommandDeclaration、函数元数据收集和 @on_command(...) 直接装饰处理器的 API 已删除，无兼容分支。
+
 定时业务使用 @scheduled(interval=60, run_on_start=True)，由核心按插件名隔离任务，
 同名任务不重叠、失败由受管任务边界记录，关闭时取消并等待该任务及其清理退出。
-任务 context.first_run 只在成功完成一次后变为 False，状态按应用隔离，失败后仍可重新校准。
+任务 context.first_run 只在成功完成一次后变为 False，内部执行状态独立于业务 state 字典，
+按应用隔离，失败后仍可重新校准。ScheduledTask 持有排期与执行上下文，不使用循环闭包捕获任务。
 直播入口只有普通 store/poller 和定时业务声明，不使用 resource 或后台 Task 管理代码；
 首次执行只校准基线，之后才推送。订阅状态路径和文件格式不变。
 其余四个插件同样不使用 resource；旧 resource 声明 API 已删除，不保留兼容分支。
@@ -192,7 +218,7 @@ on_regex 的 arguments 是完整匹配文本。权限由核心声明，插件不
 通知在异步准入检查后再次验证订阅与连接；离线或已撤销订阅不能改用其他 Bot 发送。
 原生权限检查要求插件和命令节点实际存在；缺失节点不表示开放访问。
 
-群日报使用 `BotClient.fetch_group_history()` 与核心 `HistoryMessage`，只对明确声明 `HISTORY`
+群日报使用 `bot.capabilities.require(Capability.HISTORY).fetch_group_history()` 与核心 `HistoryMessage`，只对明确声明 `HISTORY`
 能力的客户端开放。标准 V11/V12 不包含该能力；`onebot11_implementations` 按账号明确选择 NapCat。
 NapCat 请求使用 `reverse_order` 和返回的短消息 ID 作为 `message_seq` 参数的锚点，
 依据[实现源码](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/action/go-cqhttp/GetGroupMsgHistory.ts)，
@@ -201,3 +227,26 @@ NapCat 请求使用 `reverse_order` 和返回的短消息 ID 作为 `message_seq
 
 验证：`python -I -S -X utf8 -m unittest discover -s tests/migration -t .`；
 `python -m unittest tests.runtime.test_chat_native`。
+
+## 服务、能力与错误边界
+
+`ServiceScope` 按工厂对象身份缓存实例，并保留工厂引用；同名 lambda、闭包、partial
+和不可哈希的可调用对象不会串用缓存。作用域属于当前应用，关闭后拒绝创建服务；
+按创建逆序关闭 `Service`，同一实例只关闭一次，单项失败不阻止其他资源清理。
+
+`BotClient` 只要求身份、能力注册表、出站转换与 `send()`。
+可选操作使用独立 Protocol；平台仅注册真实实现，不提供未支持操作的空壳方法。
+`Capabilities.provide()` 返回新的不可变注册表，`require()` 的返回类型由能力键确定，
+允许能力由客户端以外的对象提供。缺失能力在这一边界明确抛出 `UnsupportedCapability`。
+
+配置读取只对 I/O 错误、格式错误和声明的校验失败执行既定历史回退。
+校验器以 `ValueError` 表示输入不合法；`RuntimeError`、`TypeError` 等内部错误直接暴露，
+不能伪装成损坏配置并静默使用默认值。
+
+核心上下文通过 `Configuration`、`Authorization`、`Notifications` 和 `ApplicationServices`
+窄协议引用服务，不把权限实现或业务类型导入标准库核心。
+当前事件使用 EventContext / current_event_context；HandlerContext.app_services 和 TaskContext.app_services
+显式指向应用服务。配置订阅直接使用 configuration，不再绕经权限服务。
+通用 BotOffline / ActionFailed 位于 core.errors，平台层不依赖 runtime.actions 的异常定义。
+`uvx --from "mypy>=1.10,<2" mypy` 检查核心接口；这是限定范围的类型检查，
+不表示整个业务仓库已严格类型化，协议 JSON 数据边界仍保留 `Any`。

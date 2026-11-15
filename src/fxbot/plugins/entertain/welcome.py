@@ -14,6 +14,7 @@ from ...core.types import Message, SessionTarget, MessageSegment
 from ...core.plugin import on_event, on_regex
 from ...utils.paths import data_dir
 from ...utils.json_file import read_json, write_json
+from ...core.capabilities import Capability
 
 
 class Welcome:
@@ -80,7 +81,10 @@ class Welcome:
                 elif segment.type == "image":
                     if len(staged) >= 5:
                         raise ValueError("欢迎语最多包含 5 张图片")
-                    raw = await load_image_bytes(await context.bot.resolve_media(segment), limit=2 * 1024 * 1024)
+                    raw = await load_image_bytes(
+                        await context.bot.capabilities.require(Capability.MEDIA).resolve_media(segment),
+                        limit=2 * 1024 * 1024,
+                    )
                     with Image.open(io.BytesIO(raw)) as image:
                         if image.width * image.height > 16_000_000:
                             raise ValueError("欢迎图片尺寸过大")
@@ -136,29 +140,50 @@ class Welcome:
         )
 
 
-@on_regex(r"^[#＃]设置欢迎(?:\s*(.+))?", name="set", display_name="设置欢迎语", level="admin", scene="group")
+set_welcome_matcher = on_regex(
+    r"^[#＃]设置欢迎(?:\s*(.+))?", name="set", display_name="设置欢迎语", level="admin", scene="group"
+)
+
+
+@set_welcome_matcher.handle()
 async def set_welcome(context):
-    await welcome(context.runtime).set(context)
+    await welcome(context.app_services).set(context)
 
 
-@on_regex(r"^[#＃]?查看欢迎", name="show", display_name="查看欢迎语", level="all", scene="group")
+show_welcome_matcher = on_regex(r"^[#＃]?查看欢迎", name="show", display_name="查看欢迎语", level="all", scene="group")
+
+
+@show_welcome_matcher.handle()
 async def show_welcome(context):
-    await welcome(context.runtime).show(context)
+    await welcome(context.app_services).show(context)
 
 
-@on_regex(r"^[#＃]?开启欢迎", name="enable", display_name="开启欢迎", level="admin", scene="group")
+enable_welcome_matcher = on_regex(
+    r"^[#＃]?开启欢迎", name="enable", display_name="开启欢迎", level="admin", scene="group"
+)
+
+
+@enable_welcome_matcher.handle()
 async def enable_welcome(context):
-    await welcome(context.runtime).toggle(context)
+    await welcome(context.app_services).toggle(context)
 
 
-@on_regex(r"^[#＃]?关闭欢迎", name="disable", display_name="关闭欢迎", level="admin", scene="group")
+disable_welcome_matcher = on_regex(
+    r"^[#＃]?关闭欢迎", name="disable", display_name="关闭欢迎", level="admin", scene="group"
+)
+
+
+@disable_welcome_matcher.handle()
 async def disable_welcome(context):
-    await welcome(context.runtime).toggle(context)
+    await welcome(context.app_services).toggle(context)
 
 
-@on_event("member_joined", name="welcome", display_name="欢迎新成员", scene="group", priority=12)
+joined_matcher = on_event("member_joined", name="welcome", display_name="欢迎新成员", scene="group", priority=12)
+
+
+@joined_matcher.handle()
 async def joined(context):
-    await welcome(context.runtime).joined(context)
+    await welcome(context.app_services).joined(context)
 
 
 def welcome(runtime):

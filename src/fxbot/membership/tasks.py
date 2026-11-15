@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 
+from fxbot.core.errors import ActionFailed
+
 from ..core import Message, SessionTarget
 from .guard import MembershipGuard
 from .models import MembershipGroup, utc_now
@@ -16,8 +18,8 @@ from ..config import ConfigManager
 from .contact import renewal_contact_text, format_membership_expiry
 from .service import MembershipService
 from ..core.scheduler import Job, Daily, Scheduler
-from ..runtime.actions import ActionFailed
 from ..core.application import Application
+from ..core.capabilities import Capability
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,5 +106,5 @@ class MembershipMaintenance:
             await bot.send(target, Message.text(notice))
         except (ConnectionError, ActionFailed, asyncio.TimeoutError):
             logger.opt(exception=True).warning("到期提醒发送失败，继续执行退群")
-        await bot.leave_group(target.target_id)
+        await bot.capabilities.require(Capability.GROUP_DIRECTORY).leave_group(target.target_id)
         return MembershipTaskResult(left=1, expired=1)

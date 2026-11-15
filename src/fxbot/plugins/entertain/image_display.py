@@ -49,7 +49,12 @@ class ImageDisplay:
         await context.send("已开启图片外显" if cfg["image_display"]["enabled"] else "已关闭图片外显")
 
 
-@on_regex(r"^[#＃](开启|关闭)图片外显", name="toggle_image_display", display_name="图片外显开关", level="superuser")
+toggle_image_display_matcher = on_regex(
+    r"^[#＃](开启|关闭)图片外显", name="toggle_image_display", display_name="图片外显开关", level="superuser"
+)
+
+
+@toggle_image_display_matcher.handle()
 async def toggle_image_display(context):
     await display.handle(context)
 

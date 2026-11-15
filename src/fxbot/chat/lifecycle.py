@@ -23,7 +23,6 @@ from ..core.scheduler import Scheduler
 from .amemorix.runtime import amemorix_runtime
 from ..core.application import Application
 from .amemorix.writeback import chat_writeback
-from ..console.chat_channel import console_chat
 from .behavior.turn_scheduler import normal_scheduler
 from .amemorix.image_writeback import image_writeback
 from ..permission.authorization import Authorizer
@@ -76,8 +75,6 @@ class ChatLifecycle:
         reply_scheduler.start()
         resources.push_async_callback(normal_scheduler.stop)
         normal_scheduler.start()
-        resources.push_async_callback(console_chat.stop)
-        console_chat.start()
         await state.prepare_memory()
         await amemorix_runtime.start()
         await image_writeback.start()

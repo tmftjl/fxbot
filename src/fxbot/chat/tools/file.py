@@ -7,12 +7,13 @@ from tempfile import TemporaryDirectory
 
 from loguru import logger
 
+from fxbot.core.errors import ActionFailed
+
 from .types import ToolError, ToolContext
 from ...core import Capability, UnsupportedCapability
 from .runtime import ToolRuntime
 from .registry import tool
 from ...utils.paths import cache_dir
-from ...runtime.actions import ActionFailed
 
 MAX_FILE_CHARS = 200_000
 
@@ -65,7 +66,7 @@ async def send_file_tool(context: ToolContext, runtime: ToolRuntime, name: str =
             path = Path(directory) / filename
             path.write_text(text, encoding="utf-8")
             size = path.stat().st_size
-            await bot.send_file(event.target, path, filename)
+            await bot.capabilities.require(Capability.FILE).send_file(event.target, path, filename)
     except UnsupportedCapability:
         raise ToolError("当前平台不支持发送文件。", code="file_unsupported") from None
     except (OSError, ActionFailed, TimeoutError):

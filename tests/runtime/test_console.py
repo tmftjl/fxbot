@@ -13,8 +13,8 @@ from loguru import logger
 from fastapi.testclient import TestClient
 
 from fxbot.console import auth, account, log_store, log_stream
+from fxbot.core.errors import ActionFailed
 from fxbot.runtime.server import create_app
-from fxbot.runtime.actions import ActionFailed
 from fxbot.runtime.settings import Settings
 from fxbot.membership.service import membership_service
 from tests.runtime.test_server import HEADERS
@@ -39,9 +39,37 @@ class ConsoleTests(unittest.TestCase):
                 self.assertEqual(self.client.get(f"/fxbot/{path}", headers=self.headers).status_code, 200)
 
     def test_plugin_schema_discovery_does_not_start_plugin_entrypoints(self) -> None:
-        response = self.client.get("/fxbot/config/tabs", headers=self.headers)
+        with patch("importlib.util.spec_from_file_location", side_effect=AssertionError("schema re-import")):
+            response = self.client.get("/fxbot/config/tabs", headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertIn("video_parser", {item["key"] for item in response.json()})
+
+    def test_invalid_permission_update_is_rejected_without_changing_existing_rules(self) -> None:
+        from copy import deepcopy
+
+        original = self.client.get("/fxbot/permissions", headers=self.headers).json()
+        changed = deepcopy(original)
+        changed["top"]["level"] = "superusr"
+        response = self.client.put("/fxbot/permissions", headers=self.headers, json=changed)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/fxbot/permissions", headers=self.headers).json(), original)
+
+    def test_memory_route_translates_domain_errors_but_does_not_expose_programming_errors(self) -> None:
+        from fxbot.console.services import memory_admin
+        from fxbot.console.services.errors import AdminFailure, MemoryAdminError
+
+        with patch.object(
+            memory_admin,
+            "status",
+            AsyncMock(side_effect=MemoryAdminError(kind=AdminFailure.UNAVAILABLE, detail="disabled")),
+        ):
+            response = self.client.get("/fxbot/amemorix/status?tenant=test", headers=self.headers)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "disabled")
+        with patch.object(memory_admin, "status", AsyncMock(side_effect=RuntimeError("secret-programming-error"))):
+            response = self.client.get("/fxbot/amemorix/status?tenant=test", headers=self.headers)
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("secret-programming-error", response.text)
 
     def test_plugin_metadata_and_command_names_are_chinese(self) -> None:
         plugins = self.client.get("/fxbot/plugins", headers=self.headers)

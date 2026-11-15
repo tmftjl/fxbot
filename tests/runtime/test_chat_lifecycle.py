@@ -59,7 +59,6 @@ class ChatLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "focus_mode_manager": SimpleNamespace(start=opening("focus"), stop_all=action("stop:focus")),
             "reply_scheduler": SimpleNamespace(start=opening("continuations"), stop=action("stop:continuations")),
             "normal_scheduler": SimpleNamespace(start=opening("turns"), stop=action("stop:turns")),
-            "console_chat": SimpleNamespace(start=opening("console"), stop=action("stop:console")),
             "state": SimpleNamespace(prepare_memory=action("start:schema"), mark_degraded=Mock()),
             "stop_audit_observers": action("stop:audit"),
             "close_shared_async_client": action("stop:http"),
@@ -76,7 +75,6 @@ class ChatLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.config.subscribe.assert_called_once()
         await self.app.stop()
         self.assertEqual([job.name for job in self.scheduler.jobs], ["outside"])
-        self.assertLess(self.events.index("stop:console"), self.events.index("stop:providers"))
         self.assertLess(self.events.index("stop:focus"), self.events.index("stop:memory"))
         self.assertLess(self.events.index("stop:writeback"), self.events.index("stop:memory"))
         self.assertLess(self.events.index("stop:memory"), self.events.index("stop:providers"))

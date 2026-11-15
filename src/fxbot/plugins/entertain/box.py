@@ -13,9 +13,10 @@ from PIL import Image
 
 from .config import cfg_box
 from ...utils.tz import SHANGHAI_TZ
-from ...core.types import Message, Capability, SessionTarget, MessageSegment
+from ...core.types import Message, SessionTarget, MessageSegment
 from ...utils.http import get_shared_async_client
 from ...core.plugin import on_event, on_regex
+from ...core.capabilities import Capability
 
 
 class Box:
@@ -25,7 +26,9 @@ class Box:
         if Capability.QQ_PROFILE not in context.bot.capabilities:
             await context.finish("当前平台不支持 QQ 资料查询")
         if cfg["only_admin"]:
-            if not event.is_group or await context.bot.member_role(event.target.target_id, event.user_id) not in {
+            if not event.is_group or await context.bot.capabilities.require(Capability.GROUP_ROLE).member_role(
+                event.target.target_id, event.user_id
+            ) not in {
                 "owner",
                 "admin",
             }:
@@ -43,8 +46,10 @@ class Box:
     async def render(self, bot, user_id, group_id) -> Message:
         from .box_draw import create_image
 
-        info = await bot.get_user(user_id)
-        member = await bot.get_member(group_id, user_id) if group_id else {}
+        info = await bot.capabilities.require(Capability.QQ_PROFILE).get_user(user_id)
+        member = (
+            await bot.capabilities.require(Capability.MEMBER_LOOKUP).get_member(group_id, user_id) if group_id else {}
+        )
         url = cfg_box()["avatar_api_url"].format(user_id=user_id)
         try:
             response = await (await get_shared_async_client()).get(url)
@@ -245,12 +250,18 @@ def _parse_home_town(code: str) -> str:
     return country
 
 
-@on_regex(r"^(?:#|＃|/)(?:盒|开盒)\s*(.*)", name="box", display_name="QQ资料卡", level="all")
+show_box_matcher = on_regex(r"^(?:#|＃|/)(?:盒|开盒)\s*(.*)", name="box", display_name="QQ资料卡", level="all")
+
+
+@show_box_matcher.handle()
 async def show_box(context):
     await box.handle(context)
 
 
-@on_event("member_joined", name="increase_box", scene="group", priority=12)
+joined_matcher = on_event("member_joined", name="increase_box", scene="group", priority=12)
+
+
+@joined_matcher.handle()
 async def joined(context):
     await box.joined(context)
 

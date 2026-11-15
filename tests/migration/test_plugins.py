@@ -12,6 +12,8 @@ from unittest.mock import Mock, AsyncMock, patch
 
 from fxbot.core import Event, Message, SessionTarget
 from fxbot.core.plugins import PluginContext, load_plugins, discover_plugins
+from fxbot.core.matching import MatchResult
+from fxbot.core.services import ServiceScope
 from fxbot.core.scheduler import Scheduler
 from fxbot.core.application import Application, ApplicationState
 
@@ -27,8 +29,9 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.app = Application()
         self.events = []
         self.auth = Mock()
+        self.auth.check = AsyncMock(return_value=True)
         self.auth.guard = lambda feature: AsyncMock(return_value=True)
-        self.context = PluginContext(self.app, Scheduler(self.app), self.auth, self.events)
+        self.context = PluginContext(self.app, Scheduler(self.app), self.auth, self.events, self.auth.configuration)
 
         async def cleanup():
             if self.app.state is not ApplicationState.STOPPED:
@@ -46,9 +49,13 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
         path = self.root / folder
         path.mkdir()
         (path / "__init__.py").write_text(
-            "from fxbot.core.plugin import PluginMetadata, on_command, on_regex, on_event, on_message, Service\n"
-            "from fxbot.core.plugin import scheduled\n"
-            "__plugin_meta__ = PluginMetadata(name='测试插件', description='描述', usage='#你好')\n" + body,
+            (
+                "from fxbot.core.plugin import PluginMetadata, on_command, on_regex, on_event, on_mess"
+                "age, Service\n"
+                "from fxbot.core.plugin import scheduled\n"
+                "__plugin_meta__ = PluginMetadata(name='测试插件', description='描述', usage='#你好')\n"
+            )
+            + body,
             encoding="utf-8",
         )
         return path
@@ -56,7 +63,11 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
     async def test_automatic_import_collects_chinese_metadata_and_permissions(self):
         path = self.plugin(
             body=(
-                "@on_command('你好', name='hello', aliases={'嗨'}, level='admin', scene='group', display_name='问候')\n"
+                "hello_matcher = on_command('你好', name='hello', aliases={'嗨'}, level='admin', scene='g"
+                "roup', display_name='问候')\n"
+                "\n"
+                "\n"
+                "@hello_matcher.handle()\n"
                 "async def hello(context): await context.send(context.arguments)\n"
             )
         )
@@ -99,7 +110,9 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(denied.handled)
 
     async def test_no_json_setup_plugin_object_or_install_needed(self):
-        self.plugin(body="@on_command('你好')\nasync def hello(context): pass\n")
+        self.plugin(
+            body="hello_matcher = on_command('你好')\n\n\n@hello_matcher.handle()\nasync def hello(context): pass\n"
+        )
         load_plugins(self.context, discover_plugins())
         await self.app.start()
         self.assertEqual(len(self.app.router._routes), 1)
@@ -117,7 +130,10 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "def second(runtime):\n"
                 "    runtime.notifications.append('second')\n"
                 "    return Owned(runtime, 'second')\n"
-                "@on_command('你好')\n"
+                "hello_matcher = on_command('你好')\n"
+                "\n"
+                "\n"
+                "@hello_matcher.handle()\n"
                 "async def hello(context):\n"
                 "    assert context.service(first) is context.service(first)\n"
                 "    context.service(second)\n"
@@ -129,8 +145,8 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
         module = sys.modules["fxbot.plugins." + path.name]
         from fxbot.core.router import HandlerContext
 
-        scope = {}
-        ctx = HandlerContext(None, None, "", scope, self.context)
+        scope = ServiceScope()
+        ctx = HandlerContext(None, None, MatchResult(""), scope, self.context)
         first = ctx.service(module.first)
         self.assertIs(first, ctx.service(module.first))
         ctx.service(module.second)
@@ -164,7 +180,7 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
         definitions = discover_plugins()
         load_plugins(self.context, definitions)
         other = Application()
-        other_context = PluginContext(other, Scheduler(other), self.auth, [])
+        other_context = PluginContext(other, Scheduler(other), self.auth, [], self.auth.configuration)
         load_plugins(other_context, definitions)
         await self.app.start()
         await other.start()
@@ -175,8 +191,8 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
             await second.callback()
             from fxbot.plugins.registry_fixture_sample import counter
 
-            left = first.callback.__defaults__[1]
-            right = second.callback.__defaults__[1]
+            left = first.callback.__self__.context
+            right = second.callback.__self__.context
             self.assertIsNot(left.service(counter), right.service(counter))
         finally:
             await other.stop()
@@ -191,7 +207,10 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
                 "    async def close(self): raise RuntimeError('failed-close')\n"
                 "def first(runtime): return Owned(runtime)\n"
                 "def second(runtime): return Broken()\n"
-                "@on_command('hello')\n"
+                "hello_matcher = on_command('hello')\n"
+                "\n"
+                "\n"
+                "@hello_matcher.handle()\n"
                 "async def hello(ctx):\n"
                 "    ctx.service(first)\n"
                 "    ctx.service(second)\n"
@@ -271,6 +290,50 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "plugin failed"):
             load_plugins(self.context, discover_plugins())
 
+    async def test_invalid_later_plugin_does_not_install_earlier_routes(self):
+        self.plugin(
+            "registry_fixture_a",
+            body="hello = on_command('你好')\n@hello.handle()\nasync def answer(ctx): pass\n",
+        )
+        self.plugin("registry_fixture_z", body="raise RuntimeError('invalid-later-plugin')\n")
+        with self.assertRaisesRegex(RuntimeError, "invalid-later-plugin"):
+            load_plugins(self.context, discover_plugins())
+        self.assertEqual(self.app.router._routes, [])
+        self.assertEqual(self.app.plugin_metadata, {})
+
+    async def test_route_collision_is_validated_before_any_plugin_is_installed(self):
+        self.plugin(
+            "registry_fixture_a",
+            body="m = on_command('hello', name='hello')\n@m.handle()\nasync def handle(ctx): pass\n",
+        )
+        self.plugin(
+            "registry_fixture_z",
+            body="m = on_command('other', name='other')\n@m.handle()\nasync def handle(ctx): pass\n",
+        )
+        self.app.router.message("registry_fixture_z:other", AsyncMock())
+        before = list(self.app.router._routes)
+        with self.assertRaises(ValueError):
+            load_plugins(self.context, discover_plugins())
+        self.assertEqual(self.app.router._routes, before)
+        self.assertFalse(self.app.plugin_metadata)
+        self.assertFalse(self.app._starters)
+
+    async def test_business_completed_key_does_not_control_framework_first_run(self):
+        self.plugin(
+            body=(
+                "@scheduled(interval=60)\n"
+                "async def check(ctx):\n"
+                "    ctx.state['completed'] = False\n"
+                "    ctx.notifications.append(ctx.first_run)\n"
+            )
+        )
+        load_plugins(self.context, discover_plugins())
+        await self.app.start()
+        (job,) = self.context.scheduler.jobs
+        await job.callback()
+        await job.callback()
+        self.assertEqual(self.events, [True, False])
+
     async def test_duplicate_plugin_names_fail_before_import(self):
         self.plugin()
         definitions = discover_plugins()
@@ -278,17 +341,32 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
             load_plugins(self.context, (*definitions, *definitions))
         self.assertNotIn(definitions[0].module, sys.modules)
 
-    async def test_same_function_reexport_does_not_duplicate_routes(self):
-        self.plugin(body=("@on_command('你好')\nasync def hello(context): pass\nhello_alias = hello\n"))
+    async def test_same_matcher_reexport_does_not_duplicate_routes(self):
+        self.plugin(
+            body=(
+                "hello_matcher = on_command('你好')\n"
+                "\n"
+                "\n"
+                "@hello_matcher.handle()\n"
+                "async def hello(context): pass\n"
+                "hello_alias = hello_matcher\n"
+            )
+        )
         load_plugins(self.context, discover_plugins())
         self.assertEqual(len(self.app.router._routes), 1)
 
     async def test_duplicate_command_names_fail(self):
         self.plugin(
             body=(
-                "@on_command('你好', name='same')\n"
+                "first_matcher = on_command('你好', name='same')\n"
+                "\n"
+                "\n"
+                "@first_matcher.handle()\n"
                 "async def first(context): pass\n"
-                "@on_regex('other', name='same')\n"
+                "second_matcher = on_regex('other', name='same')\n"
+                "\n"
+                "\n"
+                "@second_matcher.handle()\n"
                 "async def second(context): pass\n"
             )
         )
@@ -376,15 +454,23 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wrong_scheduler_is_rejected(self):
         with self.assertRaises(ValueError):
-            load_plugins(PluginContext(self.app, Scheduler(Application()), self.auth, None), ())
+            load_plugins(
+                PluginContext(self.app, Scheduler(Application()), self.auth, None, self.auth.configuration), ()
+            )
 
     async def test_events_and_conditional_messages_do_not_block_unmatched_input(self):
         self.plugin(
             body=(
                 "async def only_yes(context): return context.arguments == 'yes'\n"
-                "@on_message(name='answer', when=only_yes)\n"
+                "answer_matcher = on_message(name='answer', rule=only_yes)\n"
+                "\n"
+                "\n"
+                "@answer_matcher.handle()\n"
                 "async def answer(context): await context.send('matched')\n"
-                "@on_event('member_joined', name='joined')\n"
+                "joined_matcher = on_event('member_joined', name='joined')\n"
+                "\n"
+                "\n"
+                "@joined_matcher.handle()\n"
                 "async def joined(context): await context.send('welcome')\n"
             )
         )

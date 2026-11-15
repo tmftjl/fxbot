@@ -8,15 +8,22 @@ from pathlib import Path
 from collections.abc import Callable, Awaitable
 
 from .codec import _text, _json_copy, encode_message
-from ...core import Event, Message, Capability, QuotedMessage, SessionTarget, MessageSegment, UnsupportedCapability
+from ...core import (
+    Event,
+    Message,
+    Capability,
+    Capabilities,
+    QuotedMessage,
+    SessionTarget,
+    MessageSegment,
+    UnsupportedCapability,
+)
 
 ActionSender = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
 class OneBot12Client:
     """直接使用 OneBot V12 动作，不调用宿主框架对象。"""
-
-    capabilities = frozenset({Capability.REPLY, Capability.MEMBER_LOOKUP, Capability.FILE, Capability.TARGET_LOOKUP})
 
     def __init__(self, bot_id: str, platform: str, sender: ActionSender) -> None:
         """绑定协议版本、实际平台和机器人身份。"""
@@ -25,6 +32,16 @@ class OneBot12Client:
         self.platform = f"onebot12.{platform}"
         self._sender = sender
         self.message_transform = lambda target, message: message
+        self.capabilities = (
+            Capabilities()
+            .provide(Capability.REPLY, self)
+            .provide(Capability.MEDIA, self)
+            .provide(Capability.MEMBER_LOOKUP, self)
+            .provide(Capability.GROUP_DIRECTORY, self)
+            .provide(Capability.FILE, self)
+            .provide(Capability.RECALL, self)
+            .provide(Capability.TARGET_LOOKUP, self)
+        )
 
     async def call(self, action: str, **params: Any) -> Any:
         """提交协议动作。"""
@@ -79,16 +96,6 @@ class OneBot12Client:
             raise ValueError("成员名称必须是文本")
         return name
 
-    async def get_forward_ids(self, message_id: str) -> list[str]:
-        """V12 标准没有消息查询接口。"""
-        raise UnsupportedCapability("此协议不支持转发消息查询")
-
-    async def fetch_group_history(self, target: SessionTarget, *, start_time: int, end_time: int, limit: int) -> list:
-        raise UnsupportedCapability("OneBot V12 标准不定义群历史查询")
-
-    def avatar_url(self, user_id: str) -> str:
-        raise UnsupportedCapability("OneBot V12 标准不定义成员头像")
-
     async def target_name(self, target: SessionTarget) -> str:
         """读取标准会话名称，不使用其他平台的字段别名。"""
         self._check_target(target)
@@ -100,44 +107,6 @@ class OneBot12Client:
         if not isinstance(name, str):
             raise ValueError("会话名称必须是文本")
         return name
-
-    async def bot_group_role(self, group_id: str) -> str | None:
-        """V12 标准未定义群角色。"""
-        raise UnsupportedCapability("此协议不支持群角色查询")
-
-    async def member_role(self, group_id: str, user_id: str) -> str:
-        raise UnsupportedCapability("OneBot V12 标准不定义群成员角色")
-
-    async def ban(self, group_id: str, user_id: str, duration: int) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义禁言")
-
-    async def kick(self, group_id: str, user_id: str, *, reject_add_request: bool = False) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义移出成员")
-
-    async def set_admin(self, group_id: str, user_id: str, *, enabled: bool) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义调整管理员")
-
-    async def set_whole_ban(self, group_id: str, *, enabled: bool) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义全群禁言")
-
-    async def set_special_title(self, group_id: str, user_id: str, title: str) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义头衔")
-
-    async def set_essence(self, message_id: str, *, enabled: bool) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义精华消息")
-
-    async def get_muted_members(self, group_id: str) -> list[dict[str, Any]]:
-        raise UnsupportedCapability("OneBot V12 标准不定义禁言成员查询")
-
-    async def like(self, user_id: str, times: int) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义点赞")
-
-    async def send_forward(self, target: SessionTarget, messages: list[Message]) -> Any:
-        raise UnsupportedCapability("OneBot V12 标准不定义合并转发发送")
-
-    async def get_forward_messages(self, forward_id: str) -> list[dict[str, Any]]:
-        """V12 标准没有合并转发接口。"""
-        raise UnsupportedCapability("此协议不支持合并转发")
 
     def _check_target(self, target: SessionTarget) -> None:
         """发送前验证连接和会话命名空间。"""

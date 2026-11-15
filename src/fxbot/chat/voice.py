@@ -8,12 +8,13 @@ import asyncio
 import httpx
 from loguru import logger
 
-from ..core import Event, BotClient, MessageSegment, UnsupportedCapability
+from fxbot.core.errors import ActionFailed
+
+from ..core import Event, BotClient, Capability, MessageSegment, UnsupportedCapability
 from ..config import get_manager as get_config_manager
 from .providers import provider_manager
 from ..utils.http import read_limited, ensure_public_http_url, get_shared_async_client
 from .providers.usage import track_model_task_usage
-from ..runtime.actions import ActionFailed
 
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
 MAX_REDIRECTS = 3
@@ -138,7 +139,7 @@ async def transcribe_event(bot: BotClient, event: Event) -> str:
     if not asr_enabled():
         return VOICE_DISABLED
     try:
-        source = await bot.resolve_media(segments[0])
+        source = await bot.capabilities.require(Capability.MEDIA).resolve_media(segments[0])
         data = await _load_audio(source)
         text = await transcribe(data)
     except (OSError, ValueError, asyncio.TimeoutError, httpx.HTTPError, UnsupportedCapability, ActionFailed):

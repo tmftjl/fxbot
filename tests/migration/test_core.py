@@ -17,7 +17,7 @@ from fxbot.core import (
     bind_event,
     reset_event,
     current_event,
-    current_runtime,
+    current_event_context,
 )
 
 
@@ -97,6 +97,22 @@ class CoreTypeTests(unittest.TestCase):
 
 
 class ContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_child_cannot_keep_event_context_alive_after_parent_scope_exits(self) -> None:
+        release = asyncio.Event()
+        target = SessionTarget("test", "bot", "private", "user")
+        event = Event(None, None, "message", "test", "bot", "user", "", target)
+        token = bind_event(SimpleNamespace(platform="test", bot_id="bot"), event)
+
+        async def child():
+            await release.wait()
+            return current_event()
+
+        task = asyncio.create_task(child())
+        reset_event(token)
+        release.set()
+        with self.assertRaises(RuntimeError):
+            await task
+
     """事件上下文必须可嵌套、可恢复且不依赖全局当前 Bot。"""
 
     async def test_context_is_task_local_and_restored(self) -> None:
@@ -114,7 +130,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         token = bind_event(bot, event)
         try:
             self.assertIs(current_event(), event)
-            self.assertIs(current_runtime().bot, bot)
+            self.assertIs(current_event_context().bot, bot)
 
             async def child() -> str:
                 return current_event().user_id

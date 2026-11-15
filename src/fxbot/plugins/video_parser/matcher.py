@@ -8,13 +8,14 @@ import asyncio
 import httpx
 from loguru import logger
 
+from fxbot.core.errors import ActionFailed
+
 from . import state, config
 from ...core import Event, Message, Capability, HandlerContext, MessageSegment
 from .sender import send_image_result, send_video_result
 from .parsers import ParseError, find_url, parse_url, can_parse_url
 from .downloader import DownloadError, download_video, download_images, create_download_dir, cleanup_download_dir
 from ...core.plugin import on_regex, on_message
-from ...runtime.actions import ActionFailed
 from ...core.application import Application
 from ...permission.authorization import Authorizer
 
@@ -87,7 +88,7 @@ class VideoParser:
             message_id = processing.get("message_id")
             if message_id is not None:
                 try:
-                    await context.bot.delete_message(str(message_id))
+                    await context.bot.capabilities.require(Capability.RECALL).delete_message(str(message_id))
                 except (ActionFailed, TimeoutError, OSError):
                     logger.opt(exception=True).debug("解析已交付，处理中提示撤回失败")
         except (ParseError, DownloadError) as exc:
@@ -138,25 +139,43 @@ async def has_url(context):
     return url is not None
 
 
-@on_message(name="parse", display_name="链接解析", priority=8, when=has_url)
+parse_matcher = on_message(name="parse", display_name="链接解析", priority=8, rule=has_url)
+
+
+@parse_matcher.handle()
 async def parse(context):
     from dataclasses import replace
 
     url = context.service(parser).match(context.event)
     if url is not None:
-        await context.service(parser).parse(replace(context, arguments=url))
+        await context.service(parser).parse(replace(context, match=replace(context.match, arguments=url)))
 
 
-@on_regex(r"^[#＃]?(开启|关闭)解析$", name="group_toggle", display_name="群解析开关", level="admin", scene="group")
+group_toggle_matcher = on_regex(
+    r"^[#＃]?(开启|关闭)解析$", name="group_toggle", display_name="群解析开关", level="admin", scene="group"
+)
+
+
+@group_toggle_matcher.handle()
 async def group_toggle(context):
     await context.service(parser).group_toggle(context)
 
 
-@on_regex(r"^[#＃]?全局(开启|关闭)解析$", name="global_toggle", display_name="全局解析开关", level="superuser")
+global_toggle_matcher = on_regex(
+    r"^[#＃]?全局(开启|关闭)解析$", name="global_toggle", display_name="全局解析开关", level="superuser"
+)
+
+
+@global_toggle_matcher.handle()
 async def global_toggle(context):
     await context.service(parser).global_toggle(context)
 
 
-@on_regex(r"^[#＃]?(?:B站|b站|哔哩哔哩)登录$", name="bilibili_login", display_name="B站登录", level="superuser")
+bilibili_login_matcher = on_regex(
+    r"^[#＃]?(?:B站|b站|哔哩哔哩)登录$", name="bilibili_login", display_name="B站登录", level="superuser"
+)
+
+
+@bilibili_login_matcher.handle()
 async def bilibili_login(context):
     await context.service(parser).login(context)

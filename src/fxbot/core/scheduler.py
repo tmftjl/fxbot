@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import math
 import asyncio
-from typing import Protocol
+from typing import Any, Protocol
 from datetime import datetime, timezone, timedelta
+from functools import partial
 from dataclasses import dataclass
-from collections.abc import Callable, Awaitable
+from collections.abc import Callable, Coroutine
 
 from .application import Application
 
-Callback = Callable[[], Awaitable[None]]
+Callback = Callable[[], Coroutine[Any, Any, None]]
 
 
 class Schedule(Protocol):
@@ -161,11 +162,7 @@ class Scheduler:
                     task = self.application.spawn(spec.callback(), name=f"job:{spec.name}")
                     slot.running = task
                     slot.deadline = now + spec.schedule.delay(datetime.now(timezone.utc))
-                    task.add_done_callback(
-                        lambda done, name=spec.name, slot=slot, revision=revision: self._finished(
-                            name, slot, revision, done
-                        )
-                    )
+                    task.add_done_callback(partial(self._finished, spec.name, slot, revision))
             deadlines = [
                 slot.deadline for slot in self._jobs.values() if slot.spec is not None and slot.running is None
             ]

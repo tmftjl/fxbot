@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any, Callable
+from pathlib import Path
+from contextlib import ExitStack
 from dataclasses import field, dataclass
 
 from loguru import logger
@@ -13,6 +15,14 @@ from .storage import ConfigStorage
 from ..utils.cache import cache
 
 Validator = Callable[[dict[str, Any]], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigSnapshot:
+    files: tuple[tuple[Path, bytes | None], ...]
+    last_valid: dict[str, Any] | None
+    last_error: str | None
+    cached: Any
 
 
 def deep_merge(
@@ -73,15 +83,15 @@ class ConfigProxy:
     @property
     def history_storage(self) -> ConfigStorage:
         """返回与主配置相邻的有效配置快照。"""
-        storage = ConfigStorage(self.namespace, f"{self.filename}.last-valid")
-        storage._path = self.path.with_name(f"{self.path.name}.last-valid")
-        return storage
+        return ConfigStorage(
+            self.namespace, f"{self.filename}.last-valid", path=self.path.with_name(f"{self.path.name}.last-valid")
+        )
 
     def ensure(self) -> None:
         if not self.storage.exists() and not self.history_storage.exists() and self._last_valid is None:
             self.save(deepcopy(self.defaults))
 
-    def _validated(self, raw: dict[str, Any]) -> dict[str, Any]:
+    def validate(self, raw: dict[str, Any]) -> dict[str, Any]:
         """同时校验原始值与合并后的配置。"""
         if self.validator is not None:
             try:
@@ -107,7 +117,7 @@ class ConfigProxy:
         self._last_error = str(exc)
         if self._last_valid is None and self.history_storage.exists():
             try:
-                self._last_valid = deepcopy(self._validated(self.history_storage.read(strict=True)))
+                self._last_valid = deepcopy(self.validate(self.history_storage.read(strict=True)))
             except (OSError, ConfigFormatError, ConfigValidationError) as history_exc:
                 logger.warning(f"[Config] {self.namespace}/{self.filename} 有效配置快照不可用: {history_exc}")
                 raise RuntimeError("有效配置快照不可用，拒绝回退默认值") from history_exc
@@ -123,7 +133,7 @@ class ConfigProxy:
         try:
             if not self.storage.exists():
                 raise FileNotFoundError(f"配置文件不存在: {self.path}")
-            raw = self._validated(self.storage.read(strict=True))
+            raw = self.validate(self.storage.read(strict=True))
         except (OSError, ConfigFormatError, ConfigValidationError) as exc:
             raw = self._fallback(exc)
         else:
@@ -146,7 +156,7 @@ class ConfigProxy:
         try:
             if not self.storage.exists():
                 raise FileNotFoundError(f"配置文件不存在: {self.path}")
-            raw = self._validated(self.storage.read(strict=True))
+            raw = self.validate(self.storage.read(strict=True))
         except (OSError, ConfigFormatError, ConfigValidationError) as exc:
             return deep_merge(self.defaults, self._fallback(exc), clean_extra=self.clean_extra)
         merged = deep_merge(self.defaults, raw, clean_extra=self.clean_extra)
@@ -157,7 +167,7 @@ class ConfigProxy:
         return merged
 
     def save(self, data: dict[str, Any]) -> None:
-        self._validated(data)
+        self.validate(data)
         self.storage.write(data)
         self._remember(data)
         mtime = self.storage.mtime()
@@ -167,3 +177,32 @@ class ConfigProxy:
     def reload_and_validate(self) -> tuple[bool, dict[str, Any], str | None]:
         raw = self.reload()
         return self._last_error is None, raw, self._last_error
+
+    def snapshot(self) -> ConfigSnapshot:
+        files = []
+        for path in (self.path, self.history_storage.path):
+            try:
+                content = path.read_bytes()
+            except FileNotFoundError:
+                content = None
+            files.append((path, content))
+        return ConfigSnapshot(tuple(files), deepcopy(self._last_valid), self._last_error, cache.get(self._cache_key))
+
+    def _restore_memory(self, snapshot: ConfigSnapshot) -> None:
+        self._last_valid, self._last_error = deepcopy(snapshot.last_valid), snapshot.last_error
+        if snapshot.cached is None:
+            cache.pop(self._cache_key)
+        else:
+            cache.set(self._cache_key, snapshot.cached)
+
+    def _restore_file(self, path: Path, content: bytes | None) -> None:
+        if content is None:
+            path.unlink(missing_ok=True)
+        else:
+            ConfigStorage(self.namespace, path=path).write_bytes(content)
+
+    def restore(self, snapshot: ConfigSnapshot) -> None:
+        with ExitStack() as rollback:
+            rollback.callback(self._restore_memory, snapshot)
+            for path, content in reversed(snapshot.files):
+                rollback.callback(self._restore_file, path, content)

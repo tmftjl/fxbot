@@ -8,8 +8,6 @@ from types import MappingProxyType
 from timeit import repeat
 from statistics import median
 
-from .chat import support as support
-
 
 def legacy_snapshot(value):
     """保留优化前的快照算法，供同一进程内对照。"""

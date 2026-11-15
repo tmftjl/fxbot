@@ -17,9 +17,12 @@ COMMAND_NAME = "group_analysis_daily"
 PATTERN = re.compile(r"^\s*[#＃/／]群聊分析(?:\s+(\d{1,2}))?\s*$")
 
 
-@on_regex(PATTERN.pattern, name=COMMAND_NAME, display_name="群聊分析", level="all", scene="group")
+analysis_matcher = on_regex(PATTERN.pattern, name=COMMAND_NAME, display_name="群聊分析", level="all", scene="group")
+
+
+@analysis_matcher.handle()
 async def analysis(context: HandlerContext) -> None:
-    await handle_analysis(context, context.runtime.application, context.runtime.authorizer)
+    await handle_analysis(context, context.app_services.application, context.app_services.authorizer)
 
 
 async def handle_analysis(context: HandlerContext, application: Application, authorizer: Authorizer) -> None:
@@ -28,8 +31,8 @@ async def handle_analysis(context: HandlerContext, application: Application, aut
         await context.finish(REASON_TEXT["unsupported"])
     if is_running(target.key()):
         await context.finish(REASON_TEXT["busy"])
-    match = PATTERN.fullmatch(context.arguments)
-    days = bounded_days(int(match.group(1)) if match.group(1) else None)
+    value = context.match.group(1)
+    days = bounded_days(int(value) if value else None)
     await context.send(f"正在统计{manual_label(days)}的群消息并生成日报，请稍候…")
     result = await generate(
         bot,

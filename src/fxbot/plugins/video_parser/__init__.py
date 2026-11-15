@@ -1,7 +1,10 @@
 """视频解析插件元信息。"""
 
 from . import matcher as matcher
+from .ui_schema import get_ui_schema
 from ...core.plugin import PluginMetadata
+
+__plugin_extensions__ = {"console.config": get_ui_schema}
 
 __plugin_meta__ = PluginMetadata(
     name="视频解析",

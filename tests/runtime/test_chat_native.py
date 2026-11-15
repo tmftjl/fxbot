@@ -12,7 +12,16 @@ from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 from fxbot.chat import router, message_adapter
-from fxbot.core import Event, Message, Capability, ReplyTarget, QuotedMessage, SessionTarget, MessageSegment
+from fxbot.core import (
+    Event,
+    Message,
+    Capability,
+    ReplyTarget,
+    Capabilities,
+    QuotedMessage,
+    SessionTarget,
+    MessageSegment,
+)
 from fxbot.chat.tools import ToolError, ToolContext, ToolRuntime
 from fxbot.chat.types import ChatRequest
 from fxbot.chat.session import ChatSessionStore
@@ -52,7 +61,7 @@ class NativeMessageTests(unittest.IsolatedAsyncioTestCase):
     """协议查询只经过已声明的客户端能力。"""
 
     async def test_console_name_lookup_is_scoped_to_application_and_exact_connection(self) -> None:
-        from fxbot.console.routes.amemorix import _chat_name
+        from fxbot.console.queries.memory import chat_name
 
         for expected in ("第一实例", "第二实例"):
             app = Application()
@@ -61,9 +70,9 @@ class NativeMessageTests(unittest.IsolatedAsyncioTestCase):
                 bot = client()
                 app.register(bot, close=AsyncMock())
                 with patch.object(bot, "target_name", AsyncMock(return_value=expected)) as lookup:
-                    self.assertEqual(await _chat_name("onebot11:100:scope:group:300", app), expected)
-                    self.assertEqual(await _chat_name("onebot11:100:scope:group:300", app), expected)
-                    self.assertEqual(await _chat_name("onebot12.qq:100:group:300", app), "")
+                    self.assertEqual(await chat_name("onebot11:100:scope:group:300", app), expected)
+                    self.assertEqual(await chat_name("onebot11:100:scope:group:300", app), expected)
+                    self.assertEqual(await chat_name("onebot12.qq:100:group:300", app), "")
                     lookup.assert_awaited_once_with(event().target)
             finally:
                 await app.stop()
@@ -191,7 +200,7 @@ class NativeDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_file_requires_capability_before_creating_cache_file(self) -> None:
         bot = client()
-        bot.capabilities = frozenset()
+        bot.capabilities = Capabilities()
         with patch("fxbot.chat.tools.file.cache_dir") as directory:
             with self.assertRaises(ToolError):
                 await send_file_tool(ToolContext(), ToolRuntime(bot=bot, event=event()), "内容.txt", "内容")
@@ -199,7 +208,7 @@ class NativeDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_uploaded_file_is_unique_and_removed_after_send(self) -> None:
         bot = client()
-        bot.capabilities = bot.capabilities | {Capability.FILE}
+        bot.capabilities = bot.capabilities.provide(Capability.FILE, bot)
         paths = []
 
         async def upload(target, path, name):

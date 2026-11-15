@@ -10,8 +10,10 @@ from ...utils.http import get_shared_async_client
 from ...core.plugin import on_regex
 from ...core.router import HandlerContext
 
+handle_matcher = on_regex(r"^[#＃]?(?:抽取|随机)?(?:今日)?doro结局", name="draw", level="all")
 
-@on_regex(r"^[#＃]?(?:抽取|随机)?(?:今日)?doro结局", name="draw", level="all")
+
+@handle_matcher.handle()
 async def handle(context: HandlerContext) -> None:
     url = cfg_api_urls()["doro_api"].strip()
     if not url:

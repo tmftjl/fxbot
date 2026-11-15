@@ -9,9 +9,11 @@ from collections import OrderedDict
 
 import httpx
 
+from fxbot.core.errors import BotOffline, ActionFailed
+
 from .codec import identifier, parse_event
 from ...core import UnsupportedCapability
-from ...runtime.actions import BotOffline, ActionFailed
+from ...core.concurrency import run_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -21,19 +23,22 @@ class QQEventOverflow(asyncio.QueueFull):
 
 
 class QQEventStream:
-    def __init__(self, application, client, *, bot_user_id: str, capacity: int, seen=None):
+    def __init__(self, application, client, *, bot_user_id: str, capacity: int, concurrency: int, seen=None):
         self.application, self.client = application, client
         self.bot_user_id = bot_user_id
         self.queue = asyncio.Queue(maxsize=capacity)
         self.worker = None
         self.seen = seen if seen is not None else OrderedDict()
         self.closed = False
+        self.concurrency = concurrency
 
     def start(self, close):
         if self.closed or self.worker is not None:
             raise RuntimeError("QQ 事件流不能重复启动")
         self.application.register(self.client, close=close)
-        self.worker = self.application.spawn(self._consume(), name=f"qq:{self.client.bot_id}")
+        self.worker = self.application.spawn(
+            run_concurrently(self._consume() for _ in range(self.concurrency)), name=f"qq:{self.client.bot_id}"
+        )
 
     def receive(self, payload: dict, processed=None):
         if self.closed or self.worker is None or self.worker.done():
