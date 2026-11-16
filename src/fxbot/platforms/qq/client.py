@@ -6,16 +6,29 @@ import html
 import time
 import base64
 import asyncio
-from typing import Any
+from typing import Any, Literal
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
 from collections import OrderedDict
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 from fxbot.core.errors import BotOffline
 
 from .api import QQHTTP
-from .codec import opaque_id, identifier
+from .codec import api_path, opaque_id, identifier
 from ...core import Event, Message, Capability, Capabilities, QuotedMessage, SessionTarget, UnsupportedCapability
+from .actions import QQ_API, QQActions
 from ...core.context import current_event_context
+
+_FILE_TYPES: dict[str, Literal[1, 2, 3, 4]] = {"image": 1, "video": 2, "audio": 3, "voice": 3, "file": 4}
+_EVENT_REPLY_TYPES = {
+    "INTERACTION_CREATE",
+    "GROUP_ADD_ROBOT",
+    "GROUP_MEMBER_ADD",
+    "GROUP_MSG_RECEIVE",
+    "FRIEND_ADD",
+    "C2C_MSG_RECEIVE",
+}
 
 
 class QQClient:
@@ -24,16 +37,26 @@ class QQClient:
     def __init__(self, app_id: str, api: QQHTTP, *, available=None, sequences=None) -> None:
         self.bot_id = app_id
         self.api = api
+        self.actions = QQActions(self._request, self._put_upload)
         self.message_transform = lambda target, message: message
         self.capabilities = (
             Capabilities()
             .provide(Capability.REPLY, self)
             .provide(Capability.MEDIA, self)
             .provide(Capability.VIDEO, self)
+            .provide(Capability.FILE, self)
+            .provide(Capability.RECALL, self)
+            .provide(Capability.MEMBER_LOOKUP, self)
+            .provide(Capability.GROUP_ROLE, self)
+            .provide(Capability.TARGET_LOOKUP, self)
+            .provide(Capability.MEMBER_MODERATION, self)
+            .provide(Capability.MUTED_MEMBERS, self)
+            .provide(QQ_API, self.actions)
         )
         self._sequence = sequences if sequences is not None else OrderedDict()
         self._sent: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._send_lock = asyncio.Lock()
+        self._moderation_lock = asyncio.Lock()
         self._available = available
 
     def _online(self):
@@ -43,6 +66,10 @@ class QQClient:
     async def _request(self, method, path, **kwargs):
         self._online()
         return await self.api.request(method, path, available=self._online, **kwargs)
+
+    async def _put_upload(self, url, content):
+        self._online()
+        await self.api.put_upload_part(url, content, available=self._online)
 
     def _target(self, target: SessionTarget) -> tuple[str, str]:
         if (target.platform, target.bot_id) != (self.platform, self.bot_id):
@@ -58,14 +85,14 @@ class QQClient:
             raise UnsupportedCapability("QQ 不支持此会话目标")
         return routes[target.kind], identifier(target.target_id)
 
-    def _reference(self, target: SessionTarget) -> str | None:
+    def _current_event(self, target: SessionTarget) -> Event | None:
         try:
             runtime = current_event_context()
         except RuntimeError:
             return None
         if runtime.bot is not self or runtime.event.target != target:
             return None
-        return runtime.event.message_id
+        return runtime.event
 
     @staticmethod
     def _url(source) -> str:
@@ -82,13 +109,14 @@ class QQClient:
         message = self.message_transform(target, message)
         content = []
         media = []
+        advanced = {}
         reference = None
         for part in message.segments:
             if part.type == "text":
                 value = part.text_value()
                 content.append(html.escape(value, quote=False) if route in {"channels", "dms"} else value)
             elif part.type in {"mention", "mention_all"}:
-                if route not in {"channels", "v2/groups"} or (route == "v2/groups" and part.type == "mention_all"):
+                if route not in {"channels", "v2/groups"}:
                     raise UnsupportedCapability("当前 QQ 会话不支持该提及段")
                 content.append(
                     "@everyone" if part.type == "mention_all" else f"<@{identifier(part.data.get('user_id'))}>"
@@ -97,26 +125,54 @@ class QQClient:
                 if reference is not None:
                     raise ValueError("一条消息只能包含一个引用")
                 reference = opaque_id(part.data.get("message_id"))
-            elif part.type in {"image", "voice", "audio", "video"}:
+            elif part.type in {"image", "voice", "audio", "video", "file"}:
                 source = part.data.get("file")
                 if not isinstance(source, bytes):
                     self._url(source)
-                if isinstance(source, bytes) and len(source) > 20 * 1024 * 1024:
-                    raise ValueError("QQ 内联媒体不能超过 20 MiB")
-                media.append((part.type, source))
+                if isinstance(source, bytes) and len(source) > 200 * 1024 * 1024:
+                    raise ValueError("QQ 媒体不能超过 200 MiB")
+                media.append((part.type, source, part.data.get("name") or "upload.bin"))
+            elif part.type in {
+                "qq:markdown",
+                "qq:keyboard",
+                "qq:ark",
+                "qq:embed",
+                "qq:stream",
+                "qq:prompt_keyboard",
+                "qq:action_button",
+                "qq:media",
+            }:
+                name = part.type.removeprefix("qq:")
+                if name in advanced:
+                    raise ValueError(f"QQ 同一消息不能重复声明 {name}")
+                if route not in {"v2/users", "v2/groups"}:
+                    raise UnsupportedCapability("QQ 高级消息仅接入普通群和 C2C")
+                if route == "v2/groups" and name in {"stream", "prompt_keyboard", "action_button"}:
+                    raise UnsupportedCapability("参考协议仅在 C2C 声明此消息字段")
+                advanced[name] = dict(part.data)
+            elif part.type == "qq:emoji":
+                content.append(f"<emoji:{identifier(part.data['id'])}>")
             else:
                 raise UnsupportedCapability(f"QQ 未实现此出站消息段: {part.type}")
-        if len(media) > 1:
+        if len(media) > 1 or media and "media" in advanced:
             raise UnsupportedCapability("QQ 单条发送仅支持一项媒体，不拆分重试")
         if route in {"channels", "dms"} and media and media[0][0] != "image":
             raise UnsupportedCapability("QQ 频道/频道私信当前仅支持图片媒体")
         text = "".join(content)
-        if not text and not media:
+        if not text and not media and not advanced:
             raise ValueError("QQ 不能发送空消息")
         async with self._send_lock:
             self._online()
-            payload: dict[str, Any] = {"content": text}
-            reply_id = self._reference(target)
+            payload: dict[str, Any] = {"content": text, **advanced}
+            event = self._current_event(target)
+            reply_id = event.message_id if event is not None else None
+            if (
+                reply_id is None
+                and event is not None
+                and event.event_id
+                and event.metadata.get("qq_event_type") in _EVENT_REPLY_TYPES
+            ):
+                payload["event_id"] = event.event_id
             if reply_id is not None:
                 payload["msg_id"] = reply_id
                 if route.startswith("v2/"):
@@ -131,21 +187,50 @@ class QQClient:
                         self._sequence.popitem(last=False)
                     payload["msg_seq"] = sequence
             if reference is not None:
+                if event is not None and reference == event.message_id:
+                    ext = event.metadata.get("qq_data", {}).get("message_scene", {}).get("ext", [])
+                    reference = next(
+                        (value.removeprefix("msg_idx=") for value in ext if value.startswith("msg_idx=")), reference
+                    )
                 payload["message_reference"] = {"message_id": reference}
-            path = f"/{route}/{quote(target_id, safe='')}/messages"
+            path = api_path(*route.split("/"), target_id, "messages")
             files = None
             if route.startswith("v2/"):
-                payload["msg_type"] = 7 if media else 0
+                payload["msg_type"] = (
+                    4
+                    if "embed" in advanced
+                    else 3
+                    if "ark" in advanced
+                    else 2
+                    if any(name in advanced for name in ("markdown", "keyboard", "prompt_keyboard", "action_button"))
+                    else 7
+                    if media or "media" in advanced
+                    else 0
+                )
+                payload["timestamp"] = int(time.time())
                 if media:
-                    kind, source = media[0]
+                    kind, source, file_name = media[0]
+                    file_type = _FILE_TYPES[kind]
                     upload: dict[str, Any] = {
-                        "file_type": {"image": 1, "video": 2, "audio": 3, "voice": 3}[kind],
+                        "file_type": file_type,
                         "srv_send_msg": False,
                     }
-                    upload["file_data" if isinstance(source, bytes) else "url"] = (
-                        base64.b64encode(source).decode("ascii") if isinstance(source, bytes) else source
-                    )
-                    uploaded = await self._request("POST", f"/{route}/{quote(target_id, safe='')}/files", json=upload)
+                    if isinstance(source, bytes) and len(source) > 10 * 1024 * 1024:
+                        if route == "v2/groups":
+                            uploaded = await self.actions.post_group_upload(
+                                target_id, file_type, file_name, source, False
+                            )
+                        else:
+                            uploaded = await self.actions.post_c2c_upload(
+                                target_id, file_type, file_name, source, False
+                            )
+                    else:
+                        upload["file_data" if isinstance(source, bytes) else "url"] = (
+                            base64.b64encode(source).decode("ascii") if isinstance(source, bytes) else source
+                        )
+                        uploaded = await self._request(
+                            "POST", api_path(*route.split("/"), target_id, "files"), json=upload
+                        )
                     if not isinstance(uploaded.get("file_info"), str) or not uploaded["file_info"]:
                         raise ValueError("QQ 媒体上传未返回 file_info")
                     payload["media"] = {"file_info": uploaded["file_info"]}
@@ -171,7 +256,7 @@ class QQClient:
             self._sent[message_id] = (route, target_id)
             if len(self._sent) > 4096:
                 self._sent.popitem(last=False)
-            return {"message_id": message_id}
+            return {"message_id": message_id, **({"ext_info": result["ext_info"]} if "ext_info" in result else {})}
 
     async def resolve_media(self, segment) -> str | bytes:
         if segment.type not in {"image", "voice", "audio", "video", "file"}:
@@ -184,13 +269,141 @@ class QQClient:
             raise ValueError("引用事件不属于当前 QQ Bot")
         if event.reply is None:
             return None
+        raw = event.metadata.get("qq_reply")
+        if raw is not None:
+            from .codec import parse_message
+
+            author = raw.get("author") or {}
+            key = "member_openid" if event.is_group else "user_openid"
+            sender = identifier(author[key]) if author.get(key) else None
+            return QuotedMessage(event.reply.message_id, sender, author.get("username") or "", parse_message(raw))
         return QuotedMessage(event.reply.message_id, event.reply.user_id, event.reply.user_name)
 
     async def delete_message(self, message_id: str):
         location = self._sent.get(message_id)
-        if location is None or location[0] not in {"channels", "dms"}:
-            raise UnsupportedCapability("只支持撤回本连接已发送的频道/频道私信消息")
+        if location is None:
+            raise UnsupportedCapability("撤回需要本客户端已发送消息的会话记录；指定会话的撤回请使用 QQ_API")
         route, target_id = location
-        return await self._request(
-            "DELETE", f"/{route}/{quote(target_id, safe='')}/messages/{quote(message_id, safe='')}"
+        return await self._request("DELETE", api_path(*route.split("/"), target_id, "messages", message_id))
+
+    async def send_file(self, target: SessionTarget, path: Path, name: str):
+        self._online()
+        route, _ = self._target(target)
+        if not route.startswith("v2/"):
+            raise UnsupportedCapability("QQ 文件发送只接入普通群和 C2C")
+        if not 0 < path.stat().st_size <= 200 * 1024 * 1024:
+            raise ValueError("QQ 文件大小必须为 1 字节到 200 MiB")
+        data = await asyncio.to_thread(path.read_bytes)
+        from ...core import MessageSegment
+
+        return await self.send(target, Message([MessageSegment("file", {"file": data, "name": name})]))
+
+    async def get_member(self, group_id: str, user_id: str) -> dict:
+        data = await self.actions.get_group_member(group_openid=identifier(group_id), member_openid=identifier(user_id))
+        return {
+            **data,
+            "user_id": identifier(data["member_openid"]),
+            "nickname": data.get("username") or "",
+            "role": data.get("member_role"),
+        }
+
+    async def get_members(self, group_id: str) -> list[dict]:
+        members = []
+        cursor = None
+        seen = set()
+        for _ in range(1000):
+            data = await self.actions.get_group_members(group_openid=identifier(group_id), cursor=cursor)
+            for member in data["members"]:
+                members.append(
+                    {
+                        **member,
+                        "user_id": identifier(member["member_openid"]),
+                        "nickname": member.get("username") or "",
+                        "role": member.get("member_role"),
+                    }
+                )
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return members
+            if cursor in seen:
+                raise ValueError("QQ 群成员分页游标未前进")
+            seen.add(cursor)
+        raise ValueError("QQ 群成员查询超过分页预算")
+
+    async def member_name(self, group_id: str, user_id: str) -> str:
+        return (await self.get_member(group_id, user_id))["nickname"]
+
+    async def member_role(self, group_id: str, user_id: str) -> str:
+        if user_id == self.bot_id:
+            return await self.bot_group_role(group_id)
+        role = (await self.get_member(group_id, user_id))["role"]
+        if role not in {"member", "owner", "admin"}:
+            raise ValueError("QQ 群成员角色缺失或无效")
+        return role
+
+    async def bot_group_role(self, group_id: str) -> str:
+        data = await self.actions.get_group_bot_state(group_id=identifier(group_id))
+        role = data.get("member_role")
+        if role not in {"member", "owner", "admin"}:
+            raise ValueError("QQ Bot 群角色缺失或无效")
+        return role
+
+    async def target_name(self, target: SessionTarget) -> str:
+        self._target(target)
+        if target.kind != "group":
+            raise UnsupportedCapability("QQ 只提供群名称查询")
+        return (await self.actions.get_group_info(group_id=target.target_id))["group_name"]
+
+    async def ban(self, group_id: str, user_id: str, duration: int):
+        if type(duration) is not int or not 0 <= duration <= 2592000:
+            raise ValueError("QQ 禁言时长必须为 0 到 30 天")
+        group_id, user_id = identifier(group_id), identifier(user_id)
+        async with self._moderation_lock:
+            operation = "del"
+            if duration:
+                current = await self.actions.get_group_mute_setting(group_id=group_id)
+                members = current.get("members")
+                if not isinstance(members, list) or any(
+                    not isinstance(member, dict) or not isinstance(member.get("member_openid"), str)
+                    for member in members
+                ):
+                    raise ValueError("QQ 禁言状态缺少有效的 members 数组，未执行禁言")
+                operation = "update" if any(member["member_openid"] == user_id for member in members) else "add"
+            member = {
+                "op": operation,
+                "member_openid": user_id,
+                "mute_expire_at": (datetime.now(timezone.utc) + timedelta(seconds=duration)).isoformat()
+                if duration
+                else "",
+            }
+            return await self.actions.set_group_members_mute(group_id=group_id, members=[member])
+
+    async def kick(self, group_id: str, user_id: str, *, reject_add_request: bool = False):
+        result = await self.actions.batch_remove_group_members(
+            group_openid=identifier(group_id),
+            member_openids=[identifier(user_id)],
+            add_to_member_blacklist=reject_add_request,
         )
+        if result.get("add_to_member_blacklist_fail_openids"):
+            raise ValueError("QQ 已处理移除，但加入黑名单未全部成功，未重试")
+        return result
+
+    async def get_muted_members(self, group_id: str) -> list[dict]:
+        data = await self.actions.get_group_mute_setting(group_id=identifier(group_id))
+        now = datetime.now(timezone.utc)
+        members = []
+        for member in data["members"]:
+            expiry = datetime.fromisoformat(member["mute_expire_at"].replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                raise ValueError("QQ 禁言到期时间必须带时区")
+            if expiry > now:
+                members.append(
+                    {
+                        **member,
+                        "user_id": identifier(member["member_openid"]),
+                        "nickname": member["username"],
+                        "remaining": int((expiry - now).total_seconds()),
+                        "mute_until": int(expiry.timestamp()),
+                    }
+                )
+        return members

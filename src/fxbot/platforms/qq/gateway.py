@@ -8,6 +8,7 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack
 from collections import OrderedDict
+from dataclasses import replace
 from urllib.parse import urlsplit
 
 import httpx
@@ -19,6 +20,7 @@ from .codec import opaque_id, identifier
 from .client import QQClient
 from .events import QQEventStream, QQEventOverflow
 from ...core.application import ApplicationState
+from ...core.concurrency import run_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +53,18 @@ def sequence(frame):
 
 
 class QQGateway:
-    def __init__(self, application, app_id, config, settings, *, connector=connect):
+    def __init__(self, application, app_id, config, settings, *, connector=connect, owner=None):
         self.application, self.app_id, self.config, self.settings = application, app_id, config, settings
-        self.api = QQHTTP(
-            app_id,
-            config.secret,
-            httpx.AsyncClient(timeout=settings.action_timeout, follow_redirects=False, trust_env=False),
+        self.api = (
+            owner.api
+            if owner is not None
+            else QQHTTP(
+                app_id,
+                config.secret,
+                httpx.AsyncClient(timeout=settings.action_timeout, follow_redirects=False, trust_env=False),
+                api_base=config.api_base,
+                auth_url=config.auth_url,
+            )
         )
         self._connector = connector
         self._runner = None
@@ -76,6 +84,12 @@ class QQGateway:
         self._budget_reset_at = 0.0
         self._last_identify = 0.0
         self._shard = None
+        self._shard_count = 1
+        self._generation = 0
+        self._owner = owner if owner is not None else self
+        self._children: tuple[QQGateway, ...] = ()
+        self._online_shards = set()
+        self._identify_lock = owner._identify_lock if owner is not None else asyncio.Lock()
 
     def start(self):
         if self._runner is not None or self._stopped:
@@ -83,6 +97,7 @@ class QQGateway:
         self._runner = self.application.spawn(self.run(), name=f"qq:{self.app_id}:gateway")
 
     def _reset_session(self):
+        self._generation += 1
         self._session_id = ""
         self._received = None
         self._committed = None
@@ -93,15 +108,14 @@ class QQGateway:
 
     async def _gateway(self):
         data = await self.api.request("GET", "/gateway/bot")
-        url = data.get("url")
+        url = self.config.gateway_url if self.config.gateway_url is not None else data.get("url")
         parsed = urlsplit(url) if isinstance(url, str) else None
         if parsed is None or parsed.scheme != "wss" or not parsed.hostname or parsed.username or parsed.password:
             raise GatewayProtocolError("QQ 网关地址必须是官方返回的 WSS URL")
         shards = data.get("shards")
         if type(shards) is not int or shards < 1:
             raise GatewayProtocolError("QQ 网关缺少分片总数")
-        if self.config.shard is None and shards != 1:
-            raise GatewayProtocolError("QQ 网关要求分片，请明确配置本进程负责的 shard")
+        self._shard_count = shards
         self._shard = self.config.shard if self.config.shard is not None else (0, 1)
         budget = data.get("session_start_limit")
         if not isinstance(budget, dict):
@@ -113,14 +127,17 @@ class QQGateway:
             raise GatewayProtocolError("QQ 会话额度缺少有效的重置时间或并发额度")
         now = asyncio.get_running_loop().time()
         # 官方额度可能短暂滞后；本地已经用掉的 Identify 不能因重新 GET 而补回来。
-        if self._budget_remaining is None or now >= self._budget_reset_at:
-            self._budget_remaining = budget["remaining"]
-            self._budget_reset_at = now + budget["reset_after"] / 1000
+        owner = self._owner
+        if owner._budget_remaining is None or now >= owner._budget_reset_at:
+            owner._budget_remaining = budget["remaining"]
+            owner._budget_reset_at = now + budget["reset_after"] / 1000
         else:
-            self._budget_remaining = min(self._budget_remaining, budget["remaining"])
+            owner._budget_remaining = min(owner._budget_remaining, budget["remaining"])
         return url
 
     async def _identify_limit(self):
+        if self._owner is not self:
+            return await self._owner._identify_limit()
         now = asyncio.get_running_loop().time()
         if self._budget_remaining == 0:
             delay = self._budget_reset_at - now
@@ -141,6 +158,15 @@ class QQGateway:
     def _activate(self):
         if self._stream is not None:
             return
+        if self._owner is not self:
+            if self._owner._bot_user_id and self._owner._bot_user_id != self._bot_user_id:
+                raise GatewayProtocolError("QQ 各分片返回的 Bot 身份不一致")
+            self._owner._bot_user_id = self._bot_user_id
+            self._owner._activate()
+            self._owner._online_shards.add(self)
+            self._stream = self._owner._stream
+            self._ready_this_attempt = True
+            return
         stream = None
         client = QQClient(
             self.app_id,
@@ -148,6 +174,7 @@ class QQGateway:
             sequences=self._reply_sequences,
             available=lambda: (
                 not self._stopped
+                and (not self._children or bool(self._online_shards))
                 and stream is not None
                 and not stream.closed
                 and self.application.is_registered(stream.client)
@@ -173,6 +200,8 @@ class QQGateway:
             self._committed = value
 
     def _dispatch(self, frame):
+        if self._stream is None:
+            raise GatewayProtocolError("QQ 分发事件前必须完成鉴权")
         seq = sequence(frame)
         if self._committed is not None and seq <= self._committed:
             return
@@ -183,8 +212,11 @@ class QQGateway:
         if len(self._pending) >= self.settings.queue_size + self.settings.event_concurrency:
             raise GatewayReconnect("QQ 待处理事件达到容量")
         self._pending[seq] = False
+        generation = self._generation
         try:
-            self._stream.receive(frame, processed=lambda: self._processed(seq))
+            self._stream.receive(
+                frame, processed=lambda: self._processed(seq) if generation == self._generation else None
+            )
         except QQEventOverflow:
             self._pending.pop(seq, None)
             raise GatewayReconnect("QQ 事件队列已满") from None
@@ -225,21 +257,24 @@ class QQGateway:
                 },
             )
         else:
-            await self._identify_limit()
-            self._budget_remaining -= 1
-            self._last_identify = asyncio.get_running_loop().time()
-            await self._send(
-                socket,
-                {
-                    "op": 2,
-                    "d": {
-                        "token": f"QQBot {token}",
-                        "intents": self.config.intents,
-                        "shard": list(self._shard),
-                        "properties": {"$os": sys.platform, "$language": "python", "$sdk": "FxBot"},
+            async with self._identify_lock:
+                await self._identify_limit()
+                if self._owner._budget_remaining is None or self._shard is None:
+                    raise GatewayProtocolError("QQ Identify 前必须读取网关与启动额度")
+                self._owner._budget_remaining -= 1
+                self._owner._last_identify = asyncio.get_running_loop().time()
+                await self._send(
+                    socket,
+                    {
+                        "op": 2,
+                        "d": {
+                            "token": f"QQBot {token}",
+                            "intents": self.config.intents,
+                            "shard": list(self._shard),
+                            "properties": {"$os": sys.platform, "$language": "python", "$sdk": "FxBot"},
+                        },
                     },
-                },
-            )
+                )
         loop = asyncio.get_running_loop()
         authenticate_until = loop.time() + self.settings.action_timeout
         heartbeat_at = None
@@ -320,7 +355,13 @@ class QQGateway:
 
     async def _disconnect(self):
         stream, self._stream = self._stream, None
-        if stream is not None:
+        if self._owner is not self:
+            owner = self._owner
+            owner._online_shards.discard(self)
+            if not owner._online_shards and owner._stream is not None:
+                shared, owner._stream = owner._stream, None
+                await shared.close()
+        elif stream is not None:
             await stream.close()
         self._pending.clear()
         self._received = self._committed
@@ -332,6 +373,20 @@ class QQGateway:
                 self._ready_this_attempt = False
                 try:
                     url = await self._gateway()
+                    if self.config.shard is None and self._shard_count > 1:
+                        self._children = tuple(
+                            QQGateway(
+                                self.application,
+                                self.app_id,
+                                replace(self.config, shard=(index, self._shard_count)),
+                                self.settings,
+                                connector=self._connector,
+                                owner=self,
+                            )
+                            for index in range(self._shard_count)
+                        )
+                        await run_concurrently(child.run() for child in self._children)
+                        return
                     if not self._session_id:
                         await self._identify_limit()
                     async with self._connector(
@@ -377,7 +432,8 @@ class QQGateway:
             async with AsyncExitStack() as cleanup:
                 cleanup.callback(self._seen.clear)
                 cleanup.callback(self._reply_sequences.clear)
-                cleanup.push_async_callback(self.api.close)
+                if self._owner is self:
+                    cleanup.push_async_callback(self.api.close)
                 cleanup.push_async_callback(self._disconnect)
 
     async def close(self):
@@ -391,4 +447,5 @@ class QQGateway:
             self.application.cancel(self._runner)
             await asyncio.gather(self._runner, return_exceptions=True)
         await self._disconnect()
-        await self.api.close()
+        if self._owner is self:
+            await self.api.close()

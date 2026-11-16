@@ -5,7 +5,7 @@ from __future__ import annotations
 from .codec import _id, parse_event
 from ...core import Event
 from .client import ActionSender, OneBot11Client
-from .napcat import NapCatClient
+from .extensions import OneBot11ExtendedClient
 
 
 class OneBot11Protocol:
@@ -13,15 +13,9 @@ class OneBot11Protocol:
 
     platform = "onebot11"
 
-    def __init__(self, implementation: str = "standard") -> None:
-        if implementation not in {"standard", "napcat"}:
-            raise ValueError("不支持此 V11 实现类型")
-        self.implementation = implementation
-
     def create_client(self, bot_id: str, sender: ActionSender) -> OneBot11Client:
-        """为连接创建直接动作客户端。"""
-        client = NapCatClient if self.implementation == "napcat" else OneBot11Client
-        return client(bot_id, sender)
+        """V11 连接统一提供扩展动作；历史分页方言在首次查询时探测。"""
+        return OneBot11ExtendedClient(bot_id, sender)
 
     def is_event(self, payload: dict) -> bool:
         """V11 事件使用 post_type 字段。"""

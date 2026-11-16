@@ -18,7 +18,7 @@ CQ 输入只解码一层转义，不把解码后的普通文本重新解释为�
 ## 路由规则
 
 QQ 官方消息使用独立的 platforms/qq 实现，通过 POST /qq/webhook 或主动 WebSocket 收取事件，
-不经过 OneBot 的 echo 动作代理。AppID 白名单及 secret 来自项目运行配置。
+不经过 OneBot 的 echo 动作代理。AppID 及 secret 独立来自项目运行配置 `qq_bots`。
 Webhook 按原始请求字节执行 Ed25519 验签，时间窗口为 300 秒，单次请求上限 1 MiB；
 握手只签随机令牌，拒绝含 JSON 结构的内容，不能用于签署伪造事件。
 每个账号拥有独立有界事件队列与 HTTP 客户端。只在消息验证并入队后登记去重，
@@ -34,6 +34,10 @@ Webhook 模式下控制台的 qq 账号表示已有验签消息；WebSocket 模�
 
 QQ API 使用独立缓存的 access token 和刷新锁；请求头为 QQBot token 与 X-Union-Appid。
 被动回复只使用当前事件的 msg_id，按目标和 msg_id 单调递增 msg_seq；失败也不复用序号。
+支持事件被动回复的通知只传 event_id，不自动添加 msg_seq；未支持事件回复的通知按主动消息发送，
+需要官方主动发送权限，不能借用任意通知 ID 绕过权限。
+成员入群通知依据参考实现支持 event_id 回复，接收开关恢复事件依据官方文档保留支持。
+通知 Unix 秒整数显式转为 UTC，带时区 ISO 字段按声明解析，不将布尔值或浮点数猜成时间戳。
 HTTP 写操作不自动重试；401 只使后续调用重新鉴权，不重试本次写入。
 媒体段先整体校验再上传；最多一项媒体，不把部分上传或缺少返回 ID 当作成功。
 平台不支持的能力抛 UnsupportedCapability，不用 OpenID 构造 QQ 号头像或套用 OneBot 动作。
@@ -47,13 +51,26 @@ Ready 保存 session_id、用户 ID 与序号。未建立会话前不分发消�
 心跳发送最新接收序号，Resume 使用已处理前缀的序号；RESUMED 不得覆盖未完成消息的游标。
 收到重连指令或心跳 ACK 超时后断线重连；9/4006/4007 或官方内部错误要求重新 Identify。
 无效 intents、无权限、无效分片及下架/封禁等永久错误直接停止，不循环试参数。
+自动分片采用整组快速失败：任一片的永久 GatewayProtocolError 会取消并等待其他片，再关闭账号资源。
+这也包含违反确定协议契约的帧；普通网络断线、官方重连请求和可恢复会话错误仍在单片内恢复。
 Identify 本地额度不会因为重新发现网关而补回，每次至少间隔 5 秒，额度耗尽等待官方 reset_after。
 网络故障使用最高 30 秒退避；HTTP 业务写入不因重连自动重试，401/403 鉴权错误不盲目重连。
 每代连接使用新客户端，旧引用离线后不能借用新连接发送；被动回复 msg_seq 缓存跨重连保留，
 避免在结果不确定时复用序号。仅排队尚未开始的事件可重新回放；已经开始的事件不会自动重做，
 以免部分成功的业务写入重复执行。此语义不是事务或崩溃持久化交付。
-单进程只负责一个明确分片；推荐多分片时必须指定 shard，不自动创建冲突的同身份客户端。
+明确配置 shard 时只连接该分片；不配置时按官方网关返回数量自动连接全部分片。
+多分片共用一个账号客户端、HTTP 鉴权锁和有界事件队列，每片独立维护 session、接收和已提交游标。
+某片断线且仍有其他在线片时不注销账号；全部片断线则回收共享事件流并令旧客户端失效。
+Identify 消耗共用的账号额度并串行限速，防止各片分别把总额度当作自己的额度。
 关闭取消并等待网关与事件消费者，重连/额度等待可被取消，再关闭 HTTP 资源，不留下心跳任务。
+
+普通群/C2C 的平台接口由 QQActions 与 QQ_API 能力提供，返回明确的原始 JSON，不引入 NoneBot 模型。
+核心 MEMBER_MODERATION 仅包含成员禁言与踢人；完整 MODERATION 另含管理员、全群禁言和头衔，
+QQ 不声明不具备的完整能力。现有群管理/入群验证已改用精确的成员管理能力。
+好友、群成员、机器人变化、申请、交互和审核事件保留 qq_event_type 与独立副本 qq_data；
+通知按事件 ID（或网关序列号）去重，不能用恒为空的 message_id 合并不同通知。
+分片上传使用独立预签名 PUT，不携带 QQBot 令牌，所有子任务在取消/失败时统一等待清理。
+只有明确的 40093001 分片转存错误允许有限重报完成，业务消息、审批和群管理写入不自动重试。
 
 - 预处理器按注册顺序执行，必须返回严格的 `True` 才放行。
 - 命令大小写敏感，前缀由注册者显式写入命令词；命令与参数以空白分隔。
@@ -88,7 +105,9 @@ router.command("ping", "/ping", ping)
 将收到的协议数据交给 `parse_event`，再调用 `router.dispatch(client, event)`。
 客户端只做动作和消息编码，连接鉴权、请求与响应关联、超时和断线清理由传输层负责。
 网络传输位于 `src/fxbot/runtime/`，独立应用装配入口为 `src/fxbot/bootstrap.py`。
-V11 反向 WebSocket 地址为 `/onebot/v11/ws`，使用 Bearer 令牌和按平台隔离的白名单校验 Universal 连接。
+V11 反向 WebSocket 地址为 `/onebot/v11/ws`，只接收 Universal 连接，不使用 Bot 白名单。
+OneBot V11/V12 的 `token` 缺省或为空串时不鉴权，填写后严格校验 Bearer 令牌；
+不鉴权也必须校验连接身份、事件归属和重复连接。QQ 官方验签与凭证不受此开关影响。
 V12 使用 `/onebot/v12/{platform}/{bot_id}/ws`，要求 `12.*` 子协议，事件和动作都明确携带实际平台身份。
 动作通过 echo 关联响应，事件使用有界队列和固定数量消费者并发分发；超时不自动重试。
 运行配置 event_concurrency 默认 8，限制每个连接同时处理的事件数；queue_size 默认 128，
@@ -194,7 +213,8 @@ LoadedPlugin 负责读取和验证定义，PluginRuntime 负责应用内绑定�
 群管理通过同一个领域服务处理命令和 AI 工具，动作前查询真实成员角色并再次检查授权和连接。
 身份未知、权限撤销、连接被替换均不执行写操作；自动处罚只处理已确认的普通成员。
 验证码按完整群会话和用户保存待验证状态，关闭、离群、通过或超时后移除；退出清空待验证状态。
-标准 V11 不提供精华及禁言到期扩展，必须明确选择 NapCat；V12 未定义的操作直接拒绝。
+V11 扩展调用前自动识别实现，不配置实现白名单；未知实现明确拒绝，禁言列表/全部解禁命令会反馈失败。
+V12 未定义的操作直接拒绝。
 
 娱乐功能保留运势卡、资料卡、语录、Doro、点赞、欢迎语、音乐搜索/扫码与 AI 工具。
 欢迎语使用结构化消息段及服务生成的图片文件名，不解释文本中的文件路径占位符。
@@ -218,11 +238,17 @@ LoadedPlugin 负责读取和验证定义，PluginRuntime 负责应用内绑定�
 通知在异步准入检查后再次验证订阅与连接；离线或已撤销订阅不能改用其他 Bot 发送。
 原生权限检查要求插件和命令节点实际存在；缺失节点不表示开放访问。
 
-群日报使用 `bot.capabilities.require(Capability.HISTORY).fetch_group_history()` 与核心 `HistoryMessage`，只对明确声明 `HISTORY`
-能力的客户端开放。标准 V11/V12 不包含该能力；`onebot11_implementations` 按账号明确选择 NapCat。
-NapCat 请求使用 `reverse_order` 和返回的短消息 ID 作为 `message_seq` 参数的锚点，
-依据[实现源码](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/action/go-cqhttp/GetGroupMsgHistory.ts)，
-不通过动作异常或版本探测选择另一种接口。查询失败、身份不符或分页预算耗尽不能伪装为空历史。
+群日报使用 `bot.capabilities.require(Capability.HISTORY).fetch_group_history()` 与核心 `HistoryMessage`。
+OneBot V11 客户端提供历史、精华和禁言成员接口，接口注册不等于远端能力确认。
+首次调用扩展动作时通过 `get_version_info` 的 `app_name` 确认已支持的实现：
+接受明确产品族名称（例如 NapCat.Onebot、SnowLuma）；SnowLuma 使用 `reverse_order=True` 与 `message_id`，
+NapCat 使用 `reverseOrder=True` 与 `message_seq`，不通过动作失败切换参数。
+未知实现明确拒绝扩展调用，不发送实际扩展动作；识别异常直接传播，不缓存失败、不猜测默认方言。
+成功识别在当前客户端缓存十分钟，使用单调时钟与实例锁；同账号重连和不同应用实例均重新识别。
+历史页面在解析边界按时间稳定排序，用最早消息作为锚点；同秒消息保留上游相对顺序，不按短 ID 猜先后。
+响应结构、身份不符、分页不前进或超预算均作为 ActionFailed，由业务反馈查询失败；调用参数错误仍为 ValueError。
+多消息页面锚点不前进时明确失败，不能把部分历史当作完整结果。
+查询失败、身份不符或分页预算耗尽不能伪装为空历史。
 日报记录、运行锁和图片目录使用完整群会话身份，自动任务在生成与发送两端检查准入。
 
 验证：`python -I -S -X utf8 -m unittest discover -s tests/migration -t .`；

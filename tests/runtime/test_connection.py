@@ -26,7 +26,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.application,
             OneBot11Protocol(),
             "100",
-            Settings("test-only", {"onebot11": frozenset({"100"})}, action_timeout=0.2),
+            Settings("test-only", action_timeout=0.2),
             self.sent.put,
             self.close_transport,
         )
@@ -152,7 +152,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.application,
             OneBot11Protocol(),
             "100",
-            Settings("test-only", {"onebot11": frozenset({"100"})}, action_timeout=60),
+            Settings("test-only", action_timeout=60),
             send,
             self.close_transport,
         )
@@ -194,7 +194,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.application,
             OneBot11Protocol(),
             "200",
-            Settings("test-only", {"onebot11": frozenset({"200"})}),
+            Settings("test-only"),
             send,
             AsyncMock(),
         )
@@ -209,7 +209,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.application,
             OneBot11Protocol(),
             "100",
-            Settings("test-only", {"onebot11": frozenset({"100"})}, max_pending=1),
+            Settings("test-only", max_pending=1),
             self.sent.put,
             self.close_transport,
         )
@@ -237,7 +237,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.application,
             OneBot11Protocol(),
             "100",
-            Settings("test-only", {"onebot11": frozenset({"100"})}),
+            Settings("test-only"),
             send,
             self.close_transport,
         )
@@ -253,7 +253,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.application,
             OneBot11Protocol(),
             "100",
-            Settings("test-only", {"onebot11": frozenset({"100"})}, close_timeout=0.01),
+            Settings("test-only", close_timeout=0.01),
             self.sent.put,
             self.close_transport,
         )
@@ -276,8 +276,10 @@ class SettingsTests(unittest.TestCase):
         for value in (True, 0, -1, float("inf"), float("nan"), "15", None):
             for name in ("action_timeout", "close_timeout"):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
-                    Settings("test-only", {"onebot11": frozenset({"100"})}, **{name: value})
+                    Settings("test-only", **{name: value})
 
-    def test_bot_ids_are_not_accepted_as_a_string(self) -> None:
-        with self.assertRaises(ValueError):
-            Settings("test-only", "123")
+    def test_token_is_optional_but_must_be_a_string(self) -> None:
+        self.assertEqual(Settings().token, "")
+        for token in (None, True, 123, " ", " secret "):
+            with self.subTest(token=token), self.assertRaises(ValueError):
+                Settings(token)

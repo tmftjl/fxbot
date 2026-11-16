@@ -11,7 +11,8 @@ from pathlib import Path
 from dataclasses import replace
 from unittest.mock import Mock, AsyncMock, patch
 
-from fxbot.core import Message, SessionTarget, HandlerContext, MessageSegment
+from fxbot.core import Router, Message, SessionTarget, HandlerContext, MessageSegment, UnsupportedCapability
+from fxbot.core.errors import ActionFailed
 from fxbot.core.matching import MatchResult
 from fxbot.utils.json_file import write_json
 from fxbot.core.application import Application
@@ -27,7 +28,8 @@ from fxbot.plugins.video_parser.config import validate_config as validate_video
 from fxbot.plugins.video_parser.sender import send_video_result
 from fxbot.plugins.entertain.musicshare import Song, Music
 from fxbot.plugins.group_admin.banwords import Banwords
-from fxbot.plugins.group_admin.commands import parse_duration
+from fxbot.plugins.group_admin.commands import GroupCommands, parse_duration
+from fxbot.platforms.onebot11.extensions import OneBot11ExtendedClient
 from fxbot.plugins.entertain.image_display import ImageDisplay
 from fxbot.plugins.group_admin.join_verify import Pending, JoinVerification
 from fxbot.plugins.video_parser.parsers.base import ParseError, find_url, can_parse_url
@@ -36,6 +38,34 @@ GROUP = SessionTarget("onebot11", "100", "group", "300")
 
 
 class NativePluginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mute_list_query_failures_reply_without_executing_unmute(self):
+        commands = GroupCommands(self.service)
+        for action, text in (("mute_list", "#禁言列表"), ("unmute_all", "#解除全部禁言")):
+            for error, response in (
+                (UnsupportedCapability("unknown"), "当前实现不支持禁言列表"),
+                (ActionFailed("malformed"), "禁言列表查询失败，请稍后重试"),
+                (TimeoutError(), "禁言列表查询失败，请稍后重试"),
+            ):
+                bot = OneBot11ExtendedClient("100", AsyncMock())
+                bot.get_muted_members = AsyncMock(side_effect=error)
+                bot.send = AsyncMock()
+                event = replace(self.event, message=Message.text(text), original_message=None)
+                with (
+                    self.subTest(action=action, error=error),
+                    patch.object(self.service, "execute", AsyncMock()) as execute,
+                ):
+
+                    async def handle(ctx):
+                        await commands.handle(action, ctx)
+
+                    router = Router()
+                    router.message("query", handle)
+                    result = await router.dispatch(bot, event)
+                    self.assertEqual(result.failed, ())
+                    bot.send.assert_awaited_once()
+                    self.assertEqual(bot.send.await_args.args[1].plain_text(), response)
+                    execute.assert_not_awaited()
+
     async def asyncSetUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -698,7 +728,7 @@ class NativePluginWebSocketTests(unittest.TestCase):
                 "fxbot.plugins.video_parser.sender.cfg_general", return_value={"send_cover": False, "use_base64": True}
             ),
         ):
-            app = create_app(Settings("test-only", {"onebot11": frozenset({"100"})}))
+            app = create_app(Settings("test-only"))
             with TestClient(app) as client:
                 with client.websocket_connect("/onebot/v11/ws", headers=dict(HEADERS)) as websocket:
                     cases = (

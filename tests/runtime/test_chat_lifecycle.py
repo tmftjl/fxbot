@@ -174,7 +174,7 @@ class StandaloneChatTests(unittest.TestCase):
         ):
             for index in range(2):
                 mode["direct"] = index == 0
-                app = create_app(Settings("test-only", {"onebot11": frozenset({"100"})}))
+                app = create_app(Settings("test-only"))
                 with TestClient(app) as client:
                     self.assertTrue(state.is_ready())
                     self.assertTrue(any(job.name == "chat:lifecycle" for job in app.state.services.scheduler.jobs))

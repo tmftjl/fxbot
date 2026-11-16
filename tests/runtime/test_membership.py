@@ -55,7 +55,7 @@ class MembershipTests(unittest.IsolatedAsyncioTestCase):
             self.config,
             membership_service,
             self.guard,
-            Settings("test", {"onebot11": frozenset({"100"})}),
+            Settings("test"),
             maintenance,
         )
         commands.install()

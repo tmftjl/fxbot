@@ -76,8 +76,7 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
         if websocket.headers.get("x-client-role", "").lower() != "universal":
             await websocket.close(code=1008)
             return
-        implementation = settings.onebot11_implementations.get(bot_id, "standard")
-        await serve_connection(websocket, OneBot11Protocol(implementation), bot_id)
+        await serve_connection(websocket, OneBot11Protocol(), bot_id)
 
     @app.websocket("/onebot/v12/{platform}/{bot_id}/ws")
     async def onebot12(websocket: WebSocket, platform: str, bot_id: str) -> None:
@@ -98,10 +97,8 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
         """认证和连接所有权共用一套流程，协议差异由协议对象处理。"""
         authorization = websocket.headers.get("authorization", "")
         if (
-            not hmac.compare_digest(authorization.encode(), f"Bearer {settings.token}".encode())
-            or not settings.allows(protocol.platform, bot_id)
-            or runtime.state is not ApplicationState.RUNNING
-        ):
+            settings.token and not hmac.compare_digest(authorization.encode(), f"Bearer {settings.token}".encode())
+        ) or runtime.state is not ApplicationState.RUNNING:
             await websocket.close(code=1008)
             return
         disconnected = False
@@ -111,7 +108,11 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
             if not disconnected:
                 await websocket.close(code=code)
 
-        connection = ProtocolConnection(runtime, protocol, bot_id, settings, websocket.send_json, close_transport)
+        try:
+            connection = ProtocolConnection(runtime, protocol, bot_id, settings, websocket.send_json, close_transport)
+        except ValueError:
+            await websocket.close(code=1008)
+            return
         try:
             connection.start()
         except DuplicateBotError:

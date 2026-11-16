@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 
-from ...core import Capability, HandlerContext
+from ...core import Capability, HandlerContext, UnsupportedCapability
 from .service import GroupAdminService
+from ...core.errors import ActionFailed
 from ...core.plugin import on_regex
 
 
@@ -69,7 +70,14 @@ class GroupCommands:
         if action in {"mute_list", "unmute_all"}:
             if Capability.MUTED_MEMBERS not in bot.capabilities:
                 await context.finish("当前实现不支持禁言列表")
-            members = await bot.capabilities.require(Capability.MUTED_MEMBERS).get_muted_members(event.target.target_id)
+            try:
+                members = await bot.capabilities.require(Capability.MUTED_MEMBERS).get_muted_members(
+                    event.target.target_id
+                )
+            except UnsupportedCapability:
+                await context.finish("当前实现不支持禁言列表")
+            except (ActionFailed, TimeoutError, OSError):
+                await context.finish("禁言列表查询失败，请稍后重试")
             if action == "mute_list":
                 await context.finish(
                     "\n".join(

@@ -38,7 +38,7 @@ class GroupAdminService:
             raise Rejected("只能在当前 Bot 的群聊中使用")
         if not self.application.is_registered(bot):
             raise Rejected("当前连接已失效")
-        if Capability.MODERATION not in bot.capabilities:
+        if Capability.MEMBER_MODERATION not in bot.capabilities:
             raise UnsupportedCapability("当前平台不支持群管理")
 
     async def _roles(self, bot: BotClient, event: Event, user_id: str, self_action: bool) -> tuple[str, str]:
@@ -104,11 +104,11 @@ class GroupAdminService:
             self._online(bot, event.target)
             group = event.target.target_id
             if action in {"mute_member", "self_mute", "unmute_member"}:
-                await bot.capabilities.require(Capability.MODERATION).ban(
+                await bot.capabilities.require(Capability.MEMBER_MODERATION).ban(
                     group, user_id, 0 if action == "unmute_member" else duration
                 )
             elif action in {"kick_member", "ban_kick_member"}:
-                await bot.capabilities.require(Capability.MODERATION).kick(
+                await bot.capabilities.require(Capability.MEMBER_MODERATION).kick(
                     group, user_id, reject_add_request=action == "ban_kick_member"
                 )
             elif action in {"mute_all_on", "mute_all_off"}:
@@ -173,9 +173,9 @@ class GroupAdminService:
             return False
         self._online(bot, target)
         if penalty == "kick":
-            await bot.capabilities.require(Capability.MODERATION).kick(target.target_id, user_id)
+            await bot.capabilities.require(Capability.MEMBER_MODERATION).kick(target.target_id, user_id)
         elif penalty == "mute":
-            await bot.capabilities.require(Capability.MODERATION).ban(target.target_id, user_id, duration)
+            await bot.capabilities.require(Capability.MEMBER_MODERATION).ban(target.target_id, user_id, duration)
         elif penalty != "recall":
             raise ValueError("未知自动群管理处罚")
         if message_id:

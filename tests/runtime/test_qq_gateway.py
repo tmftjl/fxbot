@@ -70,9 +70,7 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         await self.app.start()
         self.addAsyncCleanup(self.app.stop)
         self.config = QQBotSettings(SECRET, mode="websocket")
-        self.settings = Settings(
-            "test-only", {"qq": frozenset({APP_ID})}, qq_bots={APP_ID: self.config}, action_timeout=1
-        )
+        self.settings = Settings("test-only", qq_bots={APP_ID: self.config}, action_timeout=1)
         self.gateway = QQGateway(self.app, APP_ID, self.config, self.settings)
         self.addAsyncCleanup(self.gateway.close)
         self.gateway.api.token = AsyncMock(return_value="fake-token")
@@ -330,11 +328,10 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(GatewayProtocolError):
             await task
 
-    async def test_gateway_https_userinfo_and_unrequested_sharding_rejected(self):
+    async def test_gateway_https_userinfo_and_invalid_quota_rejected(self):
         for info in (
             gateway_info(url="ws://gateway.test"),
             gateway_info(url="wss://secret@gateway.test"),
-            gateway_info(shards=2),
             gateway_info(session_start_limit={}),
         ):
             self.gateway.api.request.return_value = info
@@ -513,7 +510,7 @@ class QQGatewayLoopbackTests(unittest.IsolatedAsyncioTestCase):
                 return connect(f"ws://127.0.0.1:{port}", **kwargs)
 
             config = QQBotSettings(SECRET, mode="websocket")
-            settings = Settings("test", {"qq": frozenset({APP_ID})}, qq_bots={APP_ID: config})
+            settings = Settings("test", qq_bots={APP_ID: config})
             gateway = QQGateway(app, APP_ID, config, settings, connector=connector)
             await gateway.api._http.aclose()
 
@@ -574,7 +571,7 @@ class QQGatewayModeTests(unittest.IsolatedAsyncioTestCase):
         app = Application()
         await app.start()
         config = QQBotSettings(SECRET, mode="websocket")
-        settings = Settings("test", {"qq": frozenset({APP_ID})}, qq_bots={APP_ID: config})
+        settings = Settings("test", qq_bots={APP_ID: config})
         service = QQService(app, settings)
         waiting = asyncio.Event()
 

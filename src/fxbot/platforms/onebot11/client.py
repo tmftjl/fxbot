@@ -44,6 +44,7 @@ class OneBot11Client:
             .provide(Capability.TARGET_LOOKUP, self)
             .provide(Capability.AVATAR, self)
             .provide(Capability.MODERATION, self)
+            .provide(Capability.MEMBER_MODERATION, self)
             .provide(Capability.RECALL, self)
             .provide(Capability.FORWARD, self)
             .provide(Capability.FORWARD_SEND, self)

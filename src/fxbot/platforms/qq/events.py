@@ -26,11 +26,12 @@ class QQEventStream:
     def __init__(self, application, client, *, bot_user_id: str, capacity: int, concurrency: int, seen=None):
         self.application, self.client = application, client
         self.bot_user_id = bot_user_id
-        self.queue = asyncio.Queue(maxsize=capacity)
+        self.queue: asyncio.Queue[tuple] = asyncio.Queue(maxsize=capacity)
         self.worker = None
         self.seen = seen if seen is not None else OrderedDict()
         self.closed = False
         self.concurrency = concurrency
+        self._processing: dict[tuple, list] = {}
 
     def start(self, close):
         if self.closed or self.worker is not None:
@@ -52,16 +53,25 @@ class QQEventStream:
         now = time.monotonic()
         while self.seen and next(iter(self.seen.values())) <= now:
             self.seen.popitem(last=False)
-        key = (event.target.key(), event.metadata["qq_event_type"], event.message_id)
-        if key in self.seen:
+        identity = event.message_id if event.is_message else event.event_id
+        if identity is None:
+            identity = payload.get("s")
+            if type(identity) is not int or identity < 0:
+                raise ValueError("QQ 通知缺少事件 ID 或网关序列号")
+        key = (event.target.key(), event.metadata["qq_event_type"], identity)
+        if key in self.seen or key in self._processing:
             if processed is not None:
-                processed()
+                if key in self._processing:
+                    self._processing[key].append(processed)
+                else:
+                    processed()
             return
         try:
             self.queue.put_nowait((payload, event, key, processed))
         except asyncio.QueueFull:
             raise QQEventOverflow from None
         self.seen[key] = now + 600
+        self._processing[key] = [processed] if processed is not None else []
         if len(self.seen) > 4096:
             self.seen.popitem(last=False)
 
@@ -82,8 +92,8 @@ class QQEventStream:
             finally:
                 self.queue.task_done()
                 # 已开始的事件不自动重做，以免重复执行发生过部分成功的写操作。
-                if processed is not None:
-                    processed()
+                for callback in self._processing.pop(key, ()):
+                    callback()
 
     async def close(self):
         self.closed = True
@@ -95,4 +105,5 @@ class QQEventStream:
             _, _, key, _ = self.queue.get_nowait()
             # 尚未开始的事件可在 Resume 回放中再次入队。
             self.seen.pop(key, None)
+            self._processing.pop(key, None)
             self.queue.task_done()

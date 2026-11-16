@@ -21,13 +21,14 @@ class QQService:
 
     async def start(self):
         for app_id, config in self.settings.qq_bots.items():
+            connection: QQGateway | QQWebhookConnection
             if config.mode == "websocket":
                 connection = QQGateway(self.application, app_id, config, self.settings)
             else:
                 connection = QQWebhookConnection(self.application, app_id, config, self.settings)
             self._resources.push_async_callback(connection.close)
             self.connections[app_id] = connection
-            if config.mode == "websocket":
+            if isinstance(connection, QQGateway):
                 connection.start()
 
     async def close(self):

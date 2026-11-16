@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 
@@ -62,7 +63,8 @@ class PermissionContractTests(unittest.TestCase):
 
 class ActionCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_qq_background_task_does_not_reuse_expired_passive_message_id(self):
-        bot = QQClient("123", SimpleNamespace())
+        api = SimpleNamespace(request=AsyncMock(return_value={"id": "sent"}))
+        bot = QQClient("123", api)
         target = SessionTarget("qq", "123", "private", "user")
         event = Event(None, "expired", "message", "qq", "123", "user", "", target, Message.text("hello"))
         release = asyncio.Event()
@@ -70,12 +72,15 @@ class ActionCancellationTests(unittest.IsolatedAsyncioTestCase):
 
         async def child():
             await release.wait()
-            return bot._reference(target)
+            await bot.send(target, Message.text("background"))
 
         task = asyncio.create_task(child())
         reset_event(token)
         release.set()
-        self.assertIsNone(await task)
+        await task
+        body = api.request.await_args.kwargs["json"]
+        self.assertNotIn("msg_id", body)
+        self.assertNotIn("event_id", body)
 
     async def test_close_and_call_share_one_cancel_request_and_wait_for_cleanup(self):
         entered, cleaning, release, interrupted = (asyncio.Event() for _ in range(4))
@@ -116,8 +121,15 @@ class QQResponseBoundaryTests(unittest.TestCase):
             self.assertEqual(caught.exception.status, status)
 
     def test_malformed_success_is_not_treated_as_transient_http_error(self):
-        with self.assertRaises(ValueError):
-            QQHTTP._response(httpx.Response(200, text="not JSON"))
+        for response in (
+            httpx.Response(200, text="not JSON"),
+            httpx.Response(201, content=b"\xff"),
+            httpx.Response(200, json=[]),
+        ):
+            with self.subTest(status=response.status_code), self.assertRaises(QQAPIError) as caught:
+                QQHTTP._response(response)
+            self.assertEqual(caught.exception.status, response.status_code)
+            self.assertIsNone(caught.exception.code)
 
 
 class MemoryQueryProjectionTests(unittest.TestCase):

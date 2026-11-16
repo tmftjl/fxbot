@@ -28,7 +28,7 @@ from fxbot.runtime.notifications import NotificationService
 from fxbot.plugins.group_analysis import config, report
 from tests.migration.test_onebot11 import payload
 from fxbot.permission.authorization import Authorizer
-from fxbot.platforms.onebot11.napcat import NapCatClient
+from fxbot.platforms.onebot11.extensions import OneBot11ExtendedClient
 from fxbot.plugins.group_analysis.commands import COMMAND_NAME
 from fxbot.plugins.group_analysis.scheduler import JOB_NAME, ReportSchedule
 from fxbot.plugins.group_analysis.analyzers.runner import empty_analysis
@@ -58,13 +58,6 @@ class ReportConfigTests(unittest.TestCase):
             with self.subTest(item=item), self.assertRaises(ValueError):
                 config.validate_config(item)
 
-    def test_napcat_selection_is_explicit_and_tied_to_configured_bot(self) -> None:
-        settings = Settings("token", {"onebot11": frozenset({"100"})}, onebot11_implementations={"100": "napcat"})
-        self.assertEqual(settings.onebot11_implementations["100"], "napcat")
-        for mapping in ({"101": "napcat"}, {"100": "unknown"}, {"100": True}, {"100": []}):
-            with self.subTest(mapping=mapping), self.assertRaises(ValueError):
-                Settings("token", {"onebot11": frozenset({"100"})}, onebot11_implementations=mapping)
-
 
 class ReportGenerationTests(unittest.IsolatedAsyncioTestCase):
     """按完整会话去重并持久化，不接受跨连接数据。"""
@@ -84,7 +77,7 @@ class ReportGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.enterContext(patch.object(report, "data_dir", return_value=self.root))
-        self.bot = NapCatClient("100", AsyncMock())
+        self.bot = OneBot11ExtendedClient("100", AsyncMock())
         self.history = self.enterContext(
             patch.object(
                 self.bot,
@@ -114,7 +107,7 @@ class ReportGenerationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_same_group_id_different_bots_do_not_share_files_or_running_lock(self) -> None:
         await self.generate()
-        other = NapCatClient("101", AsyncMock())
+        other = OneBot11ExtendedClient("101", AsyncMock())
         with patch.object(
             other, "fetch_group_history", AsyncMock(return_value=[HistoryMessage("2", 100000, "200", "成员", "正文")])
         ):
@@ -128,6 +121,15 @@ class ReportGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.generate(bot)).reason, "unsupported")
         self.analyze.assert_not_awaited()
         bot._sender.assert_not_awaited()
+
+    async def test_malformed_version_is_fetch_failure_not_unhandled_exception(self) -> None:
+        sender = AsyncMock(return_value={})
+        bot = OneBot11ExtendedClient("100", sender)
+        result = await self.generate(bot)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "fetch_failed")
+        sender.assert_awaited_once_with("get_version_info", {})
+        self.analyze.assert_not_awaited()
 
     async def test_internal_error_propagates_and_releases_running_marker(self) -> None:
         self.history.side_effect = RuntimeError("implementation bug")
@@ -196,7 +198,7 @@ class ReportPluginTests(unittest.IsolatedAsyncioTestCase):
             )
             await self.app.start()
         self.addAsyncCleanup(self.app.stop)
-        self.bot = NapCatClient("100", AsyncMock(return_value={"message_id": 1}))
+        self.bot = OneBot11ExtendedClient("100", AsyncMock(return_value={"message_id": 1}))
         self.app.register(self.bot, close=AsyncMock())
         self.name = self.enterContext(patch.object(self.bot, "target_name", AsyncMock(return_value="测试群")))
 
@@ -261,7 +263,7 @@ class ReportPluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_offline_exact_target_does_not_fall_back_to_another_bot(self) -> None:
         self.app.unregister(self.bot)
-        other = NapCatClient("101", AsyncMock())
+        other = OneBot11ExtendedClient("101", AsyncMock())
         self.app.register(other, close=AsyncMock())
         with patch("fxbot.plugins.group_analysis.scheduler.generate", AsyncMock()) as generate:
             await self.feature.run()
@@ -289,9 +291,7 @@ class StandaloneReportTests(unittest.TestCase):
             patch.object(config.REG, "load", side_effect=lambda: deepcopy(settings)),
             patch.object(report, "render_report", AsyncMock(return_value=b"PNG-report")) as render,
         ):
-            app = create_app(
-                Settings("test-only", {"onebot11": frozenset({"100"})}, onebot11_implementations={"100": "napcat"})
-            )
+            app = create_app(Settings("test-only"))
             with TestClient(app) as client:
                 with client.websocket_connect("/onebot/v11/ws", headers=dict(HEADERS)) as websocket:
                     incoming = payload()
@@ -304,9 +304,11 @@ class StandaloneReportTests(unittest.TestCase):
                         data = {}
                         if action["action"] == "get_group_info":
                             data = {"group_id": 300, "group_name": "测试群"}
+                        elif action["action"] == "get_version_info":
+                            data = {"app_name": "NapCat.Onebot"}
                         elif action["action"] == "get_group_msg_history":
-                            self.assertEqual(action["params"]["group_id"], "300")
-                            self.assertNotIn("reverseOrder", action["params"])
+                            self.assertEqual(action["params"]["group_id"], 300)
+                            self.assertTrue(action["params"]["reverseOrder"])
                             timestamp = int(time.time())
                             message = {
                                 "message_id": 11,
@@ -319,7 +321,7 @@ class StandaloneReportTests(unittest.TestCase):
                                 "message": [{"type": "text", "data": {"text": "真实历史"}}],
                             }
                             oldest = {**message, "message_id": 10, "message_seq": 100, "time": timestamp - 90000}
-                            data = {"messages": [message, oldest]}
+                            data = {"messages": [oldest, message]}
                         elif action["action"] == "send_group_msg":
                             self.assertEqual(action["params"]["group_id"], 300)
                             data = {"message_id": 99}
@@ -332,7 +334,14 @@ class StandaloneReportTests(unittest.TestCase):
                             )
                             break
                     self.assertEqual(
-                        seen, ["send_group_msg", "get_group_info", "get_group_msg_history", "send_group_msg"]
+                        seen,
+                        [
+                            "send_group_msg",
+                            "get_group_info",
+                            "get_version_info",
+                            "get_group_msg_history",
+                            "send_group_msg",
+                        ],
                     )
                     self.assertEqual(render.await_args.args[0]["stats"]["total"], 1)
 
@@ -344,15 +353,3 @@ class StandaloneReportTests(unittest.TestCase):
                     self.assertEqual(rows[-1].message_count, 1)
                     self.assertEqual(Path(rows[-1].image_path).read_bytes(), b"PNG-report")
                     self.assertEqual(json.loads(rows[-1].summary)["topics"], [])
-
-    def test_standard_v11_reports_unsupported_without_guessing_history_api(self) -> None:
-        app = create_app(Settings("test-only", {"onebot11": frozenset({"100"})}))
-        with TestClient(app) as client:
-            with client.websocket_connect("/onebot/v11/ws", headers=dict(HEADERS)) as websocket:
-                incoming = payload()
-                incoming["message"] = [{"type": "text", "data": {"text": "/群聊分析"}}]
-                websocket.send_json(incoming)
-                action = websocket.receive_json()
-                self.assertEqual(action["action"], "send_group_msg")
-                self.assertIn("不支持拉取群历史", action["params"]["message"][0]["data"]["text"])
-                websocket.send_json({"echo": action["echo"], "status": "ok", "retcode": 0, "data": {"message_id": 99}})

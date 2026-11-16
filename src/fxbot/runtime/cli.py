@@ -19,7 +19,7 @@ def main() -> None:
         overrides = {name: getattr(args, name) for name in ("host", "port") if getattr(args, name) is not None}
         settings = replace(settings, **overrides)
     except (OSError, ValueError):
-        parser.error("无法读取有效的 data/config/runtime/config.json，请检查身份、令牌和监听配置")
+        parser.error("无法读取有效的 data/config/runtime/config.json，请检查令牌和监听配置")
 
     import uvicorn
 

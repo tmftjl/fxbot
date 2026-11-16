@@ -10,6 +10,7 @@ import unittest
 from copy import deepcopy
 from types import SimpleNamespace
 from pathlib import Path
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -67,7 +68,7 @@ def signed(data, secret=SECRET, app_id=APP_ID, *, timestamp=None):
 
 
 def settings(**kwargs):
-    return Settings("test-only", {"qq": frozenset({APP_ID})}, qq_bots={APP_ID: QQBotSettings(SECRET)}, **kwargs)
+    return Settings("test-only", qq_bots={APP_ID: QQBotSettings(SECRET)}, **kwargs)
 
 
 class QQConfigTests(unittest.TestCase):
@@ -78,7 +79,6 @@ class QQConfigTests(unittest.TestCase):
                 json.dumps(
                     {
                         "token": "test-only",
-                        "bots": {"qq": [APP_ID]},
                         "qq_bots": {APP_ID: {"secret": SECRET}},
                     }
                 ),
@@ -91,15 +91,14 @@ class QQConfigTests(unittest.TestCase):
             with self.assertRaises(TypeError):
                 loaded.qq_bots["other"] = QQBotSettings(SECRET)
 
-    def test_missing_unlisted_credentials_or_invalid_config_rejected(self):
-        for raw in ({}, {APP_ID: SECRET}, {"other": QQBotSettings(SECRET)}):
+    def test_invalid_credentials_or_config_rejected(self):
+        for raw in ({APP_ID: SECRET}, {"other": QQBotSettings(SECRET)}, {123: QQBotSettings(SECRET)}):
             with self.assertRaises(ValueError):
-                Settings("x", {"qq": frozenset({APP_ID})}, qq_bots=raw)
+                Settings("x", qq_bots=raw)
         for raw in ({"secret": ""}, {"secret": SECRET, "verify": False}, {"secret": SECRET, "bot_user_id": 1}):
             with self.assertRaises(ValueError):
                 QQBotSettings.parse(raw)
-        with self.assertRaises(ValueError):
-            Settings("x", {"onebot11": frozenset({"100"})}, qq_bots={APP_ID: QQBotSettings(SECRET)})
+        self.assertEqual(Settings(qq_bots={APP_ID: QQBotSettings(SECRET)}).qq_bots[APP_ID].secret, SECRET)
 
 
 class QQCodecTests(unittest.TestCase):
@@ -220,6 +219,24 @@ class QQSigningTests(unittest.TestCase):
 
 
 class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_non_json_success_is_action_failure_without_retry_or_body_disclosure(self):
+        calls = []
+
+        def handle(request):
+            calls.append(request)
+            return httpx.Response(200, text="<html>" + SECRET + "</html>")
+
+        api = QQHTTP(APP_ID, SECRET, httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+        api.token = AsyncMock(return_value="fake-token")
+        try:
+            with self.assertRaises(QQAPIError) as caught:
+                await api.request("POST", "/v2/groups/GROUP/messages", json={"content": "hello"})
+            self.assertEqual(caught.exception.status, 200)
+            self.assertEqual(len(calls), 1)
+            self.assertNotIn(SECRET, str(caught.exception))
+        finally:
+            await api.close()
+
     async def test_auth_token_shared_across_concurrent_calls_and_refreshed(self):
         calls = []
 
@@ -374,9 +391,8 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_does_not_use_channel_message_delete(self):
         await self.bot.send(self.event.target, Message.text("x"))
-        with self.assertRaises(UnsupportedCapability):
-            await self.bot.delete_message("reply-id")
-        self.assertEqual(self.api.request.await_count, 1)
+        await self.bot.delete_message("reply-id")
+        self.assertEqual(self.api.request.await_args.args, ("DELETE", "/v2/groups/GROUP_OPENID/messages/reply-id"))
 
     async def test_mentions_are_explicit_and_channel_text_cannot_inject_mentions(self):
         await self.bot.send(
@@ -513,6 +529,57 @@ class QQEntryTests(unittest.TestCase):
         raw, headers = signed(data, **kwargs)
         return self.client.post("/qq/webhook", content=raw, headers=headers)
 
+    def test_integer_member_join_timestamp_enters_router_and_passive_reply(self):
+        async def joined(context):
+            self.assertEqual(context.event.user_id, "MEMBER")
+            self.assertEqual(int(context.event.occurred_at.timestamp()), 1784276757)
+            await context.send("welcome")
+
+        self.app.state.runtime.router.event("test-member-join", "member_joined", joined)
+        frame = {
+            "op": 0,
+            "t": "GROUP_MEMBER_ADD",
+            "id": "member-join-event",
+            "d": {
+                "group_openid": "GROUP",
+                "member_openid": "MEMBER",
+                "timestamp": 1784276757,
+            },
+        }
+        self.assertEqual(self.post(frame).status_code, 200)
+        self.client.portal.call(self.connection.events.queue.join)
+        body = json.loads(self.sent[-1].content)
+        self.assertEqual(body["event_id"], "member-join-event")
+        self.assertNotIn("msg_id", body)
+        self.assertNotIn("msg_seq", body)
+
+    def test_signed_interaction_enters_core_and_reply_uses_event_id(self):
+        async def clicked(context):
+            self.assertEqual(context.event.metadata["qq_data"]["data"]["resolved"]["button_id"], "approve")
+            await context.send("clicked")
+
+        self.app.state.runtime.router.event("test-click", "interaction", clicked)
+        frame = {
+            "op": 0,
+            "t": "INTERACTION_CREATE",
+            "id": "interaction-envelope",
+            "d": {
+                "id": "interaction-id",
+                "application_id": APP_ID,
+                "chat_type": 1,
+                "group_openid": "GROUP",
+                "group_member_openid": "MEMBER",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {"resolved": {"button_id": "approve"}},
+            },
+        }
+        self.assertEqual(self.post(frame).status_code, 200)
+        self.client.portal.call(self.connection.events.queue.join)
+        body = json.loads(self.sent[-1].content)
+        self.assertEqual(body["event_id"], "interaction-envelope")
+        self.assertNotIn("msg_seq", body)
+        self.assertNotIn("msg_id", body)
+
     def test_signed_group_ping_enters_core_router_and_replies_via_official_api(self):
         response = self.post(payload())
         self.assertEqual(response.status_code, 200)
@@ -521,7 +588,7 @@ class QQEntryTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0].url.path, "/v2/groups/GROUP_OPENID/messages")
         self.assertEqual(
-            json.loads(self.sent[0].content),
+            {key: value for key, value in json.loads(self.sent[0].content).items() if key != "timestamp"},
             {
                 "content": "pong",
                 "msg_type": 0,

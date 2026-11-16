@@ -100,7 +100,7 @@ class JoinVerification(Service):
     async def toggle(self, context: HandlerContext) -> None:
         data = self.configs()
         enabled = "开启" in context.arguments
-        if enabled and Capability.MODERATION not in context.bot.capabilities:
+        if enabled and Capability.MEMBER_MODERATION not in context.bot.capabilities:
             await context.finish("当前平台不支持自动入群验证")
         data[context.event.target.key()] = {"enabled": enabled}
         write_json(self.path, data)

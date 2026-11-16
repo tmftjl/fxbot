@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory() as directory:
         from fxbot.runtime.server import create_app
         from fxbot.console import auth, log_store, log_stream
         from fxbot.db import base_models
-        app = create_app(Settings('test-token', {'onebot11': frozenset({'100'})}))
+        app = create_app(Settings('test-token'))
         with patch.object(auth, 'get_console_token', return_value='console-token'), TestClient(app) as client:
             for path in ('/health', '/fxbot/health', '/fxbot'):
                 assert client.get(path).status_code == 200, path

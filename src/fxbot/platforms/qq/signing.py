@@ -31,7 +31,7 @@ class QQSigner:
         except InvalidSignature:
             raise SignatureRejected("回调签名不匹配") from None
 
-    def challenge(self, data: dict) -> dict[str, str]:
+    def challenge(self, data: object) -> dict[str, str]:
         if not isinstance(data, dict) or not isinstance(data.get("plain_token"), str):
             raise ValueError("回调握手缺少 plain_token")
         token, timestamp = data["plain_token"], data.get("event_ts")

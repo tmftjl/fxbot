@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import field, dataclass
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,10 +12,28 @@ class QQBotSettings:
     secret: str = field(repr=False)
     bot_user_id: str = ""
     mode: str = "webhook"
-    intents: int = (1 << 25) | (1 << 30)
+    intents: int = (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27)
     shard: tuple[int, int] | None = None
+    api_base: str = "https://api.bot.qq.com"
+    auth_url: str = "https://api.bot.qq.com/app/getAppAccessToken"
+    gateway_url: str | None = None
 
     def __post_init__(self) -> None:
+        for value, scheme in ((self.api_base, "https"), (self.auth_url, "https"), (self.gateway_url, "wss")):
+            if value is None and scheme == "wss":
+                continue
+            if not isinstance(value, str):
+                raise ValueError("QQ 接口地址必须为字符串")
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme != scheme
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("QQ 接口地址必须具有明确的安全协议和主机，不能包含凭证或查询参数")
         if not isinstance(self.secret, str) or not self.secret or self.secret != self.secret.strip():
             raise ValueError("QQ secret 必须为非空字符串")
         if not isinstance(self.bot_user_id, str) or self.bot_user_id != self.bot_user_id.strip():
@@ -40,7 +59,7 @@ class QQBotSettings:
         if (
             not isinstance(raw, dict)
             or not {"secret"} <= raw.keys()
-            or raw.keys() - {"secret", "bot_user_id", "mode", "intents", "shard"}
+            or raw.keys() - {"secret", "bot_user_id", "mode", "intents", "shard", "api_base", "auth_url", "gateway_url"}
         ):
             raise ValueError("QQ Bot 配置存在缺失或未知字段")
         raw = dict(raw)

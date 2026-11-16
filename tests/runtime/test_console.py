@@ -24,7 +24,7 @@ class ConsoleTests(unittest.TestCase):
     """所有请求都落在新 ASGI 应用，不初始化外部框架。"""
 
     def setUp(self) -> None:
-        self.app = create_app(Settings("test-only", {"onebot11": frozenset({"100"})}))
+        self.app = create_app(Settings("test-only"))
         self.client = self.enterContext(TestClient(self.app, raise_server_exceptions=False))
         self.enterContext(patch.object(auth, "get_console_token", return_value="console-only"))
         self.headers = {"authorization": "Bearer console-only"}
@@ -162,7 +162,7 @@ class ResourceOwnershipTests(unittest.TestCase):
     """日志线程和缓冲都必须由应用显式回收。"""
 
     def test_second_application_cannot_take_over_existing_log_resources(self) -> None:
-        settings = Settings("test-only", {"onebot11": frozenset({"100"})})
+        settings = Settings("test-only")
         first = create_app(settings)
         with TestClient(first) as client:
             sink_id = log_stream._sink_id
@@ -177,7 +177,7 @@ class ResourceOwnershipTests(unittest.TestCase):
         observed = []
         external_sink = logger.add(observed.append, format="{message}")
         self.addCleanup(logger.remove, external_sink)
-        app = create_app(Settings("test-only", {"onebot11": frozenset({"100"})}))
+        app = create_app(Settings("test-only"))
         with TestClient(app):
             logger.info("test-owned-log")
             logging.getLogger("test.core").warning("test-core-log")

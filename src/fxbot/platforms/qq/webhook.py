@@ -26,14 +26,17 @@ logger = logging.getLogger(__name__)
 class QQWebhookConnection:
     def __init__(self, application, app_id, config, settings):
         self.application = application
+        self._closed = False
         self.app_id, self.config = app_id, config
         self.signer = QQSigner(config.secret)
         self.api = QQHTTP(
             app_id,
             config.secret,
             httpx.AsyncClient(timeout=settings.action_timeout, follow_redirects=False, trust_env=False),
+            api_base=config.api_base,
+            auth_url=config.auth_url,
         )
-        self.client = QQClient(
+        self.client: QQClient = QQClient(
             app_id, self.api, available=lambda: not self._closed and application.is_registered(self.client)
         )
         self.events = QQEventStream(
@@ -43,7 +46,6 @@ class QQWebhookConnection:
             capacity=settings.queue_size,
             concurrency=settings.event_concurrency,
         )
-        self._closed = False
         self._close_task = None
 
     def receive(self, payload: dict) -> None:

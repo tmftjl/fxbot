@@ -24,7 +24,7 @@ class NetworkTests(unittest.TestCase):
     """服务只绑定回环地址和系统分配端口。"""
 
     def setUp(self) -> None:
-        self.app = create_app(Settings("test-only", {"onebot11": frozenset({"100"})}))
+        self.app = create_app(Settings("test-only"))
         self.socket = socket.socket()
         self.socket.bind(("127.0.0.1", 0))
         self.socket.listen(16)

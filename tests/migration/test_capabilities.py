@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 from fxbot.core import Message, BotClient, Capability, Capabilities, SessionTarget, UnsupportedCapability
 from fxbot.platforms.onebot11 import OneBot11Client
 from fxbot.platforms.onebot12 import OneBot12Client
-from fxbot.platforms.onebot11.napcat import NapCatClient
+from fxbot.platforms.onebot11.extensions import OneBot11ExtendedClient
 
 
 class CapabilityContractsTests(unittest.IsolatedAsyncioTestCase):
@@ -58,11 +58,14 @@ class CapabilityContractsTests(unittest.IsolatedAsyncioTestCase):
             bot.capabilities.require(Capability.MODERATION)
         transport.assert_not_awaited()
 
-    async def test_napcat_extends_only_its_own_registry(self):
-        sender = AsyncMock(return_value={})
+    async def test_extended_client_provides_history_essence_and_muted_registry(self):
+        sender = AsyncMock(side_effect=[{"app_name": "NapCat.Onebot"}, {}])
         standard = OneBot11Client("100", sender)
-        extended = NapCatClient("100", sender)
+        extended = OneBot11ExtendedClient("100", sender)
         self.assertNotIn(Capability.HISTORY, standard.capabilities)
         self.assertFalse(hasattr(standard, "set_essence"))
+        self.assertIn(Capability.HISTORY, extended.capabilities)
+        self.assertIn(Capability.MUTED_MEMBERS, extended.capabilities)
         await extended.capabilities.require(Capability.ESSENCE).set_essence("1", enabled=True)
-        sender.assert_awaited_once_with("set_essence_msg", {"message_id": 1})
+        self.assertEqual(sender.await_args_list[0].args, ("get_version_info", {}))
+        self.assertEqual(sender.await_args_list[1].args, ("set_essence_msg", {"message_id": 1}))

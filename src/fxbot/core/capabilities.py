@@ -59,9 +59,12 @@ class AvatarProvider(Protocol):
     def avatar_url(self, user_id: str) -> str: ...
 
 
-class Moderation(Protocol):
+class MemberModeration(Protocol):
     async def ban(self, group_id: str, user_id: str, duration: int) -> Any: ...
     async def kick(self, group_id: str, user_id: str, *, reject_add_request: bool = False) -> Any: ...
+
+
+class Moderation(MemberModeration, Protocol):
     async def set_admin(self, group_id: str, user_id: str, *, enabled: bool) -> Any: ...
     async def set_whole_ban(self, group_id: str, *, enabled: bool) -> Any: ...
     async def set_special_title(self, group_id: str, user_id: str, title: str) -> Any: ...
@@ -113,6 +116,7 @@ class Capability:
     HISTORY = CapabilityKey[HistoryReader]("history")
     AVATAR = CapabilityKey[AvatarProvider]("avatar")
     MODERATION = CapabilityKey[Moderation]("moderation")
+    MEMBER_MODERATION = CapabilityKey[MemberModeration]("member_moderation")
     RECALL = CapabilityKey[Recall]("recall")
     ESSENCE = CapabilityKey[Essence]("essence")
     MUTED_MEMBERS = CapabilityKey[MutedMembers]("muted_members")

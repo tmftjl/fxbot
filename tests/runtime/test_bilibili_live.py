@@ -365,7 +365,7 @@ class StandaloneLiveTests(unittest.TestCase):
                 patch.object(bilibili_live.poller, "store", store),
                 patch("fxbot.plugins.bilibili_live.commands.fetch_room", AsyncMock(return_value=ROOM)),
             ):
-                app = create_app(Settings("test-only", {"onebot11": frozenset({"100"})}))
+                app = create_app(Settings("test-only"))
                 with TestClient(app) as client:
                     with client.websocket_connect("/onebot/v11/ws", headers=dict(HEADERS)) as websocket:
                         incoming = payload()

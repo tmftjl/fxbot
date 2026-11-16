@@ -21,7 +21,7 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         await self.app.start()
         self.addAsyncCleanup(self.app.stop)
         self.sent = asyncio.Queue()
-        self.settings = Settings("test", {"onebot11": frozenset({"100"})}, event_concurrency=2, queue_size=3)
+        self.settings = Settings("test", event_concurrency=2, queue_size=3)
         self.connection = ProtocolConnection(
             self.app, OneBot11Protocol(), "100", self.settings, self.sent.put, AsyncMock()
         )
@@ -148,13 +148,13 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
 class ConcurrencySettingsTests(unittest.TestCase):
     def test_default_and_invalid_concurrency(self):
-        self.assertEqual(Settings("test", {"onebot11": frozenset({"100"})}).event_concurrency, 8)
+        self.assertEqual(Settings("test").event_concurrency, 8)
         for value in (True, 0, -1, 1.5, "8", None):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                Settings("test", {"onebot11": frozenset({"100"})}, event_concurrency=value)
+                Settings("test", event_concurrency=value)
 
     def test_concurrency_is_read_from_project_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            path.write_text('{"token":"test","bots":{"onebot11":["100"]},"event_concurrency":3}', encoding="utf-8")
+            path.write_text('{"token":"test","event_concurrency":3}', encoding="utf-8")
             self.assertEqual(Settings.load(path).event_concurrency, 3)
