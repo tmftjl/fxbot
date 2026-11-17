@@ -49,6 +49,12 @@ class ProviderOwnershipTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(self.expected_close_error):
                 await asyncio.wait_for(self.manager.aclose(), 1)
 
+    async def test_has_provider_checks_configured_capability(self) -> None:
+        self.assertTrue(self.manager.has_provider("chat"))
+        self.assertFalse(self.manager.has_provider("embedding"))
+        self.values["chat"]["providers"] = {}
+        self.assertFalse(self.manager.has_provider("chat"))
+
     async def test_hot_reload_keeps_old_instance_until_its_last_lease(self) -> None:
         async with self.manager.lease("main") as old:
             self.values["chat"]["providers"]["main"]["model"] = "new"

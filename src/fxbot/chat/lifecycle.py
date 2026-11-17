@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 
+from loguru import logger
+
 from . import recall, router, commands
 from .audit import stop_audit_observers
 from .emoji import emoji_cleanup_tick, emoji_reconcile_tick
@@ -60,6 +62,8 @@ class ChatLifecycle:
         resources.push_async_callback(close_shared_async_client)
         resources.push_async_callback(provider_manager.aclose)
         await provider_manager.start()
+        if self.configuration.get_system()["chat"].get("enabled", True) and not provider_manager.has_provider("chat"):
+            logger.warning("[Chat] 未配置对话 Provider，AI 回复将被跳过；请在控制台「模型配置」中添加对话模型")
         resources.callback(state.mark_degraded, "聊天存储已停止")
         resources.push_async_callback(amemorix_runtime.stop)
         resources.push_async_callback(trimmed_learning.stop)

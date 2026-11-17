@@ -50,7 +50,11 @@ class ChatLifecycleTests(unittest.IsolatedAsyncioTestCase):
             return AsyncMock(side_effect=run)
 
         values = {
-            "provider_manager": SimpleNamespace(start=action("start:providers"), aclose=action("stop:providers")),
+            "provider_manager": SimpleNamespace(
+                start=action("start:providers"),
+                aclose=action("stop:providers"),
+                has_provider=Mock(return_value=True),
+            ),
             "amemorix_runtime": SimpleNamespace(start=action("start:memory"), stop=action("stop:memory")),
             "image_writeback": SimpleNamespace(start=action("start:images"), stop=action("stop:images")),
             "chat_writeback": SimpleNamespace(start=action("start:writeback"), stop=action("stop:writeback")),

@@ -20,6 +20,7 @@ from .access import id_allowlist as _id_allowlist
 from ..config import get_manager as get_config_manager
 from .service import chat_service, history_limit
 from .personas import effective_persona_name
+from .providers import provider_manager
 from ..core.matcher import bind_matchers
 from .session_hooks import direct_reply_mode
 from .work_schedule import can_reply
@@ -142,8 +143,10 @@ def _should_record_context(cfg: dict[str, Any], bot: BotClient, event: Event) ->
 
 
 async def _ai_fallback_rule(bot: BotClient, event: Event) -> bool:
-    """AI 兜底匹配规则。"""
+    """AI 兜底匹配规则；没有对话 Provider 时按未启用处理。"""
     cfg = _chat_cfg()
+    if not provider_manager.has_provider("chat"):
+        return False
     session_id = session_id_for_event(bot, event)
     if not can_reply(cfg, session_id=session_id) or _message_filtered(cfg, event):
         return False

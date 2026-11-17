@@ -229,6 +229,10 @@ class ProviderManager:
         """按能力筛选已配置的实例。"""
         return [name for name, config in self._configs().items() if config["provider_type"] == provider_type]
 
+    def has_provider(self, provider_type: str = "chat") -> bool:
+        """返回是否至少配置了一个该能力的 Provider。"""
+        return bool(self.list_providers_by_type(provider_type))
+
     def get_api_config(self, name: str) -> dict[str, Any] | None:
         """读取最新实例配置。"""
         return self._configs().get(name)
