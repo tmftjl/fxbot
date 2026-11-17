@@ -79,7 +79,13 @@ class LivePoller:
 
     def _pending(self, sub: Subscription, room_id: int) -> bool:
         status = self.store.room_state(room_id)
-        return self._subscribed(sub, room_id) and status is not None and status.is_live and not status.delivered
+        return (
+            self._subscribed(sub, room_id)
+            and status is not None
+            and status.is_live
+            and not status.delivered
+            and self.store.target_pending(room_id, sub.key)
+        )
 
     async def check_and_push(self, notifications: NotificationService | None = None, *, initial: bool = False) -> int:
         """同一开播周期只推送一次；没有可用 Bot 时保留待推送状态。"""
@@ -107,8 +113,9 @@ class LivePoller:
                 segments = [MessageSegment.text(_push_text(room))]
                 if room.cover:
                     segments.append(MessageSegment.image(room.cover))
-                delivered = False
                 for sub in subscriptions:
+                    if not self._pending(sub, room.room_id):
+                        continue
                     for bot in sender.application.bots:
                         target = SessionTarget(bot.platform, bot.bot_id, sub.kind, sub.target_id)
                         sent = await sender.send(
@@ -118,9 +125,11 @@ class LivePoller:
                             valid=lambda sub=sub, rid=room.room_id: self._pending(sub, rid),
                         )
                         if sent:
-                            delivered = True
                             pushed += 1
+                            if self._subscribed(sub, room.room_id):
+                                self.store.mark_target_delivered(room.room_id, sub.key)
                             break
-                if delivered:
+                remaining = self.store.subscriptions(room.room_id)
+                if remaining and all(not self.store.target_pending(room.room_id, sub.key) for sub in remaining):
                     self.store.mark_delivered(room.room_id)
             return pushed

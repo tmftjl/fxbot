@@ -122,6 +122,8 @@ class LiveStore:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path if path is not None else data_dir("bilibili_live") / "state.json"
+        # 旧文件仅保存整轮交付标记；逐目标进度限于本次运行，重启仍由轮询器校准。
+        self._delivered: dict[int, set[str]] = {}
 
     def _read(self) -> _State:
         try:
@@ -190,12 +192,14 @@ class LiveStore:
         if previous is not None:
             state.subscriptions = [sub for sub in state.subscriptions if sub.key != key]
         state.subscriptions.append(Subscription(kind, target_id, operator_id, rooms))
-        if room.is_live:
+        if room.is_live and room.room_id not in state.room_states:
             # 订阅时正在直播，不补发本轮开播通知。
             state.room_states[room.room_id] = RoomState(True, True, int(time.time()))
         elif room.room_id not in state.room_states:
             state.room_states[room.room_id] = RoomState(False, False, int(time.time()))
         self._write(state)
+        if room.is_live and created:
+            self._delivered.setdefault(room.room_id, set()).add(key)
         return created
 
     def remove_room(self, kind: str, target_id: str, room_id: int) -> bool:
@@ -212,6 +216,7 @@ class LiveStore:
         if not any(room_id in sub.rooms for sub in state.subscriptions):
             state.room_states.pop(room_id, None)
         self._write(state)
+        self._delivered.get(room_id, set()).discard(key)
         return True
 
     def rooms(self) -> tuple[LiveRoomSnapshot, ...]:
@@ -227,10 +232,17 @@ class LiveStore:
     def record_state(self, room_id: int, is_live: bool, delivered: bool) -> None:
         state = self._read()
         previous = state.room_states.get(room_id)
-        if previous is not None and (previous.is_live, previous.delivered) == (is_live, delivered):
-            return
-        state.room_states[room_id] = RoomState(is_live, delivered, int(time.time()))
-        self._write(state)
+        if previous is None or (previous.is_live, previous.delivered) != (is_live, delivered):
+            state.room_states[room_id] = RoomState(is_live, delivered, int(time.time()))
+            self._write(state)
+        if not is_live or delivered:
+            self._delivered.pop(room_id, None)
+
+    def target_pending(self, room_id: int, key: str) -> bool:
+        return key not in self._delivered.get(room_id, set())
+
+    def mark_target_delivered(self, room_id: int, key: str) -> None:
+        self._delivered.setdefault(room_id, set()).add(key)
 
     def mark_delivered(self, room_id: int) -> bool:
         previous = self.room_state(room_id)

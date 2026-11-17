@@ -125,9 +125,10 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
                 "302": {"enabled": "yes"},
             },
         )
+        original = verifier.path.read_bytes()
         self.assertEqual(verifier.configs(), {"300": {"enabled": True}})
         self.assertTrue(verifier.enabled(GROUP))
-        self.assertEqual(json.loads(verifier.path.read_text(encoding="utf-8")), {"300": {"enabled": True}})
+        self.assertEqual(verifier.path.read_bytes(), original)
 
     async def test_moderation_exact_onebot_binding(self):
         result = await self.service.execute(self.bot, self.event, "mute_member", user_id="400", duration=60)
@@ -466,12 +467,12 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
+        original = path.read_bytes()
         with patch.object(musicshare, "_LOGIN_SESSION_FILE", path):
             sessions = musicshare._load_login_sessions()
         self.assertEqual(set(sessions), {"qq:200"})
         self.assertEqual(sessions["qq:200"]["owner"], "200")
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        self.assertNotIn("netease:onebot11:100:private:201", saved)
+        self.assertEqual(path.read_bytes(), original)
 
     async def test_music_group_login_is_allowed_and_scoped_to_user(self):
         from fxbot.plugins.entertain import musicshare

@@ -112,12 +112,10 @@ def _load_login_sessions() -> dict[str, dict[str, Any]]:
         logger.warning("[musicshare] 音乐会话必须为对象，已忽略")
         return {}
     sessions: dict[str, dict[str, Any]] = {}
-    changed = False
     for key, value in data.items():
         platform, separator, owner = key.partition(":")
         if not separator or platform not in {"qq", "netease"} or not owner or ":" in owner:
             logger.warning("[musicshare] 跳过无效的登录会话: {}", key)
-            changed = True
             continue
         if (
             not isinstance(value, dict)
@@ -126,7 +124,6 @@ def _load_login_sessions() -> dict[str, dict[str, Any]]:
             or not isinstance(value.get("accounts"), list)
         ):
             logger.warning("[musicshare] 跳过格式错误的登录会话: {}", key)
-            changed = True
             continue
         accounts = []
         for account in value["accounts"]:
@@ -140,16 +137,9 @@ def _load_login_sessions() -> dict[str, dict[str, Any]]:
                 accounts.append({**account, "owner": owner, "provider": platform})
             else:
                 logger.warning("[musicshare] 跳过格式错误的音乐账号: {}", key)
-                changed = True
         if not accounts:
-            changed = True
             continue
         sessions[key] = {"provider": platform, "owner": owner, "accounts": accounts}
-    if changed:
-        try:
-            write_json(_LOGIN_SESSION_FILE, sessions)
-        except OSError:
-            logger.opt(exception=True).warning("[musicshare] 清理无效音乐会话失败")
     return sessions
 
 

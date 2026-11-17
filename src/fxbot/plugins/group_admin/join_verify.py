@@ -101,11 +101,6 @@ class JoinVerification(Service):
                 logger.warning("[join_verify] 跳过无效群号: {!r}", key)
                 continue
             cleaned[group_id] = {"enabled": item["enabled"]}
-        if cleaned != data:
-            try:
-                write_json(self.path, cleaned)
-            except OSError:
-                logger.opt(exception=True).warning("[join_verify] 清理无效配置失败")
         return cleaned
 
     def enabled(self, target: SessionTarget) -> bool:

@@ -272,6 +272,83 @@ class LivePollerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.poller.check_and_push(), 0)
         self.assertGreaterEqual(self.notifications.send.await_count, 8)
 
+    async def test_partial_delivery_retries_only_failed_targets(self) -> None:
+        self.fetch.return_value = replace(ROOM, live_status=1)
+        self.notifications.send.side_effect = lambda feature, target, message, valid: target.kind == "group"
+        self.assertEqual(await self.poller.check_and_push(), 1)
+        self.assertFalse(self.store.room_state(123).delivered)
+        self.notifications.send.reset_mock()
+        self.notifications.send.side_effect = None
+        self.notifications.send.return_value = True
+        self.assertEqual(await self.poller.check_and_push(), 1)
+        self.assertEqual(self.notifications.send.await_args.args[1].kind, "private")
+        self.notifications.send.assert_awaited_once()
+        self.assertTrue(self.store.room_state(123).delivered)
+
+    async def test_new_live_subscription_does_not_suppress_existing_targets(self) -> None:
+        live = replace(ROOM, live_status=1)
+        self.store.add_room("group", "301", live, "200")
+        self.assertFalse(self.store.room_state(123).delivered)
+        self.fetch.return_value = live
+        self.notifications.send.return_value = True
+        self.assertEqual(await self.poller.check_and_push(), 2)
+        targets = [call.args[1].target_id for call in self.notifications.send.await_args_list]
+        self.assertEqual(targets, ["300", "200"])
+        self.assertTrue(self.store.room_state(123).delivered)
+
+    async def test_new_live_subscription_preserves_partial_delivery(self) -> None:
+        live = replace(ROOM, live_status=1)
+        self.fetch.return_value = live
+        self.notifications.send.side_effect = lambda feature, target, message, valid: target.kind == "group"
+        self.assertEqual(await self.poller.check_and_push(), 1)
+        self.store.add_room("group", "301", live, "200")
+        self.assertFalse(self.store.room_state(123).delivered)
+        self.notifications.send.reset_mock()
+        self.notifications.send.side_effect = None
+        self.notifications.send.return_value = True
+        self.assertEqual(await self.poller.check_and_push(), 1)
+        self.notifications.send.assert_awaited_once()
+        self.assertEqual(self.notifications.send.await_args.args[1].target_id, "200")
+
+    async def test_delivery_progress_resets_for_next_live_cycle(self) -> None:
+        live = replace(ROOM, live_status=1)
+        self.store.add_room("group", "301", live, "200")
+        await self.poller.check_and_push()
+        self.fetch.return_value = live
+        self.notifications.send.return_value = True
+        self.assertEqual(await self.poller.check_and_push(), 3)
+
+    async def test_duplicate_live_subscription_keeps_pending_delivery(self) -> None:
+        live = replace(ROOM, live_status=1)
+        self.store.add_room("group", "300", live, "200")
+        self.fetch.return_value = live
+        self.notifications.send.return_value = True
+        self.assertEqual(await self.poller.check_and_push(), 2)
+
+    async def test_partial_delivery_progress_resets_after_room_goes_offline(self) -> None:
+        self.fetch.return_value = replace(ROOM, live_status=1)
+        self.notifications.send.side_effect = lambda feature, target, message, valid: target.kind == "group"
+        self.assertEqual(await self.poller.check_and_push(), 1)
+        self.fetch.return_value = ROOM
+        await self.poller.check_and_push()
+        self.notifications.send.reset_mock()
+        self.notifications.send.side_effect = None
+        self.notifications.send.return_value = True
+        self.fetch.return_value = replace(ROOM, live_status=1)
+        self.assertEqual(await self.poller.check_and_push(), 2)
+
+    async def test_partial_delivery_keeps_existing_file_schema(self) -> None:
+        self.fetch.return_value = replace(ROOM, live_status=1)
+        self.notifications.send.side_effect = lambda feature, target, message, valid: target.kind == "group"
+        await self.poller.check_and_push()
+        raw = json.loads(self.store.path.read_text(encoding="utf-8"))
+        self.assertEqual(set(raw), {"subscriptions", "room_states"})
+        self.assertEqual(set(raw["room_states"]["123"]), {"is_live", "delivered", "checked_at"})
+        self.assertIs(raw["room_states"]["123"]["delivered"], False)
+        for subscription in raw["subscriptions"]:
+            key_field = "group_key" if subscription["type"] == "group" else "user_key"
+            self.assertEqual(set(subscription), {"type", key_field, "operator_id", "rooms"})
+
     async def test_new_live_cycle_can_notify_again(self) -> None:
         self.notifications.send.return_value = True
         self.fetch.return_value = replace(ROOM, live_status=1)
