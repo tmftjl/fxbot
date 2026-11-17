@@ -1,0 +1,62 @@
+name: fxbot
+
+services:
+  fxbot:
+    build:
+      context: .
+      # 构建阶段也使用宿主机网络，才能访问 127.0.0.1:7890 上的 mihomo。
+      network: host
+      # PROXY_URL 在 .env 中设置后，构建期的 apt / uv / Playwright 下载都会走代理。
+      args:
+        HTTP_PROXY: ${PROXY_URL:-}
+        HTTPS_PROXY: ${PROXY_URL:-}
+        ALL_PROXY: ${PROXY_URL:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1}
+        http_proxy: ${PROXY_URL:-}
+        https_proxy: ${PROXY_URL:-}
+        all_proxy: ${PROXY_URL:-}
+        no_proxy: ${NO_PROXY:-localhost,127.0.0.1,::1}
+    image: fxbot:local
+    # 本地镜像不存在时直接构建，不要尝试从 registry 拉取。
+    pull_policy: build
+    container_name: fxbot
+    restart: unless-stopped
+    init: true
+    # 仅适用于 Linux：容器直接使用宿主机网络栈，
+    # 因此容器内的 127.0.0.1 就是宿主机，可以直接访问本机 mihomo。
+    # 注意：host 模式下 ports 映射无效，fxbot 直接监听宿主机端口。
+    network_mode: host
+    # Chromium 渲染长图时依赖共享内存，太小容易崩溃。
+    shm_size: "1gb"
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - fxbot
+      - --host
+      - "${FXBOT_BIND:-127.0.0.1}"
+      - --port
+      - "${FXBOT_PORT:-8683}"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # host 网络下 127.0.0.1 就是宿主机，插件请求和启动时补装依赖都会走 mihomo。
+      # 健康检查访问 127.0.0.1，因此必须保留 NO_PROXY。
+      HTTP_PROXY: ${PROXY_URL:-}
+      HTTPS_PROXY: ${PROXY_URL:-}
+      ALL_PROXY: ${PROXY_URL:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1}
+      http_proxy: ${PROXY_URL:-}
+      https_proxy: ${PROXY_URL:-}
+      all_proxy: ${PROXY_URL:-}
+      no_proxy: ${NO_PROXY:-localhost,127.0.0.1,::1}
+    volumes:
+      # 直接复用项目根目录的 data/：配置、数据库、缓存和下载资源都在里面。
+      # Linux 上首次启动前执行：sudo chown -R 1000:1000 data
+      - ./data:/app/data
+      # 源码以 editable 方式安装，挂载后改代码只需重启容器，不用重新 build。
+      # 新增或修改 pyproject.toml / uv.lock 仍需重新 build。
+      - ./src:/app/src
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
