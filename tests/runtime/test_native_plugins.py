@@ -257,17 +257,18 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         await verifier.sweep()
         self.assertEqual(verifier.pending, {})
 
-    async def test_banwords_scope_and_corruption(self):
+    async def test_banwords_use_group_id_and_tolerate_corruption(self):
         words = Banwords(self.service)
         words.directory = self.root
         data = words.load(GROUP)
-        data["words"]["危险"] = {"match": "fuzzy", "penalty": "mute"}
+        data["banned_words"]["危险"] = {"match_type": "fuzzy", "penalty_type": "mute"}
         write_json(words.path(GROUP), data)
-        other = SessionTarget("onebot11", "101", "group", "300")
-        self.assertEqual(words.load(other)["words"], {})
+        self.assertEqual(words.path(GROUP).name, "300.json")
+        self.assertIn("危险", words.load(GROUP)["banned_words"])
+        other = SessionTarget("onebot11", "101", "group", "301")
+        self.assertEqual(words.load(other)["banned_words"], {})
         words.path(GROUP).write_text("{bad", encoding="utf-8")
-        with self.assertRaises(ValueError):
-            words.load(GROUP)
+        self.assertEqual(words.load(GROUP), words._default())
         self.assertEqual(words.path(GROUP).read_text(encoding="utf-8"), "{bad")
 
     async def test_like_is_one_bounded_request_per_actor_day(self):
@@ -618,18 +619,22 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             candidates = await musicshare._auth_candidates(owner, "qq")
         self.assertEqual([item[0] for item in candidates], [other])
 
-    async def test_welcome_rejects_legacy_or_traversal_data(self):
+    async def test_welcome_uses_group_ids_and_rejects_bad_images(self):
         welcome = Welcome(self.app, Mock())
         welcome.path = self.root / "welcome.json"
-        for data in (
-            {"300": {"enabled": True, "segments": []}},
-            {GROUP.key(): {"enabled": True, "segments": [{"type": "image", "value": "../secret.png"}]}},
-        ):
-            write_json(welcome.path, data)
-            before = welcome.path.read_bytes()
-            with self.assertRaises(ValueError):
-                welcome.records()
-            self.assertEqual(welcome.path.read_bytes(), before)
+        welcome.images = self.root / "welcome_images"
+        write_json(
+            welcome.path,
+            {
+                "300": {"enabled": True, "content": "欢迎"},
+                GROUP.key(): {"enabled": True, "content": "不应加载"},
+            },
+        )
+        before = welcome.path.read_bytes()
+        self.assertEqual(welcome.records(), {"300": {"enabled": True, "content": "欢迎"}})
+        self.assertEqual(welcome.path.read_bytes(), before)
+        write_json(welcome.path, {"300": {"enabled": True, "content": "[[WELCOME_IMG:../secret.png]]"}})
+        self.assertEqual(welcome.records(), {})
 
     async def test_video_parse_error_cleans_owned_directory(self):
         plugin = video.VideoParser(self.app, self.auth)
@@ -773,6 +778,22 @@ class NativeValidationTests(unittest.TestCase):
         for text in ("差不多一会儿", "1h later", "-3"):
             with self.assertRaises(ValueError):
                 parse_duration(text)
+
+    def test_video_group_state_uses_bare_group_id(self):
+        from fxbot.plugins.video_parser import state
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "groups.json"
+            write_json(path, {"disabled_groups": ["300"]})
+            before = path.read_bytes()
+            with patch.object(state, "STATE_PATH", path):
+                self.assertEqual(state.load_state(), {"disabled_groups": ["300"]})
+                self.assertEqual(path.read_bytes(), before)
+                target = SessionTarget("onebot11", "100", "group", "300")
+                self.assertFalse(state.is_group_enabled(target))
+                state.set_group_enabled(target, True)
+                self.assertTrue(state.is_group_enabled(target))
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"disabled_groups": []})
 
     def test_video_url_host_not_substring(self):
         for url in (

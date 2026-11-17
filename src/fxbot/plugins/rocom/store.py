@@ -9,7 +9,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from ...core import SessionTarget
 from ...utils.paths import data_dir
 
 
@@ -105,26 +104,6 @@ class RocomStore:
         state = self.load_state()
         state["last_signature"] = signature
         self.save_state(state)
-
-
-def subscription_target(subscription: dict[str, Any]) -> SessionTarget | None:
-    """从订阅记录恢复通知目标；旧记录缺少连接身份时不能猜测 Bot。"""
-    sub_type = subscription.get("type")
-    if sub_type not in {"group", "private"}:
-        return None
-    target = subscription.get("target")
-    if not isinstance(target, dict):
-        return None
-    platform = str(target.get("platform") or "").strip()
-    bot_id = str(target.get("bot_id") or "").strip()
-    key_field = "group_key" if sub_type == "group" else "user_key"
-    target_id = str(subscription.get(key_field) or "").strip()
-    if not platform or not bot_id or not target_id:
-        return None
-    try:
-        return SessionTarget(platform, bot_id, sub_type, target_id)
-    except ValueError:
-        return None
 
 
 store = RocomStore()

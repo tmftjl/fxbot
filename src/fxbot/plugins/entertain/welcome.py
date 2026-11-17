@@ -1,20 +1,42 @@
-"""按完整会话键保存的结构化欢迎语。"""
+"""按群号保存的结构化欢迎语。"""
 
 from __future__ import annotations
 
 import io
 import re
 import uuid
-from hashlib import sha256
+from pathlib import Path
 
 from PIL import Image
+from loguru import logger
 
 from ...chat.media import load_image_bytes
-from ...core.types import Message, SessionTarget, MessageSegment
+from ...core.types import Message, MessageSegment
 from ...core.plugin import on_event, on_regex
 from ...utils.paths import data_dir
 from ...utils.json_file import read_json, write_json
 from ...core.capabilities import Capability
+
+_PLACEHOLDER = re.compile(r"\[\[WELCOME_IMG:([^\]]+)\]\]")
+_PREFIX = re.compile(r"^\s*[#＃]设置欢迎\s*")
+
+
+def _group_id(value: object) -> str:
+    if not isinstance(value, str) or not value or value != value.strip() or ":" in value:
+        return ""
+    if value in {".", ".."} or any(char in value for char in "/\\"):
+        return ""
+    return value
+
+
+def _image_name(value: str) -> bool:
+    return (
+        bool(value)
+        and value not in {".", ".."}
+        and Path(value).name == value
+        and "/" not in value
+        and "\\" not in value
+    )
 
 
 class Welcome:
@@ -22,62 +44,71 @@ class Welcome:
         self.application = application
         self.notifications = notifications
         self.path = data_dir("entertain") / "welcome.json"
-        self.images = data_dir("entertain") / "welcome_images"
+        self.images = data_dir("welcome")
 
-    def records(self) -> dict:
-        records = read_json(self.path, dict)
-        if not isinstance(records, dict):
-            raise ValueError("欢迎语记录必须为对象")
-        for key, record in records.items():
+    def records(self) -> dict[str, dict]:
+        data = read_json(self.path, dict)
+        if not isinstance(data, dict):
+            return {}
+        records: dict[str, dict] = {}
+        for key, record in data.items():
+            group_id = _group_id(key)
             if (
-                SessionTarget.from_key(key).kind != "group"
+                not group_id
                 or not isinstance(record, dict)
-                or set(record) != {"enabled", "segments"}
+                or set(record) != {"enabled", "content"}
                 or type(record["enabled"]) is not bool
-                or not isinstance(record["segments"], list)
+                or not isinstance(record["content"], str)
             ):
-                raise ValueError("欢迎语需要完整群身份及结构化消息")
-            for part in record["segments"]:
-                if (
-                    not isinstance(part, dict)
-                    or set(part) != {"type", "value"}
-                    or part["type"] not in {"text", "image"}
-                    or not isinstance(part["value"], str)
-                ):
-                    raise ValueError("欢迎语消息段格式错误")
-                if part["type"] == "image" and not re.fullmatch(r"[0-9a-f]{32}\.png", part["value"]):
-                    raise ValueError("欢迎图片必须是本服务生成的文件名")
+                logger.warning("[welcome] 跳过无效欢迎语: {}", key)
+                continue
+            if any(not _image_name(match.group(1)) for match in _PLACEHOLDER.finditer(record["content"])):
+                logger.warning("[welcome] 跳过无效欢迎图片地址: {}", key)
+                continue
+            records[group_id] = record
         return records
 
-    def directory(self, target):
-        return self.images / sha256(target.key().encode("utf-8")).hexdigest()
+    def directory(self, target) -> Path:
+        group_id = _group_id(target.target_id)
+        if not group_id:
+            raise ValueError("欢迎语只能配置群会话")
+        return self.images / group_id
 
-    def render(self, target, record) -> Message:
+    def render(self, target, record: dict) -> Message:
         directory = self.directory(target)
-        return Message(
-            [
-                MessageSegment.text(part["value"])
-                if part["type"] == "text"
-                else MessageSegment.image((directory / part["value"]).read_bytes())
-                for part in record["segments"]
-            ]
-        )
+        content = record["content"]
+        segments = []
+        position = 0
+        for match in _PLACEHOLDER.finditer(content):
+            if match.start() > position:
+                segments.append(MessageSegment.text(content[position : match.start()]))
+            name = match.group(1)
+            try:
+                segments.append(MessageSegment.image((directory / name).read_bytes()))
+            except OSError:
+                segments.append(MessageSegment.text(match.group(0)))
+            position = match.end()
+        if position < len(content):
+            segments.append(MessageSegment.text(content[position:]))
+        return Message(segments)
 
     async def set(self, context) -> None:
         target = context.event.target
+        directory = self.directory(target)
         source = context.event.original_message or context.event.message
-        parts = []
-        staged = []
+        parts: list[str] = []
+        staged: list[Path] = []
         prefix_removed = False
         try:
+            directory.mkdir(parents=True, exist_ok=True)
             for segment in source.segments:
                 if segment.type == "text":
                     text = segment.text_value()
                     if not prefix_removed:
-                        text, count = re.subn(r"^\s*[#＃]设置欢迎\s*", "", text, count=1)
+                        text, count = _PREFIX.subn("", text, count=1)
                         prefix_removed = bool(count)
                     if text:
-                        parts.append({"type": "text", "value": text})
+                        parts.append(text)
                 elif segment.type == "image":
                     if len(staged) >= 5:
                         raise ValueError("欢迎语最多包含 5 张图片")
@@ -91,30 +122,35 @@ class Welcome:
                         buffer = io.BytesIO()
                         image.convert("RGBA").save(buffer, format="PNG")
                     name = uuid.uuid4().hex + ".png"
-                    directory = self.directory(target)
-                    directory.mkdir(parents=True, exist_ok=True)
                     path = directory / name
                     staged.append(path)
                     path.write_bytes(buffer.getvalue())
-                    parts.append({"type": "image", "value": name})
+                    parts.append(f"[[WELCOME_IMG:{name}]]")
             if not parts:
                 await context.finish("请提供欢迎文字或图片")
+            content = "".join(parts)
             records = self.records()
-            records[target.key()] = {"enabled": True, "segments": parts}
+            records[target.target_id] = {"enabled": True, "content": content}
             write_json(self.path, records)
         except BaseException:
             for path in staged:
                 path.unlink(missing_ok=True)
             raise
+        keep = {match.group(1) for match in _PLACEHOLDER.finditer(content)}
+        for path in directory.iterdir():
+            if path.is_file() and path.name not in keep:
+                path.unlink(missing_ok=True)
         await context.send("欢迎语已设置并开启")
 
     async def show(self, context) -> None:
-        record = self.records().get(context.event.target.key())
+        group_id = context.event.target.target_id
+        record = self.records().get(group_id)
         await context.send(self.render(context.event.target, record) if record else "尚未设置欢迎语")
 
     async def toggle(self, context) -> None:
+        group_id = context.event.target.target_id
         records = self.records()
-        record = records.get(context.event.target.key())
+        record = records.get(group_id)
         if record is None:
             await context.finish("请先设置欢迎语")
         record["enabled"] = "开启" in context.arguments
@@ -125,7 +161,8 @@ class Welcome:
         event = context.event
         if event.user_id == event.bot_id:
             return
-        record = self.records().get(event.target.key())
+        group_id = event.target.target_id
+        record = self.records().get(group_id)
         if not record or not record["enabled"]:
             return
         message = self.render(event.target, record)
@@ -134,9 +171,7 @@ class Welcome:
             "entertain",
             event.target,
             message,
-            valid=lambda: (
-                self.application.is_registered(context.bot) and self.records().get(event.target.key()) == record
-            ),
+            valid=lambda: self.application.is_registered(context.bot) and self.records().get(group_id) == record,
         )
 
 

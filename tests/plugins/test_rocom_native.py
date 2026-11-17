@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from copy import deepcopy
+from types import SimpleNamespace
 from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import Mock, AsyncMock, patch
@@ -20,7 +21,7 @@ from fxbot.core.application import Application
 from fxbot.permission.types import perm_entry_default
 from fxbot.permission.storage import PermissionStorage
 from fxbot.platforms.onebot11 import OneBot11Client, parse_event
-from fxbot.plugins.rocom.store import RocomStore, subscription_target
+from fxbot.plugins.rocom.store import RocomStore
 from fxbot.plugins.rocom.client import MerchantProduct, MerchantSnapshot, parse_merchant_json
 from tests.migration.test_onebot11 import payload
 from fxbot.permission.authorization import Authorizer
@@ -74,8 +75,6 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(raw["subscriptions"][0]["group_key"], "300")
         self.assertEqual(raw["subscriptions"][0]["operator_id"], "200")
         self.assertEqual(raw["subscriptions"][1]["user_key"], "200")
-        self.assertEqual(subscription_target(raw["subscriptions"][0]), GROUP)
-        self.assertEqual(subscription_target(raw["subscriptions"][1]), PRIVATE)
 
         self.assertEqual(self.store.get_last_signature(), "sig")
         self.assertIsNotNone(self.store.get_subscription("group", "300"))
@@ -84,8 +83,9 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.get_subscription("group", "300"))
         self.assertIsNotNone(self.store.get_subscription("private", "200"))
 
-    def test_legacy_subscription_without_bot_identity_is_not_guessed(self) -> None:
-        self.assertIsNone(subscription_target({"type": "group", "group_key": "300", "target": {"group_id": "300"}}))
+    def test_subscription_without_bot_identity_is_kept(self) -> None:
+        self.store.upsert_subscription("group", "300", {"group_id": "300"}, "200")
+        self.assertIsNotNone(self.store.get_subscription("group", "300"))
 
 
 class DataTests(unittest.TestCase):
@@ -202,6 +202,7 @@ class PushTests(unittest.IsolatedAsyncioTestCase):
         )
         self.notifications = Mock()
         self.notifications.send = AsyncMock(return_value=True)
+        self.notifications.application = SimpleNamespace(bots=(SimpleNamespace(platform="onebot11", bot_id="100"),))
         self.render = patch.object(rocom_scheduler, "render_merchant_image", AsyncMock(return_value=b"PNG"))
         self.render.start()
         self.addCleanup(self.render.stop)

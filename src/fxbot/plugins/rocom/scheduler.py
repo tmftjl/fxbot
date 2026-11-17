@@ -7,8 +7,8 @@ from typing import Any
 
 from loguru import logger
 
-from .store import RocomStore, store as state_store, subscription_target
-from ...core import Message, MessageSegment
+from .store import RocomStore, store as state_store
+from ...core import Message, SessionTarget, MessageSegment
 from .client import MerchantSnapshot, fetch_merchant_snapshot
 from .config import get_config
 from .renderer import render_merchant_image
@@ -21,27 +21,26 @@ MERCHANT_RETRY_INTERVAL_SECONDS = 30
 
 
 async def _send_to_subscription(subscription: dict[str, Any], image: bytes, notifications, store: RocomStore) -> bool:
-    target = subscription_target(subscription)
-    if target is None:
-        logger.warning("[rocom] 跳过缺少平台或 Bot 身份的订阅: {}", subscription.get("type"))
+    sub_type = str(subscription.get("type") or "")
+    if sub_type not in {"group", "private"}:
         return False
-    sub_type = str(subscription.get("type"))
     key_field = "group_key" if sub_type == "group" else "user_key"
-    sub_key = str(subscription.get(key_field) or "")
+    sub_key = str(subscription.get(key_field) or "").strip()
+    if not sub_key:
+        return False
 
     def valid() -> bool:
         return store.get_subscription(sub_type, sub_key) is not None
 
-    try:
-        return await notifications.send(
-            "rocom",
-            target,
-            Message([MessageSegment.image(image)]),
-            valid=valid,
-        )
-    except Exception:
-        logger.opt(exception=True).warning("[rocom] 远行商人推送到 {} 失败", target.key())
-        return False
+    message = Message([MessageSegment.image(image)])
+    for bot in notifications.application.bots:
+        target = SessionTarget(bot.platform, bot.bot_id, sub_type, sub_key)
+        try:
+            if await notifications.send("rocom", target, message, valid=valid):
+                return True
+        except Exception:
+            logger.opt(exception=True).warning("[rocom] 远行商人推送到 {} 失败", target.key())
+    return False
 
 
 async def push_snapshot(snapshot: MerchantSnapshot, notifications, store: RocomStore) -> int:
