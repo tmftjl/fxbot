@@ -185,6 +185,9 @@ def parse_notice(payload: dict[str, Any], *, bot_id: str) -> Event:
     if _id(payload.get("self_id")) != identity:
         raise ValueError("连接与事件身份不一致")
     notice = payload.get("notice_type")
+    if notice == "notify" and payload.get("sub_type") == "input_status":
+        # 私聊输入状态带 group_id=0，仅表示输入中，与消息处理无关。
+        raise UnsupportedCapability("忽略输入状态通知")
     supported = {
         "group_increase": "member_joined",
         "group_decrease": "member_left",
@@ -199,7 +202,11 @@ def parse_notice(payload: dict[str, Any], *, bot_id: str) -> Event:
     if notice not in supported:
         raise UnsupportedCapability("不支持此通知类型")
     user_id = _id(payload.get("user_id"), positive=notice != "group_ban")
-    group_id = _id(payload["group_id"]) if "group_id" in payload else None
+    raw_group_id = payload.get("group_id")
+    zero_group = (type(raw_group_id) is int and raw_group_id == 0) or (
+        isinstance(raw_group_id, str) and raw_group_id in {"0", "-0"}
+    )
+    group_id = None if raw_group_id is None or zero_group else _id(raw_group_id)
     if str(notice).startswith("group_") and group_id is None:
         raise ValueError("群通知缺少群号")
     timestamp = payload.get("time")

@@ -93,6 +93,47 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(UnsupportedCapability):
             parse_event(data, bot_id="100")
 
+    def test_private_input_status_notice_is_ignored(self) -> None:
+        notice = {
+            "time": 123,
+            "self_id": 100,
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "input_status",
+            "user_id": 200,
+            "group_id": 0,
+        }
+        with self.assertRaises(UnsupportedCapability):
+            parse_event(notice, bot_id="100")
+
+    def test_private_notify_with_zero_group_id_targets_sender(self) -> None:
+        notice = {
+            "time": 123,
+            "self_id": 100,
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "user_id": 200,
+            "target_id": 200,
+            "group_id": 0,
+        }
+        event = parse_event(notice, bot_id="100")
+        self.assertEqual(event.event_type, "notification")
+        self.assertEqual(event.target, SessionTarget("onebot11", "100", "private", "200"))
+
+    def test_group_notify_keeps_group_target(self) -> None:
+        notice = {
+            "time": 123,
+            "self_id": 100,
+            "post_type": "notice",
+            "notice_type": "notify",
+            "sub_type": "poke",
+            "user_id": 200,
+            "group_id": 300,
+        }
+        event = parse_event(notice, bot_id="100")
+        self.assertEqual(event.target, SessionTarget("onebot11", "100", "group", "300"))
+
     def test_cq_string_is_parsed_once_and_escaped_text_stays_text(self) -> None:
         message = parse_message("&#91;CQ:at,qq=999&#93;[CQ:at,qq=100]a&amp;b")
         self.assertEqual(message.mentions(), ["100"])
