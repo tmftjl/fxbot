@@ -18,6 +18,7 @@ import {
   Moon,
   Odometer,
   Setting,
+  SetUp,
   Sunny,
   Tickets,
   User,
@@ -36,6 +37,7 @@ import ChatMemoryView from '@/views/ChatMemoryView.vue'
 import ChatReplyView from '@/views/ChatReplyView.vue'
 import LocalChatView from '@/views/LocalChatView.vue'
 import ChatSettingsView from '@/views/ChatSettingsView.vue'
+import AdaptersView from '@/views/AdaptersView.vue'
 import LoginView from '@/views/LoginView.vue'
 import PasswordDialog from '@/components/PasswordDialog.vue'
 import { configApi } from '@/api'
@@ -107,6 +109,7 @@ const fixedSections: NavSection[] = [
     title: '系统',
     items: [
       { index: 'permissions', label: '权限管理', icon: Lock },
+      { index: 'adapters', label: '适配器配置', icon: SetUp },
       { index: 'cache', label: '缓存', icon: Coin },
     ],
   },
@@ -404,6 +407,7 @@ onUnmounted(() => {
         <LocalChatView v-else-if="activeMenu === 'local-chat'" />
         <AmemorixView v-else-if="activeMenu === 'amemorix'" />
         <ChatSettingsView v-else-if="activeMenu === 'chat-settings'" />
+        <AdaptersView v-else-if="activeMenu === 'adapters'" />
         <PermissionsView v-else-if="activeMenu === 'permissions'" />
         <PersonasView v-else-if="activeMenu === 'personas'" />
         <ProviderView v-else-if="activeMenu === 'providers'" />

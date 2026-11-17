@@ -76,6 +76,20 @@ uv run playwright install chromium
 OneBot 扩展动作在首次使用时通过 `get_version_info` 自动识别 NapCat / SnowLuma。
 鉴权不通过、身份格式无效或同一个 Bot 重复连接都会被拒绝。
 
+### 控制台适配器配置
+
+启动后可在控制台左侧「系统 → 适配器配置」直接编辑 OneBot 访问令牌、监听地址和
+`qq_bots`，保存时与服务端执行同一套校验并原子写回
+`data/config/runtime/config.json`。
+
+- `token` 和 `qq_bots` 保存后立即生效：令牌变更会主动断开现有 OneBot 连接，客户端必须用
+  新令牌重新握手（只改 OneBot 令牌时 QQ 连接不受影响）；QQ Webhook 立即切换验签密钥，
+  WebSocket 网关按新凭证重建连接
+- `host` / `port` 只写入配置文件，需要重启 FxBot 才会更换监听地址；页面会保留重启提示
+- 页面使用文件内容哈希做并发检测，多开控制台时不会用旧快照覆盖他人刚保存的内容
+- QQ Bot 的 Intents 默认只勾选群聊/私聊相关权限，频道场景权限在高级设置里按需启用；
+  配置中已有的其他权限位会原样保留，也可以在弹窗中一键清除
+
 ## 平台接入
 
 - OneBot V11 反向 WebSocket：`/onebot/v11/ws`，只接受 `X-Client-Role: universal`

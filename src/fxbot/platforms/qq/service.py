@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from contextlib import AsyncExitStack
 
 from fastapi import Request, HTTPException
@@ -11,6 +12,7 @@ from starlette.requests import ClientDisconnect
 from .gateway import QQGateway
 from .signing import SignatureRejected
 from .webhook import MAX_BODY_BYTES, QQWebhookConnection
+from ...core.application import ApplicationState
 
 
 class QQService:
@@ -18,6 +20,7 @@ class QQService:
         self.application, self.settings = application, settings
         self.connections = {}
         self._resources = AsyncExitStack()
+        self._lock = asyncio.Lock()
 
     async def start(self):
         for app_id, config in self.settings.qq_bots.items():
@@ -31,11 +34,23 @@ class QQService:
             if isinstance(connection, QQGateway):
                 connection.start()
 
-    async def close(self):
-        try:
+    async def reload(self, settings):
+        """按新凭证重建连接；Webhook 立即切换验签密钥，网关重新握手。"""
+        async with self._lock:
+            if self.application.state is not ApplicationState.RUNNING:
+                raise RuntimeError("应用未运行，不能重载 QQ Bot 配置")
             await self._resources.aclose()
-        finally:
             self.connections.clear()
+            self.settings = settings
+            self._resources = AsyncExitStack()
+            await self.start()
+
+    async def close(self):
+        async with self._lock:
+            try:
+                await self._resources.aclose()
+            finally:
+                self.connections.clear()
 
     async def handle(self, request: Request):
         app_id = request.headers.get("x-bot-appid", "")

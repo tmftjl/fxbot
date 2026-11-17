@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from types import MappingProxyType
+from typing import Any
 from pathlib import Path
 from dataclasses import field, fields, dataclass
 from collections.abc import Mapping
@@ -32,16 +33,35 @@ class Settings:
         from fxbot.utils.paths import config_dir
 
         source = path if path is not None else config_dir("runtime") / "config.json"
-        raw = json.loads(source.read_text(encoding="utf-8"))
+        return cls.from_mapping(json.loads(source.read_text(encoding="utf-8")))
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> "Settings":
+        """从内存对象构造设置，控制台保存和文件读取共用同一套校验。"""
         if not isinstance(raw, dict):
             raise ValueError("独立运行时配置必须是对象")
         if raw.keys() - {item.name for item in fields(cls)}:
             raise ValueError("独立运行时配置包含未知字段")
-        if "qq_bots" in raw:
-            if not isinstance(raw["qq_bots"], dict):
+        values = dict(raw)
+        if "qq_bots" in values:
+            if not isinstance(values["qq_bots"], dict):
                 raise ValueError("qq_bots 必须是 AppID 到凭证的对象")
-            raw["qq_bots"] = {app_id: QQBotSettings.parse(value) for app_id, value in raw["qq_bots"].items()}
-        return cls(**raw)
+            values["qq_bots"] = {app_id: QQBotSettings.parse(value) for app_id, value in values["qq_bots"].items()}
+        return cls(**values)
+
+    def to_payload(self) -> dict[str, Any]:
+        """返回可写入配置文件并供控制台编辑的完整快照。"""
+        return {
+            "token": self.token,
+            "host": self.host,
+            "port": self.port,
+            "action_timeout": self.action_timeout,
+            "queue_size": self.queue_size,
+            "event_concurrency": self.event_concurrency,
+            "max_pending": self.max_pending,
+            "close_timeout": self.close_timeout,
+            "qq_bots": {app_id: bot.to_payload() for app_id, bot in self.qq_bots.items()},
+        }
 
     def __post_init__(self) -> None:
         """令牌只允许空串或无首尾空白的文本，QQ 凭证独立校验。"""
@@ -73,3 +93,17 @@ class Settings:
         for timeout in (self.action_timeout, self.close_timeout):
             if type(timeout) not in {int, float} or not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError("动作和关闭超时必须为有限正数")
+
+
+class SettingsState:
+    """运行期可替换的设置快照；监听地址仍需重启进程才会生效。"""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    @property
+    def current(self) -> Settings:
+        return self._settings
+
+    def replace(self, settings: Settings) -> None:
+        self._settings = settings

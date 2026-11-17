@@ -191,6 +191,48 @@ export const configApi = {
   },
 }
 
+// 适配器配置 API
+export interface QQBotPayload {
+  secret: string
+  mode: 'webhook' | 'websocket'
+  bot_user_id: string
+  intents: number
+  api_base?: string
+  auth_url?: string
+  gateway_url?: string | null
+  shard?: [number, number] | null
+}
+
+export interface RuntimeConfigPayload {
+  token: string
+  host: string
+  port: number
+  action_timeout: number
+  queue_size: number
+  event_concurrency: number
+  max_pending: number
+  close_timeout: number
+  qq_bots: Record<string, QQBotPayload>
+}
+
+export interface AdapterStatus {
+  adapter: string
+  self_id: string
+}
+
+export interface AdapterConfigResponse {
+  config: RuntimeConfigPayload
+  revision: string
+  online: AdapterStatus[]
+  warning?: string | null
+}
+
+export const adapterApi = {
+  get: () => api.get<AdapterConfigResponse>('/adapters'),
+  save: (config: RuntimeConfigPayload, baseRevision: string) =>
+    api.put<AdapterConfigResponse>('/adapters', { config, base_revision: baseRevision }),
+}
+
 // 权限 API
 export const permissionApi = {
   get: () => api.get<PermissionConfig>('/permissions'),

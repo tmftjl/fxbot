@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from fxbot.core.application import ApplicationState, DuplicateBotError
 
-from .settings import Settings
+from .settings import Settings, SettingsState
 from ..bootstrap import Runtime, create_runtime
 from .connection import WireProtocol, ProtocolConnection
 from ..console.routes import (
@@ -24,6 +24,7 @@ from ..console.routes import (
     cache,
     stats,
     config,
+    adapters,
     amemorix,
     personas,
     local_chat,
@@ -55,6 +56,9 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.runtime = runtime
     app.state.services = services
+    # 令牌与 QQ 凭证可在控制台修改；新连接读取当前快照，监听地址仍需重启生效。
+    app.state.settings = SettingsState(settings)
+    app.state.adapter_lock = asyncio.Lock()
 
     @app.exception_handler(Exception)
     async def server_error(request: Request, error: Exception) -> JSONResponse:
@@ -97,9 +101,10 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
         subprotocol: str | None = None,
     ) -> None:
         """认证和连接所有权共用一套流程，协议差异由协议对象处理。"""
+        current = app.state.settings.current
         authorization = websocket.headers.get("authorization", "")
         if (
-            settings.token and not hmac.compare_digest(authorization.encode(), f"Bearer {settings.token}".encode())
+            current.token and not hmac.compare_digest(authorization.encode(), f"Bearer {current.token}".encode())
         ) or runtime.state is not ApplicationState.RUNNING:
             await websocket.close(code=1008)
             return
@@ -111,7 +116,7 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
                 await websocket.close(code=code)
 
         try:
-            connection = ProtocolConnection(runtime, protocol, bot_id, settings, websocket.send_json, close_transport)
+            connection = ProtocolConnection(runtime, protocol, bot_id, current, websocket.send_json, close_transport)
         except ValueError:
             await websocket.close(code=1008)
             return
@@ -141,6 +146,7 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
             bots.router,
             logs.router,
             config.router,
+            adapters.router,
             membership.router,
             permissions.router,
             ai_providers.router,

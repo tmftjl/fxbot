@@ -135,6 +135,13 @@ class Application:
         if connection is not None and connection.bot is bot:
             self._retiring_connections[id(bot)] = self._connections.pop(key)
 
+    async def disconnect(self, bot: BotClient) -> None:
+        """关闭指定在线连接；身份已被同 ID 新连接替换时不处理旧引用。"""
+        connection = self._connections.get((bot.platform, bot.bot_id))
+        if connection is None or connection.bot is not bot:
+            return
+        await connection.close()
+
     def is_registered(self, bot: BotClient) -> bool:
         """旧连接退出后，捕获它的后台任务不能误用同 ID 的新连接。"""
         connection = self._connections.get((bot.platform, bot.bot_id))

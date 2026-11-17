@@ -68,3 +68,19 @@ class QQBotSettings:
                 raise ValueError("QQ shard 必须为数组")
             raw["shard"] = tuple(raw["shard"])
         return cls(**raw)
+
+    def to_payload(self) -> dict:
+        """返回可写回配置文件并供控制台编辑的凭证快照。"""
+        payload = {
+            "secret": self.secret,
+            "mode": self.mode,
+            "bot_user_id": self.bot_user_id,
+            "intents": self.intents,
+            "api_base": self.api_base,
+            "auth_url": self.auth_url,
+        }
+        if self.shard is not None:
+            payload["shard"] = list(self.shard)
+        if self.gateway_url is not None:
+            payload["gateway_url"] = self.gateway_url
+        return payload
