@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock
 
 import httpx
 
-from fxbot.core import Message, Capability, SessionTarget, MessageSegment
+from fxbot.core import Router, Message, Capability, SessionTarget, MessageSegment, UnsupportedCapability
+from fxbot.core.errors import ActionFailed
 from fxbot.core.context import bind_event, reset_event
 from fxbot.platforms.qq import QQ_API
 from tests.runtime.test_qq import APP_ID, SECRET, payload
@@ -25,6 +26,7 @@ from fxbot.platforms.qq.events import QQEventStream
 from fxbot.platforms.qq.gateway import QQGateway, GatewayProtocolError
 from fxbot.platforms.qq.message import ark, embed, media, stream, keyboard, markdown
 from tests.runtime.test_qq_gateway import Socket, ready, gateway_info
+from fxbot.plugins.group_admin.commands import GroupCommands
 
 NOW = "2026-11-16T10:00:00+08:00"
 
@@ -121,6 +123,82 @@ class QQNoticeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQAPITests(unittest.IsolatedAsyncioTestCase):
+    async def test_mixed_advanced_format_and_media_is_rejected_before_upload(self):
+        for kind in ("group", "private"):
+            for advanced in (
+                markdown("# title"),
+                ark({"template_id": 1}),
+                embed({"prompt": "hi"}),
+                keyboard({"id": "key"}),
+            ):
+                for attachment in (MessageSegment.image(b"image"), media("already-uploaded")):
+                    with (
+                        self.subTest(kind=kind, advanced=advanced.type, media=attachment.type),
+                        self.assertRaises(UnsupportedCapability),
+                    ):
+                        await self.bot.send(
+                            SessionTarget("qq", APP_ID, kind, "TARGET"), Message([advanced, attachment])
+                        )
+        self.http.request.assert_not_awaited()
+        self.http.put_upload_part.assert_not_awaited()
+
+    async def test_upload_id_preserves_send_switch_for_group_and_private(self):
+        for send in (True, False):
+            await self.actions.post_group_files(group_openid="GROUP", upload_id="up", srv_send_msg=send)
+            self.assertEqual(self.http.request.await_args.kwargs["json"], {"upload_id": "up", "srv_send_msg": send})
+            await self.actions.post_c2c_files(openid="USER", upload_id="up", srv_send_msg=send)
+            self.assertEqual(self.http.request.await_args.kwargs["json"], {"upload_id": "up", "srv_send_msg": send})
+
+    async def test_malformed_member_queries_raise_action_failed_not_key_error(self):
+        cases = [
+            {},
+            {"members": None},
+            {"members": [None]},
+            {"members": [{}]},
+            {"members": [{"member_openid": "USER", "username": 42}]},
+            {"members": [{"member_openid": "USER", "member_role": []}]},
+        ]
+        for result in cases:
+            self.http.request.return_value = result
+            for query in (self.bot.get_members, self.bot.get_muted_members):
+                with self.subTest(result=result, query=query.__name__), self.assertRaises(ActionFailed):
+                    await query("GROUP")
+        for member in (
+            {"member_openid": "USER"},
+            {"member_openid": "USER", "username": "user", "mute_expire_at": "invalid"},
+            {"member_openid": "USER", "username": "user", "mute_expire_at": "2026-11-17T10:00:00"},
+        ):
+            self.http.request.return_value = {"members": [member]}
+            with self.assertRaises(ActionFailed):
+                await self.bot.get_muted_members("GROUP")
+        for result in ({}, {"member_openid": "OTHER"}):
+            self.http.request.return_value = result
+            with self.assertRaises(ActionFailed):
+                await self.bot.get_member("GROUP", "USER")
+
+    async def test_bad_members_page_does_not_return_preceding_partial_rows(self):
+        self.http.request.side_effect = [{"members": [{"member_openid": "USER"}], "next_cursor": "second"}, {}]
+        with self.assertRaises(ActionFailed):
+            await self.bot.get_members("GROUP")
+
+    async def test_malformed_muted_response_gets_a_command_failure_reply(self):
+        self.http.request.return_value = {}
+        self.bot.send = AsyncMock()
+        service = SimpleNamespace(execute=AsyncMock())
+        commands = GroupCommands(service)
+        router = Router()
+
+        async def handle(ctx):
+            await commands.handle("mute_list", ctx)
+
+        router.message("mute-list", handle)
+        event = parse_event(payload(content="#禁言列表"), bot_id=APP_ID)
+        result = await router.dispatch(self.bot, event)
+        self.assertEqual(result.failed, ())
+        self.assertEqual(self.bot.send.await_args.args[1].plain_text(), "禁言列表查询失败，请稍后重试")
+        self.assertEqual(self.http.request.await_count, 1)
+        service.execute.assert_not_awaited()
+
     def setUp(self):
         self.http = SimpleNamespace(request=AsyncMock(return_value={"ok": True}), put_upload_part=AsyncMock())
         self.bot = QQClient(APP_ID, self.http)
@@ -316,7 +394,7 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
             self.http.request.reset_mock()
             self.http.request.side_effect = result if isinstance(result, Exception) else None
             self.http.request.return_value = result
-            with self.subTest(result=result), self.assertRaises((QQAPIError, ValueError)):
+            with self.subTest(result=result), self.assertRaises(ActionFailed):
                 await self.bot.ban("GROUP", "USER", 60)
             self.assertEqual(self.http.request.await_count, 1)
             self.assertEqual(self.http.request.await_args.args[0], "GET")

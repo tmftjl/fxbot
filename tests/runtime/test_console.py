@@ -30,7 +30,7 @@ class ConsoleTests(unittest.TestCase):
         self.headers = {"authorization": "Bearer console-only"}
 
     def test_protected_routes_share_the_same_bearer_boundary(self) -> None:
-        for path in ("bots", "membership/groups", "config", "permissions", "cache"):
+        for path in ("bots", "membership/groups", "config", "permissions", "cache", "stats/today"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.get(f"/fxbot/{path}").status_code, 401)
                 self.assertEqual(
@@ -43,6 +43,14 @@ class ConsoleTests(unittest.TestCase):
             response = self.client.get("/fxbot/config/tabs", headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertIn("video_parser", {item["key"] for item in response.json()})
+
+    def test_system_config_tab_exposes_superusers(self) -> None:
+        tabs = {item["key"]: item for item in self.client.get("/fxbot/config/tabs", headers=self.headers).json()}
+        cards = {card["key"]: card for card in tabs["system"]["cards"]}
+        fields = {field["field"]: field for field in cards["system"]["schemas"]}
+        self.assertEqual(fields["superusers"]["component"], "GTags")
+        self.assertEqual(fields["superusers"]["default"], [])
+        self.assertIn("private", fields["superusers"]["helpMessage"])
 
     def test_invalid_permission_update_is_rejected_without_changing_existing_rules(self) -> None:
         from copy import deepcopy
@@ -71,6 +79,44 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("secret-programming-error", response.text)
 
+    def test_stats_endpoints_return_frontend_shapes(self) -> None:
+        today = self.client.get("/fxbot/stats/today", headers=self.headers)
+        self.assertEqual(today.status_code, 200)
+        self.assertIsInstance(today.json().get("bots"), dict)
+
+        history = self.client.get("/fxbot/stats/history?days=3", headers=self.headers)
+        self.assertEqual(history.status_code, 200)
+        body = history.json()
+        self.assertEqual(body["days"], 3)
+        self.assertEqual(len(body["items"]), 3)
+        self.assertEqual(set(body["items"][0]), {"date", "sent", "group", "private"})
+
+        usage = self.client.get("/fxbot/stats/model_usage?hours=24", headers=self.headers)
+        self.assertEqual(usage.status_code, 200)
+        self.assertEqual(usage.json()["hours"], 24)
+        self.assertIn("tasks", usage.json())
+
+    def test_persona_crud_and_knowledge_is_explicitly_disabled(self) -> None:
+        listed = self.client.get("/fxbot/ai_chat/personas", headers=self.headers)
+        self.assertEqual(listed.status_code, 200)
+        self.assertIn("default", listed.json())
+        self.assertIsInstance(listed.json()["items"], dict)
+
+        key = "console_test_persona"
+        created = self.client.post(
+            "/fxbot/ai_chat/persona", headers=self.headers, json={"key": key, "desc": "测试人格"}
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertIn(key, self.client.get("/fxbot/ai_chat/personas", headers=self.headers).json()["items"])
+        updated = self.client.put(f"/fxbot/ai_chat/persona/{key}", headers=self.headers, json={"desc": "更新后"})
+        self.assertEqual(updated.status_code, 200)
+        deleted = self.client.delete(f"/fxbot/ai_chat/persona/{key}", headers=self.headers)
+        self.assertEqual(deleted.status_code, 200)
+        self.assertNotIn(key, self.client.get("/fxbot/ai_chat/personas", headers=self.headers).json()["items"])
+
+        stats = self.client.get(f"/fxbot/ai_chat/knowledge/{key}/stats", headers=self.headers)
+        self.assertEqual(stats.status_code, 501)
+
     def test_plugin_metadata_and_command_names_are_chinese(self) -> None:
         plugins = self.client.get("/fxbot/plugins", headers=self.headers)
         self.assertEqual(plugins.status_code, 200)
@@ -78,10 +124,19 @@ class ConsoleTests(unittest.TestCase):
             plugins.json(),
             {
                 "bilibili_live": "B站直播推送",
-                "group_analysis": "群聊日报",
-                "group_admin": "群管理",
+                "cultured": "图库",
                 "entertain": "娱乐",
+                "group_admin": "群管理",
+                "group_analysis": "群聊日报",
+                "gscore": "gscore 连接器",
+                "help": "帮助",
+                "infinite_gen2": "无限二代",
+                "memes": "表情包制作",
+                "rocom": "洛克王国",
+                "server_admin": "服务器运维",
+                "useful": "实用工具",
                 "video_parser": "视频解析",
+                "wuwa_emoji": "鸣潮表情",
             },
         )
         commands = self.client.get("/fxbot/commands", headers=self.headers).json()

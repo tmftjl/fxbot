@@ -22,9 +22,8 @@ from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
 class RejectFramework(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        framework = fullname.split('.')[0] in {'nonebot', 'nonebot_plugin_apscheduler'}
         business = fullname.startswith(('fxbot.chat', 'fxbot.membership'))
-        if framework or business:
+        if business:
             raise AssertionError(fullname)
 sys.meta_path.insert(0, RejectFramework())
 from fxbot.config.manager import ConfigManager
@@ -38,7 +37,6 @@ with tempfile.TemporaryDirectory() as directory, patch('fxbot.utils.paths.projec
     manager.save_console_configs({'system': config})
     assert manager.get_system()['chat']['max_context_size'] == 31
     assert calls == ['saved']
-assert not any(name == 'nonebot' or name.startswith('nonebot.') for name in sys.modules)
 """
         result = subprocess.run(
             [sys.executable, "-I", "-X", "utf8", "-c", script, str(root / "src")],

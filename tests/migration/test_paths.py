@@ -37,7 +37,6 @@ class PathTests(unittest.TestCase):
             "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
             "from fxbot.utils.paths import project_root; "
             "assert project_root() == Path(sys.argv[2]); "
-            "assert not any(n == 'nonebot' or n.startswith('nonebot.') for n in sys.modules)"
         )
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run(

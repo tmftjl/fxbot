@@ -13,6 +13,7 @@ from .models import MembershipGroup, utc_now
 from ..config import ConfigManager, get_manager
 from .service import MembershipService, membership_service
 from ..utils.cache import cache
+from ..permission.identity import is_superuser_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +44,7 @@ class MembershipGuard:
             if user.kind != "private" or (user.platform, user.bot_id) != (group.platform, group.bot_id):
                 raise ValueError("会员操作者不属于目标连接")
             system = self.configuration.get_system()["system"]
-            if user_id in system["superusers"]:
+            if is_superuser_identity(system, user_id):
                 return MembershipDecision(True, "exempt_superuser")
             if user_id in system["bot_admins"]:
                 return MembershipDecision(True, "exempt_bot_admin")

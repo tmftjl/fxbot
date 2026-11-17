@@ -1,4 +1,4 @@
-"""QQ 群与 C2C 官方接口，参数契约对齐 nonebot/adapter-qq（MIT）。
+"""QQ 群与 C2C 官方接口，参数契约对齐上游参考实现。
 
 这里只编码协议动作；连接存活检查、鉴权和资源由传输边界负责。
 """
@@ -123,7 +123,7 @@ class QQActions:
         if isinstance(file_data, bytes):
             file_data = b64encode(file_data).decode()
         if upload_id is not None:
-            data = {"upload_id": upload_id}
+            data = {"upload_id": upload_id, "srv_send_msg": srv_send_msg}
         elif file_type is None:
             raise ValueError("file_type must be provided if upload_id is not provided")
         else:
@@ -223,7 +223,7 @@ class QQActions:
         if isinstance(file_data, bytes):
             file_data = b64encode(file_data).decode()
         if upload_id is not None:
-            data = {"upload_id": upload_id}
+            data = {"upload_id": upload_id, "srv_send_msg": srv_send_msg}
         elif file_type is None:
             raise ValueError("file_type must be provided if upload_id is not provided")
         else:

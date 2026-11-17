@@ -25,7 +25,7 @@ import importlib.abc
 sys.path.insert(0, sys.argv[1])
 class RejectSDK(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'openai', 'anthropic', 'google', 'nonebot'}:
+        if fullname.split('.')[0] in {'openai', 'anthropic', 'google'}:
             raise AssertionError(fullname)
 sys.meta_path.insert(0, RejectSDK())
 from fxbot.chat.providers.register import list_providers

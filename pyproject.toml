@@ -4,32 +4,33 @@ version = "0.1.0"
 description = "FxBot standalone messaging application"
 requires-python = ">=3.11"
 dependencies = [
-    "loguru>=0.7.3",
-    "pydantic",
+    "loguru>=0.7.3,<0.8",
+    "pydantic>=2.14,<3",
     "sqlmodel==0.0.42",
-    "sqlalchemy",
-    "aiosqlite",
-    "httpx[socks]",
-    "cryptography>=43.0.3",
-    "openai>=1.0.0",
-    "fastapi",
-    "uvicorn",
-    "websockets>=15",
-    "Pillow>=10.1",
-    "numpy>=2.2.6",
-    "scipy>=1.7.0",
-    "jieba>=0.42.1",
+    "sqlalchemy>=2.0.57,<2.1",
+    "aiosqlite>=0.22,<0.23",
+    "httpx[socks]>=0.28.1,<0.29",
+    "cryptography>=48,<49",
+    "openai>=3.46,<4",
+    "fastapi>=0.162,<0.164",
+    "uvicorn>=0.54,<0.55",
+    "websockets>=17.4,<18",
+    "Pillow>=13,<14",
+    "numpy>=2.2.6,<3",
+    "scipy>=1.14,<2",
+    "jieba>=0.42.1,<0.43",
     "json-repair>=0.60.1,<0.61",
-    "ahocorasick-rs>=1.0.3",
-    "faiss-cpu>=1.11.0",
-    "playwright>=1.40",
-    "psutil>=5.9.0",
-    "pypinyin>=0.44.0,<1.0.0",
-    "curl_cffi>=0.13.0,<1.0.0,!=0.14.0",
+    "ahocorasick-rs>=1.0.3,<2",
+    "faiss-cpu>=1.15,<2",
+    "playwright>=1.64,<2",
+    "psutil>=7.2,<8",
+    "pypinyin>=0.55,<0.56",
+    "curl_cffi>=0.17,<0.18",
+    "packaging>=26,<27",
 ]
 
 [project.optional-dependencies]
-dev = ["build", "setuptools>=61", "wheel", "ruff", "packaging", "mypy>=1.10,<2"]
+dev = ["build>=1.6,<2", "pdm-backend>=2.5,<3", "ruff>=0.17,<0.18", "mypy>=1.10,<2"]
 
 [tool.mypy]
 files = ["src/fxbot/core"]
@@ -41,27 +42,9 @@ ignore_missing_imports = true
 fxbot = "fxbot.runtime.cli:main"
 
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
 
-[tool.setuptools]
-include-package-data = false
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["fxbot", "fxbot.*"]
-namespaces = false
-
-[tool.setuptools.package-data]
-"*" = [
-    "resources/**/*",
-    "resource/**/*",
-    "prompts/*.prompt",
-    "prompts/**/*.prompt",
-    "web/dist/**/*",
-    "*.json",
-    "*.cjs",
-    "LICENSE",
-    "requirements.txt",
-]
+[tool.pdm.build]
+# src 布局按 fxbot 包交付；资源、模板、前端产物和插件声明文件随包默认包含。
+excludes = ["src/fxbot/console/web/node_modules"]

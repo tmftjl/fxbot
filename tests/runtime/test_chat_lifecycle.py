@@ -114,7 +114,7 @@ class ChatLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StandaloneChatTests(unittest.TestCase):
-    """不调用真实模型、不初始化 NoneBot，经真实 WebSocket 帧完成 AI 回复。"""
+    """不调用真实模型、不初始化外部框架，经真实 WebSocket 帧完成 AI 回复。"""
 
     def test_ai_route_model_reply_and_repeated_application_lifecycle(self) -> None:
         config = deepcopy(SYSTEM_DEFAULTS)

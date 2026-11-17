@@ -279,7 +279,7 @@ from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
 class RejectLegacy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        legacy = fullname.startswith(('nonebot', 'fxbot.adapter', 'fxbot.plugin.'))
+        legacy = fullname.startswith(('fxbot.adapter', 'fxbot.plugin.'))
         sdk = fullname.split('.')[0] in {'openai', 'anthropic', 'google'}
         if legacy or sdk:
             raise AssertionError(fullname)

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import ast
+import fnmatch
+import tomllib
 import unittest
 from pathlib import Path
 
-from setuptools import find_packages
 from packaging.requirements import Requirement
-from setuptools.config.pyprojecttoml import read_configuration
 
 PLUGIN_DISTRIBUTIONS = {
     "arclet": "arclet-alconna",
@@ -21,12 +21,19 @@ PLUGIN_DISTRIBUTIONS = {
 }
 
 
+def _pyproject(root: Path) -> dict:
+    return tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+
+
 class PackageLayoutTests(unittest.TestCase):
     """所有应用源码只以 fxbot 包命名空间交付。"""
 
     def test_package_discovery_uses_src(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        packages = find_packages(str(root / "src"))
+        source = root / "src"
+        packages = {
+            path.parent.relative_to(source).as_posix().replace("/", ".") for path in source.rglob("__init__.py")
+        }
         self.assertIn("fxbot", packages)
         self.assertIn("fxbot.platforms", packages)
         self.assertIn("fxbot.runtime", packages)
@@ -36,28 +43,42 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertFalse((root / "__init__.py").exists())
         self.assertFalse((root / "setup.py").exists())
 
-    def test_package_data_uses_one_shared_contract(self) -> None:
+    def test_build_uses_pdm_backend_and_keeps_package_assets(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        configuration = read_configuration(root / "pyproject.toml")
-        data = configuration["tool"]["setuptools"]["package-data"]
-        self.assertEqual(set(data), {""})
-        patterns = data[""]
-        for name in find_packages(str(root / "src")):
-            package = root / "src" / name.replace(".", "/")
-            selected = {path for pattern in patterns for path in package.glob(pattern) if path.is_file()}
-            expected = set()
-            for directory in ("resources", "resource", "prompts", "web/dist"):
-                folder = package / directory
-                if folder.is_dir():
-                    expected.update(path for path in folder.rglob("*") if path.is_file())
-            for pattern in ("*.json", "*.cjs", "LICENSE", "requirements.txt"):
-                expected.update(package.glob(pattern))
-            with self.subTest(package=name):
-                self.assertFalse(expected - selected, expected - selected)
+        configuration = _pyproject(root)
+        self.assertEqual(configuration["build-system"]["build-backend"], "pdm.backend")
+        self.assertNotIn("setuptools", configuration.get("tool", {}))
+        excludes = configuration.get("tool", {}).get("pdm", {}).get("build", {}).get("excludes", [])
+        self.assertTrue(any("node_modules" in pattern for pattern in excludes))
+
+        package = root / "src" / "fxbot"
+        expected: set[Path] = set()
+        for directory in ("resources", "resource", "prompts", "web/dist"):
+            folder = package / directory
+            if folder.is_dir():
+                expected.update(path for path in folder.rglob("*") if path.is_file())
+        for pattern in ("*.json", "*.cjs", "*.md", "LICENSE", "requirements.txt"):
+            expected.update(
+                path for path in package.rglob(pattern) if path.is_file() and "node_modules" not in path.parts
+            )
+        self.assertTrue(expected)
+
+        for path in sorted(expected):
+            relative = path.relative_to(root).as_posix()
+            with self.subTest(path=relative):
+                self.assertFalse(
+                    any(
+                        relative == pattern
+                        or relative.startswith(pattern.rstrip("/") + "/")
+                        or fnmatch.fnmatch(relative, pattern)
+                        for pattern in excludes
+                    ),
+                    relative,
+                )
 
     def test_plugin_dependencies_are_declared_by_their_owners(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        config = read_configuration(root / "pyproject.toml")
+        config = _pyproject(root)
         core = {Requirement(value).name.lower() for value in config["project"]["dependencies"]}
         self.assertFalse(core & set(PLUGIN_DISTRIBUTIONS.values()))
         for source in (root / "src/fxbot").rglob("*.py"):

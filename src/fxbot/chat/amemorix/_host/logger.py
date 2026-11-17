@@ -1,4 +1,4 @@
-"""A_Memorix 日志桥接：统一走 NoneBot 的 loguru 日志。"""
+"""A_Memorix 日志桥接：统一走 Loguru 日志。"""
 
 from __future__ import annotations
 

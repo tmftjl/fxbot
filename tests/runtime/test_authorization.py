@@ -63,8 +63,10 @@ class AuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.system["system"]["bot_admins"] = [self.identity]
         self.assertFalse(await self.authorizer.check("feature:run", self.event))
 
-    async def test_raw_id_does_not_grant_cross_platform_owner_identity(self) -> None:
+    async def test_raw_id_grants_superuser_for_nonebot_compatibility(self) -> None:
         self.system["system"]["superusers"] = ["200", "onebot12.qq:100:private:200"]
+        self.assertEqual(self.authorizer.context(self.event, self.permissions).user_level, PermLevel.SUPERUSER)
+        self.system["system"]["superusers"] = ["201"]
         self.assertNotEqual(self.authorizer.context(self.event, self.permissions).user_level, PermLevel.SUPERUSER)
 
     async def test_sender_role_is_read_only_from_normalized_metadata(self) -> None:

@@ -27,7 +27,7 @@ from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
 class RejectLegacy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith(('nonebot', 'fxbot.adapter', 'fxbot.chat.message_adapter')):
+        if fullname.startswith(('fxbot.adapter', 'fxbot.chat.message_adapter')):
             raise AssertionError(fullname)
         if fullname.split('.')[0] in {'openai', 'anthropic', 'google'}:
             raise AssertionError(fullname)

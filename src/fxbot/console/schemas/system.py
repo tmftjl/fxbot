@@ -221,6 +221,16 @@ def _all_config_tab() -> dict[str, Any]:
                         "helpMessage": "消息中 @ 到这些 Bot QQ 时，本机器人不处理该消息。",
                     },
                     {
+                        "field": "superusers",
+                        "label": "超级用户",
+                        "component": "GTags",
+                        "default": SYSTEM_DEFAULTS["system"]["superusers"],
+                        "helpMessage": (
+                            "可填 QQ 号/openid 等平台用户 ID，也可填完整身份 "
+                            "平台:BotID:private:用户ID；裸 ID 会在所有平台和 Bot 上生效。"
+                        ),
+                    },
+                    {
                         "field": "bot_admins",
                         "label": "Bot 管理员",
                         "component": "GTags",

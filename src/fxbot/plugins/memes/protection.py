@@ -1,0 +1,66 @@
+"""表情保护白名单与保护表情配置。"""
+
+from __future__ import annotations
+
+from ...core import SessionTarget
+from .config import cfg_whitelist_ids, cfg_protected_memes, save_protection_config
+from ...config import get_manager
+from ...permission.identity import is_superuser_identity
+
+
+class ProtectionManager:
+    def add_whitelist(self, user_id: str) -> bool:
+        """添加白名单用户。"""
+        whitelist_ids = cfg_whitelist_ids()
+        if user_id in whitelist_ids:
+            return False
+        whitelist_ids.append(user_id)
+        save_protection_config(whitelist_ids, cfg_protected_memes())
+        return True
+
+    def remove_whitelist(self, user_id: str) -> bool:
+        """移除白名单用户。"""
+        whitelist_ids = cfg_whitelist_ids()
+        if user_id not in whitelist_ids:
+            return False
+        whitelist_ids.remove(user_id)
+        save_protection_config(whitelist_ids, cfg_protected_memes())
+        return True
+
+    def add_protected_meme(self, meme_key: str) -> bool:
+        """添加保护表情。"""
+        protected_memes = cfg_protected_memes()
+        if meme_key in protected_memes:
+            return False
+        protected_memes.append(meme_key)
+        save_protection_config(cfg_whitelist_ids(), protected_memes)
+        return True
+
+    def remove_protected_meme(self, meme_key: str) -> bool:
+        """移除保护表情。"""
+        protected_memes = cfg_protected_memes()
+        if meme_key not in protected_memes:
+            return False
+        protected_memes.remove(meme_key)
+        save_protection_config(cfg_whitelist_ids(), protected_memes)
+        return True
+
+    def is_in_whitelist(self, user_id: str, *, platform: str | None = None, bot_id: str | None = None) -> bool:
+        """检查是否在白名单中，主人默认在白名单。
+
+        新配置使用完整会话身份；同时接受迁移前的裸用户 ID。
+        """
+        if user_id in cfg_whitelist_ids():
+            return True
+        system = get_manager().get_system().get("system", {})
+        if platform and bot_id:
+            identity = SessionTarget(platform, bot_id, "private", user_id).key()
+            return is_superuser_identity(system, identity)
+        return is_superuser_identity(system, user_id)
+
+    def is_protected(self, meme_key: str) -> bool:
+        """检查表情是否需要保护。"""
+        return meme_key in cfg_protected_memes()
+
+
+protection_manager = ProtectionManager()

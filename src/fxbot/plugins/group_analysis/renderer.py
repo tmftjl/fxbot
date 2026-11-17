@@ -1,11 +1,10 @@
-"""群聊日报长图渲染（初音未来主题，移植自 astrbot_plugin_qq_group_daily_analysis，MIT）。"""
+"""群聊日报长图渲染（初音未来主题）。"""
 
 from __future__ import annotations
 
 import io
 import html as html_lib
 import base64
-import asyncio
 from typing import Any
 from pathlib import Path
 from datetime import datetime
@@ -17,8 +16,8 @@ from loguru import logger
 from .atri import build_atri_html
 from ...utils.tz import SHANGHAI_TZ
 from ...utils.fonts import load_font, get_shared_font_path
+from ...runtime.browser import render_html
 
-_RENDER_SEM = asyncio.Semaphore(1)
 _SCALES = {"miku": 2.0, "atri": 1.5}
 _LOAD_TIMEOUT = 30.0
 _SHOT_TIMEOUT = 45.0
@@ -399,34 +398,18 @@ def _fallback_image(report: dict[str, Any]) -> bytes:
 
 
 async def render_report(report: dict[str, Any], *, theme: str = "miku", scale: float | None = None) -> bytes:
-    """优先用 Playwright 出长图，失败时退化为统计摘要图。"""
+    """优先用核心浏览器服务出长图，失败时退化为统计摘要图。"""
     html = build_atri_html(report) if theme == "atri" else _build_html(report)
     scale = scale or _SCALES.get(theme, 2.0)
     try:
-        from playwright.async_api import async_playwright
-    except Exception:
-        return _fallback_image(report)
-    try:
-        async with _RENDER_SEM:
-            pw = await async_playwright().start()
-            try:
-                browser = await pw.chromium.launch()
-                try:
-                    page = await browser.new_page(device_scale_factor=scale)
-                    try:
-                        await asyncio.wait_for(page.set_content(html, wait_until="load"), timeout=_LOAD_TIMEOUT)
-                        element = await page.query_selector(".container, .page")
-                        if element:
-                            return await asyncio.wait_for(element.screenshot(type="png"), timeout=_SHOT_TIMEOUT)
-                        return await asyncio.wait_for(
-                            page.screenshot(type="png", full_page=True), timeout=_SHOT_TIMEOUT
-                        )
-                    finally:
-                        await page.close()
-                finally:
-                    await browser.close()
-            finally:
-                await pw.stop()
+        return await render_html(
+            html,
+            selector=".container, .page",
+            scale=scale,
+            load_timeout=_LOAD_TIMEOUT,
+            screenshot_timeout=_SHOT_TIMEOUT,
+            full_page=True,
+        )
     except Exception as exc:
         logger.opt(exception=True).warning(f"[group_analysis] 长图渲染失败，回退到摘要图: {type(exc).__name__}: {exc}")
         return _fallback_image(report)

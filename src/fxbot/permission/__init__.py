@@ -4,6 +4,7 @@ from .types import PermLevel, PermScene, PermContext, perm_entry_default
 from .policy import FeaturePolicy
 from .helpers import upsert_plugin_defaults, upsert_command_defaults
 from .storage import PermissionStorage, get_storage
+from .identity import superuser_entries, is_superuser_event, is_superuser_identity
 
 __all__ = [
     "PermContext",
@@ -12,7 +13,10 @@ __all__ = [
     "PermissionStorage",
     "FeaturePolicy",
     "get_storage",
+    "is_superuser_event",
+    "is_superuser_identity",
     "perm_entry_default",
+    "superuser_entries",
     "upsert_command_defaults",
     "upsert_plugin_defaults",
 ]

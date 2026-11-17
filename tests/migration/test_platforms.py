@@ -41,7 +41,6 @@ class PlatformContractTests(unittest.TestCase):
             for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
                 if isinstance(node, ast.ImportFrom):
                     self.assertNotIn("platforms", (node.module or "").split("."), str(source))
-                    self.assertFalse((node.module or "").startswith("nonebot"), str(source))
 
     def test_v11_recall_and_membership_notifications(self) -> None:
         for notice, expected in (("group_recall", "message_deleted"), ("group_increase", "member_joined")):

@@ -371,6 +371,13 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send.kwargs["json"]["media"], {"file_info": "media-info"})
         self.assertEqual(send.kwargs["json"]["msg_type"], 7)
 
+    async def test_http_remote_image_is_accepted(self):
+        self.api.request.side_effect = [{"file_info": "media-info"}, {"id": "reply"}]
+        await self.bot.send(self.event.target, Message([MessageSegment.image("http://gchat.qpic.cn/a.jpg")]))
+        upload, send = self.api.request.await_args_list
+        self.assertEqual(upload.kwargs["json"]["url"], "http://gchat.qpic.cn/a.jpg")
+        self.assertEqual(send.kwargs["json"]["media"], {"file_info": "media-info"})
+
     async def test_invalid_media_no_partial_upload_or_fallback(self):
         for message in (
             Message([MessageSegment.image("file:///secret.png")]),
@@ -502,6 +509,12 @@ class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQEntryTests(unittest.TestCase):
+    def test_signed_notice_missing_payload_returns_400_without_registration(self):
+        result = self.post({"op": 0, "t": "GROUP_MEMBER_ADD", "id": "missing-data"})
+        self.assertEqual(result.status_code, 400)
+        self.assertIsNone(self.connection.events.worker)
+        self.assertEqual(self.sent, [])
+
     def setUp(self):
         from fxbot.config import SYSTEM_DEFAULTS, get_manager
         from fxbot.runtime.server import create_app

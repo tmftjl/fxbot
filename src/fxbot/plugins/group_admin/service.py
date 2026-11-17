@@ -10,6 +10,7 @@ from fxbot.core.errors import ActionFailed
 
 from ...core import Event, BotClient, Capability, SessionTarget, UnsupportedCapability
 from ...core.application import Application
+from ...permission.identity import is_superuser_identity
 from ...permission.authorization import Authorizer
 
 
@@ -31,7 +32,7 @@ class GroupAdminService:
     def protected(self, target: SessionTarget, user_id: str) -> bool:
         actor = SessionTarget(target.platform, target.bot_id, "private", user_id).key()
         system = self.authorizer.configuration.get_system()["system"]
-        return actor in system["superusers"] or actor in system["bot_admins"]
+        return is_superuser_identity(system, actor) or actor in system["bot_admins"]
 
     def _online(self, bot: BotClient, target: SessionTarget) -> None:
         if target.kind != "group" or (target.platform, target.bot_id) != (bot.platform, bot.bot_id):

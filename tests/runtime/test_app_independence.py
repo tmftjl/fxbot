@@ -11,7 +11,7 @@ from pathlib import Path
 class ApplicationIndependenceTests(unittest.TestCase):
     """在新解释器中拒绝宿主和旧适配层导入。"""
 
-    def test_application_console_and_shutdown_do_not_import_nonebot(self) -> None:
+    def test_application_console_and_shutdown_do_not_import_legacy_framework(self) -> None:
         root = Path(__file__).resolve().parents[2]
         script = """
 import sys
@@ -22,7 +22,7 @@ from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
 class RejectLegacy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        legacy = fullname.startswith(('nonebot', 'fxbot.adapter', 'fxbot.plugin.'))
+        legacy = fullname.startswith(('fxbot.adapter', 'fxbot.plugin.'))
         sdk = fullname.split('.')[0] in {'openai', 'anthropic', 'google'}
         if legacy or sdk:
             raise AssertionError(fullname)
@@ -47,7 +47,6 @@ with tempfile.TemporaryDirectory() as directory:
         assert log_store._writer is None
         assert log_stream._sink_id is None
         assert base_models.engine is None
-assert not any(name.startswith('nonebot') for name in sys.modules)
 """
         result = subprocess.run(
             [sys.executable, "-I", "-X", "utf8", "-c", script, str(root / "src")],

@@ -95,8 +95,15 @@ def draw_text_with_fallback(
     fill: tuple[int, int, int] | str | None = None,
     **kwargs,
 ) -> None:
-    """使用回退字体绘制文本（主字体不包含的字形会使用日文后备字体）。"""
+    """使用回退字体绘制文本（主字体不包含的字形会使用日文后备字体）。
+
+    主字体和回退字体的 ascent 不同，按 ascender 对齐会让回退字形整体上移。
+    未显式指定 anchor 时统一改用基线对齐，主字体的绘制位置保持不变。
+    """
     x, y = xy
+    if "anchor" not in kwargs:
+        kwargs["anchor"] = "ls"
+        y += primary.getmetrics()[0]
     for segment, font in _segment_by_glyph(text, primary, fallback):
         draw.text((x, y), segment, fill=fill, font=font, **kwargs)
         x += font.getlength(segment)

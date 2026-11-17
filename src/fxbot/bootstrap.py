@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
+from fxbot.utils.paths import plugins_dir
 from fxbot.core.plugins import PluginContext, load_plugins, discover_plugins
 from fxbot.core.application import Application
 
@@ -14,7 +15,7 @@ from .console import account, log_store, log_stream
 from .chat.lifecycle import ChatLifecycle
 from .core.scheduler import Scheduler
 from .membership.gate import MembershipGate
-from .console.commands import install as install_console_commands
+from .runtime.browser import install as install_browser_renderer
 from .membership.guard import membership_guard
 from .membership.tasks import MembershipMaintenance
 from .runtime.commands import install
@@ -26,8 +27,10 @@ from .membership.commands import MembershipCommands
 from .console.chat_channel import console_chat
 from .platforms.qq.service import QQService
 from .runtime.notifications import NotificationService
+from .runtime.system_commands import install as install_system_commands
 from .permission.authorization import Authorizer
 from .permission.message_policy import MessagePolicy
+from .runtime.plugin_dependencies import ensure_plugin_dependencies
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,8 +46,17 @@ class Runtime:
     qq: QQService
 
 
+_dependencies_checked = False
+
+
 def create_runtime(settings: Settings) -> Runtime:
     """基础命令和目录发现的插件使用同一注册流程。"""
+    global _dependencies_checked
+    plugins = discover_plugins()
+    if not _dependencies_checked:
+        # 同一进程只检查一次；只补缺失，不升级已装版本。冲突记录后继续装配。
+        ensure_plugin_dependencies((definition.name for definition in plugins), plugins_dir())
+        _dependencies_checked = True
     application = Application()
     config = get_manager()
     scheduler = Scheduler(application)
@@ -76,9 +88,10 @@ def create_runtime(settings: Settings) -> Runtime:
     application.router.add_preprocessor(MembershipGate(config, membership_guard))
     application.router.add_preprocessor(MessagePolicy(config))
     MembershipCommands(application, config, membership_service, membership_guard, settings, maintenance).install()
-    install_console_commands(application, config, settings)
+    install_browser_renderer(application)
+    install_system_commands(application, config)
     install(application, authorizer)
-    load_plugins(PluginContext(application, scheduler, authorizer, notifications, config), discover_plugins())
+    load_plugins(PluginContext(application, scheduler, authorizer, notifications, config), plugins)
     chat.install(authorizer)
 
     async def start_console() -> None:

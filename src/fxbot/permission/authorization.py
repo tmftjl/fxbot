@@ -8,6 +8,7 @@ from .policy import FeaturePolicy
 from ..config import ConfigManager
 from .helpers import upsert_plugin_defaults, upsert_command_defaults
 from .storage import PermissionStorage
+from .identity import is_superuser_identity
 from .validation import validate_entry
 from ..core.router import Guard
 from ..core.commands import Command
@@ -28,7 +29,7 @@ class Authorizer:
         system = self.configuration.get_system()["system"]
         admins = set(system["bot_admins"]) | set(permissions.get("bot_admins", []))
         admins.update(permissions.get("top", {}).get("bot_admins", []))
-        if user in system["superusers"]:
+        if is_superuser_identity(system, user):
             level = PermLevel.SUPERUSER
         elif user in admins:
             level = PermLevel.BOT_ADMIN

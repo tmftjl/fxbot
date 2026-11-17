@@ -7,6 +7,7 @@ import asyncio
 import tempfile
 import unittest
 from copy import deepcopy
+from types import SimpleNamespace
 from pathlib import Path
 from dataclasses import replace
 from unittest.mock import Mock, AsyncMock, patch
@@ -25,7 +26,7 @@ from fxbot.plugins.entertain.welcome import Welcome
 from fxbot.plugins.video_parser.types import VideoResult
 from fxbot.plugins.group_admin.service import GroupAdminService
 from fxbot.plugins.video_parser.config import validate_config as validate_video
-from fxbot.plugins.video_parser.sender import send_video_result
+from fxbot.plugins.video_parser.sender import send_image_result, send_video_result
 from fxbot.plugins.entertain.musicshare import Song, Music
 from fxbot.plugins.group_admin.banwords import Banwords
 from fxbot.plugins.group_admin.commands import GroupCommands, parse_duration
@@ -428,14 +429,43 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         music.selections[music.selection_key(self.event)] = (0, "qq", [])
         self.assertIsNone(music.match_select(self.context("#1").event))
 
-    async def test_music_group_login_does_not_call_api(self):
-        music = Music(self.app, self.auth)
-        from fxbot.core.router import _Finished
+    async def test_music_group_login_is_allowed_and_scoped_to_user(self):
+        from fxbot.plugins.entertain import musicshare
 
-        with patch("fxbot.plugins.entertain.musicshare._music_api_get", new_callable=AsyncMock) as api:
+        music = Music(self.app, self.auth)
+        private = SessionTarget("onebot11", "100", "private", "200")
+        with (
+            patch.object(musicshare, "_LOGIN_SESSION_FILE", self.root / "music.json"),
+            patch.object(
+                musicshare,
+                "_music_api_get",
+                return_value={"loginToken": "fake-token", "image": "data:image/png;base64,cG5n"},
+            ),
+        ):
+            await music.login(self.context("#音乐登录"))
+            await music.poll(self.context("#音乐登录状态"))
+            await music.close()
+        self.assertEqual(music.owner(self.event), music.owner(replace(self.event, target=private)))
+        self.assertTrue(any(action == "send_group_msg" for action, _ in self.calls))
+
+    async def test_music_login_api_failure_replies_instead_of_raising(self):
+        import httpx
+
+        from fxbot.core.router import _Finished
+        from fxbot.plugins.entertain import musicshare
+
+        request = httpx.Request("GET", "http://127.0.0.1:3000/api/login/qr")
+        failure = httpx.HTTPStatusError("502", request=request, response=httpx.Response(502, request=request))
+        music = Music(self.app, self.auth)
+        with (
+            patch.object(musicshare, "_LOGIN_SESSION_FILE", self.root / "music.json"),
+            patch.object(musicshare, "_music_api_get", AsyncMock(side_effect=failure)),
+        ):
             with self.assertRaises(_Finished):
                 await music.login(self.context("#音乐登录"))
-        api.assert_not_awaited()
+        action, params = self.calls[-1]
+        self.assertEqual(action, "send_group_msg")
+        self.assertIn("创建登录二维码失败", params["message"][0]["data"]["text"])
 
     async def test_music_close_cleans_pending_without_background_tasks(self):
         music = Music(self.app, self.auth)
@@ -606,6 +636,29 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
                 await send_video_result(self.context(), result, path)
             source = self.calls[-1][1]["messages"][-1]["data"]["content"][0]["data"]["file"]
             self.assertTrue(source.startswith("base64://" if inline else "file:///"))
+
+    async def test_video_sender_degrades_to_separate_messages_without_forward(self):
+        from fxbot.core.capabilities import Capabilities
+
+        path = self.root / "video.mp4"
+        path.write_bytes(b"fake-video")
+        bot = SimpleNamespace(platform="qq", capabilities=Capabilities(), send=AsyncMock())
+        context = HandlerContext(bot, self.event, MatchResult(""))
+        result = VideoResult("bilibili", "测试", cover_url="https://example.com/cover.jpg")
+        with patch(
+            "fxbot.plugins.video_parser.sender.cfg_general",
+            return_value={"send_cover": True, "use_base64": False},
+        ):
+            await send_video_result(context, result, path)
+        self.assertEqual(bot.send.await_count, 3)
+        self.assertEqual(bot.send.await_args_list[0].args[1].plain_text(), "bilibili | 测试")
+        self.assertEqual(bot.send.await_args_list[1].args[1].segments[0].type, "image")
+        self.assertEqual(bot.send.await_args_list[2].args[1].segments[0].data["file"], b"fake-video")
+
+        bot.send.reset_mock()
+        await send_image_result(context, VideoResult("bilibili", "图集"), [path, path])
+        self.assertEqual(bot.send.await_count, 3)
+        self.assertEqual(bot.send.await_args_list[-1].args[1].segments[0].type, "image")
 
     async def test_download_failure_does_not_retry_or_keep_partial_file(self):
         import httpx

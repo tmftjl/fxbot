@@ -13,7 +13,9 @@ import binascii
 from typing import Any, Literal
 from dataclasses import replace, dataclass
 
+import httpx
 from PIL import Image, ImageDraw
+from loguru import logger
 
 from .config import cfg_music
 from ...core.types import Event, Message, BotClient, SessionTarget, MessageSegment
@@ -797,10 +799,17 @@ class Music(Service):
         return self.application.is_registered(context.bot) and await self.authorizer.check(permission, context.event)
 
     async def login(self, context: HandlerContext) -> None:
-        if context.event.target.kind != "private":
-            await context.finish("请私聊发送音乐登录命令，避免在群内暴露登录二维码")
         platform = _normalize_platform(re.match(self.LOGIN, context.arguments)[1])
-        data = await _music_api_get("/api/login/qr", {"provider": platform})
+        try:
+            data = await _music_api_get("/api/login/qr", {"provider": platform})
+        except MusicLoginRequired:
+            await context.finish("音乐接口要求先登录，请检查 music-api 配置")
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning("[musicshare] 创建音乐登录二维码失败")
+            await context.finish("创建登录二维码失败，请确认 music-api 服务可用")
+        except (RuntimeError, ValueError) as exc:
+            logger.opt(exception=True).warning("[musicshare] music-api 返回异常")
+            await context.finish(f"创建登录二维码失败：{exc}")
         token, image = data.get("loginToken"), data.get("image")
         if not isinstance(token, str) or not token or not isinstance(image, str) or not image.startswith("data:image/"):
             await context.finish("音乐接口未返回有效二维码")
@@ -859,19 +868,26 @@ class Music(Service):
                 continue
             bucket = await _get_login_session_data(owner, platform)
             pending = next((item for item in bucket["pending"] if item["id"] == pending_id), None)
-            if pending is None or await self.poll_one(context, owner, platform, pending):
+            try:
+                completed = pending is None or await self.poll_one(context, owner, platform, pending)
+            except httpx.HTTPError:
+                logger.opt(exception=True).debug("[musicshare] 轮询音乐登录状态失败")
+                continue
+            if completed:
                 await _remove_pending_login(owner, platform, pending_id)
                 self.pending.pop(key, None)
 
     async def poll(self, context: HandlerContext) -> None:
-        if context.event.target.kind != "private":
-            await context.finish("请在私聊检查音乐登录状态")
         platform = _normalize_platform(re.match(self.POLL, context.arguments)[1])
         owner = self.owner(context.event)
         bucket = await _get_login_session_data(owner, platform)
-        for pending in tuple(bucket["pending"]):
-            if await self.poll_one(context, owner, platform, pending):
-                return
+        try:
+            for pending in tuple(bucket["pending"]):
+                if await self.poll_one(context, owner, platform, pending):
+                    return
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning("[musicshare] 检查音乐登录状态失败")
+            await context.finish("检查登录状态失败，请稍后再试")
         await context.send(f"已登录 {len(bucket['accounts'])} 个账号" if bucket["accounts"] else "尚未登录，请扫码确认")
 
     async def search(self, context: HandlerContext) -> None:
@@ -884,6 +900,9 @@ class Music(Service):
             songs = await _search_songs_with_pool(self.owner(context.event), platform, keyword)
         except MusicLoginRequired:
             await context.finish(_login_hint(platform))
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning("[musicshare] 搜索歌曲失败")
+            await context.finish("搜索失败，请确认 music-api 服务可用")
         if not await self.valid(context, "entertain:search"):
             return
         if not songs:
@@ -905,6 +924,9 @@ class Music(Service):
             await context.finish(_login_hint(platform))
         except MusicPlayUnavailable:
             await context.finish("该歌曲暂时无法播放")
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning("[musicshare] 获取播放地址失败")
+            await context.finish("播放失败，请确认 music-api 服务可用")
         if url and await self.valid(context, "entertain:select"):
             await context.send(Message([MessageSegment.voice(url)]))
 

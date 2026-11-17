@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import inspect
+import logging
 from types import ModuleType
 from importlib import import_module
 from contextlib import AsyncExitStack
@@ -19,6 +20,8 @@ from .services import ServiceScope
 from .contracts import Authorization, Configuration, Notifications
 from .scheduler import Scheduler
 from .application import Application, ApplicationState
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +195,14 @@ def load_plugins(context: PluginContext, plugins: tuple[PluginDefinition, ...]) 
     names = [plugin.name for plugin in plugins]
     if len(names) != len(set(names)):
         raise ValueError("插件名称必须唯一")
-    definitions = tuple(LoadedPlugin.read(source) for source in plugins)
+    loaded = []
+    for source in plugins:
+        try:
+            loaded.append(LoadedPlugin.read(source))
+        except ImportError:
+            # 插件缺少依赖属于插件自身的维护范围；核心记录后继续启动。
+            logger.exception("插件 %s 依赖缺失或导入失败，已跳过；请由插件维护者解决依赖问题", source.name)
+    definitions = tuple(loaded)
     context.application.router.validate_names(
         tuple(f"{plugin.name}:{matcher.name}" for plugin in definitions for matcher in plugin.matchers)
     )

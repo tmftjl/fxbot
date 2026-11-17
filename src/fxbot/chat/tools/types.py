@@ -13,7 +13,7 @@ ToolHandler = Callable[..., str | dict[str, Any] | Any | Awaitable[Any]]
 
 @dataclass
 class ToolContext:
-    """工具执行上下文，保持与 NoneBot 解耦。"""
+    """工具执行上下文，保持与运行时框架解耦。"""
 
     user_id: str = ""
     group_id: str | None = None

@@ -1,30 +1,57 @@
-__pycache__/
-temp/
-
-# Agent 本机配置不入库。
-.claude/
-.agents/*
-!.agents/skills/
-.codex/
-
 # Python
+__pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.egg
 *.egg-info/
+.eggs/
 /build/
 /dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pdm-build/
+.pdm-python
+__pypackages__/
 
-# Runtime data and local config
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime data, logs and secrets
 /data/
+*.log
 .env
 .env.*
+!.env.example
+
+# Local verification and reference artifacts
+/temp/
+
+# Agent local config
+.claude/
+.agents/*
+!.agents/skills/
+.codex/
 
 # Frontend
 node_modules/
-src/fxbot/console/web/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+playwright-report/
+test-results/
+.playwright/
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

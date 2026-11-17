@@ -24,6 +24,7 @@ from .behavior.reply_gate import (
     set_proactive_switch,
     default_reply_gate_registry,
 )
+from ..permission.identity import is_superuser_identity
 from ..permission.authorization import Authorizer
 
 
@@ -207,9 +208,8 @@ def install(application: Application, authorizer: Authorizer) -> None:
 
     async def owner(event: Event) -> bool:
         key = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
-        return (
-            await authorizer.check("chat", event)
-            and key in authorizer.configuration.get_system()["system"]["superusers"]
+        return await authorizer.check("chat", event) and is_superuser_identity(
+            authorizer.configuration.get_system()["system"], key
         )
 
     async def persona(context: HandlerContext) -> None:

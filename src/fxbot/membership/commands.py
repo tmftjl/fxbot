@@ -17,6 +17,7 @@ from ..core.permission import Permission
 from ..core.application import Application
 from ..runtime.settings import Settings
 from ..core.capabilities import Capability
+from ..permission.identity import is_superuser_event
 
 
 class MembershipCommands:
@@ -40,9 +41,10 @@ class MembershipCommands:
         self.maintenance = maintenance
 
     async def owner(self, event: Event) -> bool:
-        """管理命令同时要求私聊和明确的完整主人身份。"""
-        identity = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
-        return event.target.kind == "private" and identity in self.config.get_system()["system"]["superusers"]
+        """管理命令同时要求私聊和超级用户身份，允许裸平台用户 ID。"""
+        return event.target.kind == "private" and is_superuser_event(
+            self.config.get_system()["system"], event
+        )
 
     def install(self) -> None:
         """注册自助命令和独立保护的管理命令。"""

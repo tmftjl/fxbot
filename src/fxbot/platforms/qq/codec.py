@@ -51,7 +51,7 @@ def _time(value: object) -> datetime:
 
 
 def _notice(payload: dict, bot_id: str) -> Event:
-    kind, data = payload["t"], payload["d"]
+    kind, data = payload["t"], payload.get("d")
     if not isinstance(data, dict):
         raise ValueError("QQ 通知必须包含 d 对象")
     if kind == "INTERACTION_CREATE":

@@ -12,7 +12,7 @@ from datetime import datetime, timezone, timedelta
 from collections import OrderedDict
 from urllib.parse import urlsplit
 
-from fxbot.core.errors import BotOffline
+from fxbot.core.errors import BotOffline, ActionFailed
 
 from .api import QQHTTP
 from .codec import api_path, opaque_id, identifier
@@ -29,6 +29,29 @@ _EVENT_REPLY_TYPES = {
     "FRIEND_ADD",
     "C2C_MSG_RECEIVE",
 }
+
+
+def _member_rows(data: object) -> list[dict]:
+    rows = data.get("members") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ActionFailed("QQ 成员响应必须包含 members 对象数组")
+    return rows
+
+
+def _member_record(data: object) -> dict:
+    if not isinstance(data, dict):
+        raise ActionFailed("QQ 成员响应必须为对象")
+    try:
+        user_id = identifier(data.get("member_openid"))
+    except ValueError as error:
+        raise ActionFailed("QQ 成员响应缺少有效 member_openid") from error
+    name = data.get("username")
+    role = data.get("member_role")
+    if name is not None and not isinstance(name, str):
+        raise ActionFailed("QQ 成员昵称必须为字符串")
+    if role is not None and (not isinstance(role, str) or role not in {"member", "owner", "admin"}):
+        raise ActionFailed("QQ 成员角色无效")
+    return {**data, "user_id": user_id, "nickname": name if name is not None else "", "role": role}
 
 
 class QQClient:
@@ -97,10 +120,10 @@ class QQClient:
     @staticmethod
     def _url(source) -> str:
         if not isinstance(source, str):
-            raise ValueError("媒体来源必须为字节或 HTTPS 地址")
+            raise ValueError("媒体来源必须为字节或 HTTP(S) 地址")
         parsed = urlsplit(source)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-            raise ValueError("QQ 出站远程媒体必须是 HTTPS")
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("QQ 出站远程媒体必须是 HTTP(S) 地址")
         return source
 
     async def send(self, target: SessionTarget, message: Message) -> dict:
@@ -156,6 +179,8 @@ class QQClient:
                 raise UnsupportedCapability(f"QQ 未实现此出站消息段: {part.type}")
         if len(media) > 1 or media and "media" in advanced:
             raise UnsupportedCapability("QQ 单条发送仅支持一项媒体，不拆分重试")
+        if (media or "media" in advanced) and advanced.keys() - {"media"}:
+            raise UnsupportedCapability("QQ 不支持高级消息格式与媒体混合发送")
         if route in {"channels", "dms"} and media and media[0][0] != "image":
             raise UnsupportedCapability("QQ 频道/频道私信当前仅支持图片媒体")
         text = "".join(content)
@@ -299,36 +324,28 @@ class QQClient:
         return await self.send(target, Message([MessageSegment("file", {"file": data, "name": name})]))
 
     async def get_member(self, group_id: str, user_id: str) -> dict:
-        data = await self.actions.get_group_member(group_openid=identifier(group_id), member_openid=identifier(user_id))
-        return {
-            **data,
-            "user_id": identifier(data["member_openid"]),
-            "nickname": data.get("username") or "",
-            "role": data.get("member_role"),
-        }
+        group_id, user_id = identifier(group_id), identifier(user_id)
+        member = _member_record(await self.actions.get_group_member(group_openid=group_id, member_openid=user_id))
+        if member["user_id"] != user_id:
+            raise ActionFailed("QQ 成员查询返回了其他成员")
+        return member
 
     async def get_members(self, group_id: str) -> list[dict]:
-        members = []
+        members: list[dict] = []
         cursor = None
         seen = set()
         for _ in range(1000):
             data = await self.actions.get_group_members(group_openid=identifier(group_id), cursor=cursor)
-            for member in data["members"]:
-                members.append(
-                    {
-                        **member,
-                        "user_id": identifier(member["member_openid"]),
-                        "nickname": member.get("username") or "",
-                        "role": member.get("member_role"),
-                    }
-                )
+            members.extend(_member_record(member) for member in _member_rows(data))
             cursor = data.get("next_cursor")
-            if not cursor:
+            if cursor is None or cursor == "":
                 return members
+            if not isinstance(cursor, str):
+                raise ActionFailed("QQ 群成员分页游标必须为字符串")
             if cursor in seen:
-                raise ValueError("QQ 群成员分页游标未前进")
+                raise ActionFailed("QQ 群成员分页游标未前进")
             seen.add(cursor)
-        raise ValueError("QQ 群成员查询超过分页预算")
+        raise ActionFailed("QQ 群成员查询超过分页预算")
 
     async def member_name(self, group_id: str, user_id: str) -> str:
         return (await self.get_member(group_id, user_id))["nickname"]
@@ -337,15 +354,15 @@ class QQClient:
         if user_id == self.bot_id:
             return await self.bot_group_role(group_id)
         role = (await self.get_member(group_id, user_id))["role"]
-        if role not in {"member", "owner", "admin"}:
-            raise ValueError("QQ 群成员角色缺失或无效")
+        if not isinstance(role, str) or role not in {"member", "owner", "admin"}:
+            raise ActionFailed("QQ 群成员角色缺失或无效")
         return role
 
     async def bot_group_role(self, group_id: str) -> str:
         data = await self.actions.get_group_bot_state(group_id=identifier(group_id))
         role = data.get("member_role")
-        if role not in {"member", "owner", "admin"}:
-            raise ValueError("QQ Bot 群角色缺失或无效")
+        if not isinstance(role, str) or role not in {"member", "owner", "admin"}:
+            raise ActionFailed("QQ Bot 群角色缺失或无效")
         return role
 
     async def target_name(self, target: SessionTarget) -> str:
@@ -362,13 +379,8 @@ class QQClient:
             operation = "del"
             if duration:
                 current = await self.actions.get_group_mute_setting(group_id=group_id)
-                members = current.get("members")
-                if not isinstance(members, list) or any(
-                    not isinstance(member, dict) or not isinstance(member.get("member_openid"), str)
-                    for member in members
-                ):
-                    raise ValueError("QQ 禁言状态缺少有效的 members 数组，未执行禁言")
-                operation = "update" if any(member["member_openid"] == user_id for member in members) else "add"
+                members = [_member_record(member) for member in _member_rows(current)]
+                operation = "update" if any(member["user_id"] == user_id for member in members) else "add"
             member = {
                 "op": operation,
                 "member_openid": user_id,
@@ -392,16 +404,21 @@ class QQClient:
         data = await self.actions.get_group_mute_setting(group_id=identifier(group_id))
         now = datetime.now(timezone.utc)
         members = []
-        for member in data["members"]:
-            expiry = datetime.fromisoformat(member["mute_expire_at"].replace("Z", "+00:00"))
+        for raw in _member_rows(data):
+            member = _member_record(raw)
+            timestamp = raw.get("mute_expire_at")
+            if not isinstance(timestamp, str) or not isinstance(raw.get("username"), str):
+                raise ActionFailed("QQ 禁言成员缺少有效的到期时间或昵称")
+            try:
+                expiry = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise ActionFailed("QQ 禁言到期时间无效") from error
             if expiry.tzinfo is None:
-                raise ValueError("QQ 禁言到期时间必须带时区")
+                raise ActionFailed("QQ 禁言到期时间必须带时区")
             if expiry > now:
                 members.append(
                     {
                         **member,
-                        "user_id": identifier(member["member_openid"]),
-                        "nickname": member["username"],
                         "remaining": int((expiry - now).total_seconds()),
                         "mute_until": int(expiry.timestamp()),
                     }

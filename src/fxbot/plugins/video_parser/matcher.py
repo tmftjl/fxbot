@@ -56,8 +56,6 @@ class VideoParser:
         return url
 
     async def parse(self, context: HandlerContext) -> None:
-        if Capability.FORWARD_SEND not in context.bot.capabilities:
-            await context.finish("当前平台不支持发送解析结果所需的合并消息")
         processing = await context.send("正在解析媒体，请稍候...")
         directory = create_download_dir()
         self.downloads.add(directory)

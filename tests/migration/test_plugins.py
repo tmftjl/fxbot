@@ -118,6 +118,12 @@ class PluginRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.app.router._routes), 1)
         self.assertEqual(len(list(self.root.rglob("*.json"))), 0)
 
+    async def test_plugin_import_failure_is_skipped_without_blocking_core(self):
+        self.plugin(folder="registry_fixture_broken", body="import definitely_missing_dependency\n")
+        load_plugins(self.context, discover_plugins())
+        await self.app.start()
+        self.assertEqual(self.app.plugin_metadata, {})
+
     async def test_services_are_lazy_shared_per_app_and_closed_in_reverse_order(self):
         path = self.plugin(
             body=(

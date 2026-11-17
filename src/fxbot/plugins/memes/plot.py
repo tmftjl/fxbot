@@ -1,0 +1,88 @@
+"""表情调用统计图。"""
+
+from __future__ import annotations
+
+import asyncio
+from io import BytesIO
+
+import matplotlib
+from matplotlib import pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.ticker import MaxNLocator
+from matplotlib.font_manager import FontProperties, fontManager
+
+from ...utils.fonts import get_shared_font_path
+
+matplotlib.use("agg")
+plt.style.use("bmh")
+
+_font_path = get_shared_font_path()
+fontManager.addfont(str(_font_path))
+matplotlib.rcParams["font.family"] = FontProperties(fname=str(_font_path)).get_name()
+
+
+def _render_meme_and_duration(
+    meme_counts: dict[str, int],
+    duration_counts: dict[str, int],
+    title: str,
+) -> bytes:
+    up_x = list(meme_counts.keys())
+    up_y = list(meme_counts.values())
+    low_x = list(duration_counts.keys())
+    low_y = list(duration_counts.values())
+    num = len(up_x)
+    up_height = num * 0.3
+    low_height = 3
+    fig_width = 8
+    fig, axs = plt.subplots(
+        nrows=2,
+        figsize=(fig_width, up_height + low_height),
+        height_ratios=[up_height, low_height],
+        constrained_layout=True,
+    )
+    up: Axes = axs[0]
+    up.barh(range(num), up_y, height=0.5)
+    up.set_ylim(-1, num)
+    up.set_yticks(range(num), up_x)
+    up.xaxis.set_major_locator(MaxNLocator(integer=True))
+    low: Axes = axs[1]
+    low.plot(low_x, low_y, marker="o")
+    if len(low_x) > 24:
+        low.set_xticks(low_x[::3])
+    elif len(low_x) > 12:
+        low.set_xticks(low_x[::2])
+    low.yaxis.set_major_locator(MaxNLocator(integer=True))
+    fig.suptitle(title)
+    output = BytesIO()
+    fig.savefig(output, bbox_inches="tight", pad_inches=0.2)
+    plt.close(fig)
+    return output.getvalue()
+
+
+def _render_duration(duration_counts: dict[str, int], title: str) -> bytes:
+    x = list(duration_counts.keys())
+    y = list(duration_counts.values())
+    fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
+    ax.plot(x, y, marker="o")
+    if len(x) > 24:
+        ax.set_xticks(x[::3])
+    elif len(x) > 12:
+        ax.set_xticks(x[::2])
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    fig.suptitle(title)
+    output = BytesIO()
+    fig.savefig(output, bbox_inches="tight", pad_inches=0.2)
+    plt.close(fig)
+    return output.getvalue()
+
+
+async def plot_meme_and_duration_counts(
+    meme_counts: dict[str, int],
+    duration_counts: dict[str, int],
+    title: str,
+) -> bytes:
+    return await asyncio.to_thread(_render_meme_and_duration, meme_counts, duration_counts, title)
+
+
+async def plot_duration_counts(duration_counts: dict[str, int], title: str) -> bytes:
+    return await asyncio.to_thread(_render_duration, duration_counts, title)

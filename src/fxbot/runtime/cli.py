@@ -24,6 +24,7 @@ def main() -> None:
     import uvicorn
 
     from .server import create_app
+    from .system_commands import reexec_if_pending
 
     uvicorn.run(
         create_app(settings),
@@ -33,3 +34,4 @@ def main() -> None:
         ws_max_queue=32,
         timeout_graceful_shutdown=10,
     )
+    reexec_if_pending()
