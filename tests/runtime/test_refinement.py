@@ -39,6 +39,14 @@ class PermissionContractTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_permissions(data)
 
+    def test_permission_identities_are_bare_ids_only(self):
+        data = self.document()
+        data["top"]["whitelist"]["groups"] = ["300"]
+        validate_permissions(data)
+        data["top"]["whitelist"]["groups"] = ["onebot11:100:group:300"]
+        with self.assertRaises(ValueError):
+            validate_permissions(data)
+
     def test_invalid_save_preserves_original_file(self):
         with tempfile.TemporaryDirectory() as directory:
             storage = PermissionStorage()

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import asyncio
 import tempfile
 import unittest
 from copy import deepcopy
+from types import SimpleNamespace
 from pathlib import Path
 from dataclasses import replace
 from unittest.mock import Mock, AsyncMock, patch
@@ -40,7 +42,7 @@ ACTOR = SessionTarget("onebot11", "100", "private", "200").key()
 
 
 class LiveStoreTests(unittest.TestCase):
-    """坏文件和无连接身份的旧格式均不能被空状态覆盖。"""
+    """订阅只按群号/用户 ID 持久化，坏文件不能被空状态覆盖。"""
 
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -48,63 +50,113 @@ class LiveStoreTests(unittest.TestCase):
         self.path = Path(directory.name) / "state.json"
         self.store = LiveStore(self.path)
 
-    def test_subscription_scopes_include_bot_and_platform(self) -> None:
-        self.assertTrue(self.store.add_room(FIRST, ROOM, ACTOR))
-        self.assertFalse(self.store.add_room(FIRST, ROOM, ACTOR))
-        actor = SessionTarget(SECOND.platform, SECOND.bot_id, "private", "200").key()
-        self.assertTrue(self.store.add_room(SECOND, ROOM, actor))
-        other = SessionTarget("onebot12.wechat", "100", "group", "300")
-        self.store.add_room(other, ROOM, SessionTarget(other.platform, other.bot_id, "private", "200").key())
-        self.assertEqual(len(self.store.subscriptions()), 3)
+    def test_subscriptions_are_keyed_by_bare_target(self) -> None:
+        self.assertTrue(self.store.add_room("group", "300", ROOM, "200"))
+        self.assertFalse(self.store.add_room("group", "300", ROOM, "200"))
+        self.assertTrue(self.store.add_room("private", "200", ROOM, "200"))
+        self.assertEqual(len(self.store.subscriptions()), 2)
         self.assertEqual(len(self.store.rooms()), 1)
-        self.assertTrue(self.store.remove_room(FIRST, 123))
-        self.assertIsNotNone(self.store.subscription(SECOND))
-        self.assertIsNotNone(self.store.subscription(other))
-        self.assertIsNone(self.store.subscription(FIRST))
+        self.assertTrue(self.store.remove_room("group", "300", 123))
+        self.assertIsNotNone(self.store.subscription("private", "200"))
+        self.assertIsNone(self.store.subscription("group", "300"))
+
+    def test_state_with_numeric_bare_ids_is_loaded(self) -> None:
+        self.path.write_text(
+            json.dumps(
+                {
+                    "subscriptions": [
+                        {
+                            "type": "group",
+                            "group_key": 300,
+                            "operator_id": 200,
+                            "rooms": {"123": ROOM.to_record()},
+                            "target": {"group_id": 300},
+                        }
+                    ],
+                    "room_states": {"123": {"is_live": False, "delivered": False, "checked_at": 1}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        subscription = self.store.subscription("group", "300")
+        self.assertIsNotNone(subscription)
+        assert subscription is not None
+        self.assertEqual(subscription.operator_id, "200")
+        self.assertEqual(self.store.room_state(123).is_live, False)
+
+    def test_room_state_without_delivered_is_loaded(self) -> None:
+        self.path.write_text(
+            json.dumps(
+                {
+                    "subscriptions": [],
+                    "room_states": {"123": {"is_live": False, "checked_at": 1}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = self.store.room_state(123)
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertFalse(state.is_live)
+        self.assertFalse(state.delivered)
+        self.assertEqual(state.checked_at, 1)
+
+    def test_state_file_round_trips_bare_targets(self) -> None:
+        self.store.add_room("group", "300", ROOM, "200")
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("version", raw)
+        self.assertEqual(raw["subscriptions"][0]["type"], "group")
+        self.assertEqual(raw["subscriptions"][0]["group_key"], "300")
+        self.assertEqual(raw["subscriptions"][0]["operator_id"], "200")
 
     def test_subscribing_to_live_room_does_not_request_an_initial_push(self) -> None:
         live = replace(ROOM, live_status=1)
-        self.store.add_room(FIRST, live, ACTOR)
+        self.store.add_room("group", "300", live, "200")
         state = self.store.room_state(123)
         self.assertTrue(state.is_live)
-        self.assertIn(FIRST.key(), state.delivered)
+        self.assertTrue(state.delivered)
         self.assertEqual(LiveStore(self.path).room_state(123), state)
 
-    def test_stale_delivery_cannot_confirm_a_new_live_cycle(self) -> None:
-        self.store.add_room(FIRST, ROOM, ACTOR)
-        self.store.record_state(123, True, frozenset())
-        generation = self.store.room_state(123).generation
-        self.store.record_state(123, False, frozenset())
-        self.store.record_state(123, True, frozenset())
-        self.assertFalse(self.store.mark_delivered(123, FIRST, generation=generation))
-        self.assertEqual(self.store.room_state(123).delivered, frozenset())
+    def test_new_live_cycle_resets_delivery(self) -> None:
+        self.store.add_room("group", "300", ROOM, "200")
+        self.store.record_state(123, True, False)
+        self.assertTrue(self.store.mark_delivered(123))
+        self.assertTrue(self.store.room_state(123).delivered)
+        self.store.record_state(123, False, False)
+        self.assertFalse(self.store.room_state(123).delivered)
 
-    def test_corrupt_or_legacy_file_is_preserved(self) -> None:
-        for original in ("{bad", '{"subscriptions": [], "room_states": {}}'):
+    def test_corrupt_or_foreign_file_is_preserved(self) -> None:
+        for original in ("{bad", '{"subscriptions": {}, "room_states": {}}'):
             with self.subTest(original=original):
                 self.path.write_text(original, encoding="utf-8")
                 with self.assertRaises(ValueError):
-                    self.store.add_room(FIRST, ROOM, ACTOR)
+                    self.store.add_room("group", "300", ROOM, "200")
                 self.assertEqual(self.path.read_text(encoding="utf-8"), original)
 
     def test_failed_atomic_replace_preserves_previous_state(self) -> None:
-        self.store.add_room(FIRST, ROOM, ACTOR)
+        self.store.add_room("group", "300", ROOM, "200")
         previous = self.path.read_bytes()
         with patch.object(Path, "replace", side_effect=OSError("disk failure")):
             with self.assertRaises(OSError):
-                self.store.remove_room(FIRST, 123)
+                self.store.remove_room("group", "300", 123)
         self.assertEqual(self.path.read_bytes(), previous)
         self.assertEqual(list(self.path.parent.glob("*.tmp")), [])
 
     def test_no_change_does_not_rewrite_the_state(self) -> None:
-        self.store.add_room(FIRST, ROOM, ACTOR)
+        self.store.add_room("group", "300", ROOM, "200")
         with patch.object(self.store, "_write") as save:
-            self.store.record_state(123, False, frozenset())
+            self.store.record_state(123, False, False)
         save.assert_not_called()
 
-    def test_operator_cannot_come_from_another_bot(self) -> None:
-        with self.assertRaises(ValueError):
-            self.store.add_room(SECOND, ROOM, ACTOR)
+    def test_invalid_ids_are_rejected(self) -> None:
+        for kind, target, operator in (
+            ("group", "", "200"),
+            ("group", "300", ""),
+            ("group", "onebot11:100:group:300", "200"),
+            ("bogus", "300", "200"),
+        ):
+            with self.subTest(kind=kind, target=target, operator=operator), self.assertRaises(ValueError):
+                self.store.add_room(kind, target, ROOM, operator)
         self.assertFalse(self.path.exists())
 
 
@@ -170,30 +222,58 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LivePollerTests(unittest.IsolatedAsyncioTestCase):
-    """一次直播周期内逐目标确认，离线者恢复后单独补发。"""
+    """按群号/用户 ID 订阅，推送时依次尝试在线 Bot。"""
 
     async def asyncSetUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.store = LiveStore(Path(directory.name) / "state.json")
-        self.store.add_room(FIRST, ROOM, ACTOR)
-        self.store.add_room(SECOND, ROOM, SessionTarget(SECOND.platform, SECOND.bot_id, "private", "200").key())
-        self.notifications = Mock(spec=NotificationService)
+        self.store.add_room("group", "300", ROOM, "200")
+        self.store.add_room("private", "200", ROOM, "200")
+        self.notifications = Mock()
+        self.notifications.send = AsyncMock(return_value=False)
+        self.notifications.application = SimpleNamespace(
+            bots=(
+                SimpleNamespace(platform="onebot11", bot_id="100"),
+                SimpleNamespace(platform="onebot11", bot_id="101"),
+            )
+        )
         self.fetch = AsyncMock(return_value=ROOM)
         self.poller = LivePoller(self.store, self.notifications, self.fetch)
         await self.poller.calibrate()
 
-    async def test_each_target_gets_one_delivery_even_when_another_is_offline(self) -> None:
+    async def test_delivery_tries_bots_until_one_succeeds(self) -> None:
         self.fetch.return_value = replace(ROOM, live_status=1)
-        self.notifications.send = AsyncMock(side_effect=[True, False, True])
-        self.assertEqual(await self.poller.check_and_push(), 1)
-        self.assertEqual(self.store.room_state(123).delivered, frozenset({FIRST.key()}))
-        self.assertEqual(await self.poller.check_and_push(), 1)
+
+        async def send(feature, target, message, *, valid):
+            self.assertTrue(valid())
+            return target.bot_id == "101"
+
+        self.notifications.send = AsyncMock(side_effect=send)
+        self.assertEqual(await self.poller.check_and_push(), 2)
+        self.assertTrue(self.store.room_state(123).delivered)
+        targets = [call.args[1] for call in self.notifications.send.await_args_list]
+        self.assertEqual(
+            [(target.kind, target.target_id, target.bot_id) for target in targets],
+            [
+                ("group", "300", "100"),
+                ("group", "300", "101"),
+                ("private", "200", "100"),
+                ("private", "200", "101"),
+            ],
+        )
         self.assertEqual(await self.poller.check_and_push(), 0)
-        self.assertEqual([call.args[1] for call in self.notifications.send.await_args_list], [FIRST, SECOND, SECOND])
+
+    async def test_no_bot_can_deliver_keeps_pending(self) -> None:
+        self.fetch.return_value = replace(ROOM, live_status=1)
+        self.assertEqual(await self.poller.check_and_push(), 0)
+        self.assertFalse(self.store.room_state(123).delivered)
+        self.notifications.send.assert_awaited()
+        self.assertEqual(await self.poller.check_and_push(), 0)
+        self.assertGreaterEqual(self.notifications.send.await_count, 8)
 
     async def test_new_live_cycle_can_notify_again(self) -> None:
-        self.notifications.send = AsyncMock(return_value=True)
+        self.notifications.send.return_value = True
         self.fetch.return_value = replace(ROOM, live_status=1)
         self.assertEqual(await self.poller.check_and_push(), 2)
         self.fetch.return_value = ROOM
@@ -214,7 +294,7 @@ class LivePollerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.path.read_bytes(), previous)
 
     async def test_internal_query_failure_waits_for_other_owned_queries_to_finish(self) -> None:
-        self.store.add_room(FIRST, replace(ROOM, room_id=124), ACTOR)
+        self.store.add_room("group", "301", replace(ROOM, room_id=124), "200")
         entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
         async def query(room_id, **kwargs):
@@ -238,7 +318,7 @@ class LivePollerTests(unittest.IsolatedAsyncioTestCase):
         self.fetch.return_value = replace(ROOM, live_status=1)
 
         async def send(feature, target, message, *, valid):
-            self.store.remove_room(target, 123)
+            self.store.remove_room(target.kind, target.target_id, 123)
             self.assertFalse(valid())
             return False
 
@@ -288,20 +368,20 @@ class LiveCommandTests(unittest.IsolatedAsyncioTestCase):
         with patch("fxbot.plugins.bilibili_live.commands.fetch_room", AsyncMock(return_value=ROOM)):
             result = await self.dispatch("#B站直播订阅 123")
             self.assertEqual(result.failed, ())
-            self.assertIsNotNone(self.store.subscription(FIRST))
+            self.assertIsNotNone(self.store.subscription("group", "300"))
             await self.dispatch("#B站直播列表", role="member")
             self.assertIn("主播 - 123", self.bot._sender.await_args.args[1]["message"][0]["data"]["text"])
             await self.dispatch("#B站直播取消 123", group="301")
-            self.assertIsNotNone(self.store.subscription(FIRST))
+            self.assertIsNotNone(self.store.subscription("group", "300"))
             await self.dispatch("#B站直播取消 123")
-            self.assertIsNone(self.store.subscription(FIRST))
+            self.assertIsNone(self.store.subscription("group", "300"))
 
     async def test_member_cannot_subscribe_or_call_external_query_for_subscription(self) -> None:
         with patch("fxbot.plugins.bilibili_live.commands.fetch_room", AsyncMock()) as fetch:
             result = await self.dispatch("#B站直播订阅 123", role="member")
         self.assertTrue(result.denied)
         fetch.assert_not_awaited()
-        self.assertIsNone(self.store.subscription(FIRST))
+        self.assertIsNone(self.store.subscription("group", "300"))
 
     async def test_missing_argument_is_reported_without_external_request(self) -> None:
         with patch("fxbot.plugins.bilibili_live.commands.fetch_room", AsyncMock()) as fetch:
@@ -395,19 +475,19 @@ class StandaloneLiveTests(unittest.TestCase):
                         )
                         self.assertEqual(delivery.result(timeout=5), 1)
                         self.assertEqual(client.portal.call(poller.check, notifications), 0)
-                    self.assertIn(FIRST.key(), store.room_state(123).delivered)
+                    self.assertTrue(store.room_state(123).delivered)
                 self.assertFalse(app.state.runtime._tasks)
                 self.assertNotIn("bilibili_live:poll", [job.name for job in app.state.services.scheduler.jobs])
 
     def test_bad_state_rejects_startup_without_overwriting_user_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
-            original = '{"subscriptions": [], "room_states": {}}'
+            original = '{"subscriptions": {}, "room_states": {}}'
             path.write_text(original, encoding="utf-8")
             with patch.object(bilibili_live, "store", LiveStore(path)):
                 from types import SimpleNamespace
 
-                with self.assertRaisesRegex(ValueError, "版本不受支持"):
+                with self.assertRaisesRegex(ValueError, "直播订阅必须为数组"):
                     awaitable = bilibili_live.check_live(SimpleNamespace(notifications=None, first_run=True))
                     asyncio.run(awaitable)
             self.assertEqual(path.read_text(encoding="utf-8"), original)

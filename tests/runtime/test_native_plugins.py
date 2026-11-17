@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import asyncio
 import tempfile
@@ -104,13 +105,29 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
     def verification(self):
         verifier = JoinVerification(self.service)
         verifier.path = self.root / "verify.json"
-        write_json(verifier.path, {GROUP.key(): {"enabled": True}})
+        write_json(verifier.path, {"300": {"enabled": True}})
         return verifier
 
     def pending(self, verifier, *, deadline=None):
         record = Pending(GROUP, self.bot, "200", "2345", 0, deadline or time.monotonic() + 60)
         verifier.pending[(GROUP.key(), "200")] = record
         return record
+
+    def test_join_verify_configs_use_group_ids_and_skip_bad_entries(self):
+        verifier = JoinVerification(self.service)
+        verifier.path = self.root / "verify.json"
+        write_json(
+            verifier.path,
+            {
+                "300": {"enabled": True},
+                "onebot11:100:group:301": {"enabled": True},
+                "onebot11:100": {"enabled": True},
+                "302": {"enabled": "yes"},
+            },
+        )
+        self.assertEqual(verifier.configs(), {"300": {"enabled": True}})
+        self.assertTrue(verifier.enabled(GROUP))
+        self.assertEqual(json.loads(verifier.path.read_text(encoding="utf-8")), {"300": {"enabled": True}})
 
     async def test_moderation_exact_onebot_binding(self):
         result = await self.service.execute(self.bot, self.event, "mute_member", user_id="400", duration=60)
@@ -429,6 +446,32 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         music.selections[music.selection_key(self.event)] = (0, "qq", [])
         self.assertIsNone(music.match_select(self.context("#1").event))
 
+    def test_music_login_sessions_use_bare_owner(self):
+        from fxbot.plugins.entertain import musicshare
+
+        path = self.root / "music.json"
+        write_json(
+            path,
+            {
+                "qq:200": {
+                    "provider": "qq",
+                    "owner": "200",
+                    "accounts": [{"auth": "a", "owner": "200", "provider": "qq"}],
+                },
+                "netease:onebot11:100:private:201": {
+                    "provider": "netease",
+                    "owner": "onebot11:100:private:201",
+                    "accounts": [{"auth": "b", "owner": "onebot11:100:private:201", "provider": "netease"}],
+                },
+            },
+        )
+        with patch.object(musicshare, "_LOGIN_SESSION_FILE", path):
+            sessions = musicshare._load_login_sessions()
+        self.assertEqual(set(sessions), {"qq:200"})
+        self.assertEqual(sessions["qq:200"]["owner"], "200")
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("netease:onebot11:100:private:201", saved)
+
     async def test_music_group_login_is_allowed_and_scoped_to_user(self):
         from fxbot.plugins.entertain import musicshare
 
@@ -557,19 +600,23 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(bucket["pending"])
             self.assertFalse(any(account["auth"] == "revoked-auth" for account in bucket["accounts"]))
 
-    async def test_music_shared_pool_does_not_share_other_bot_accounts(self):
+    async def test_music_shared_pool_uses_accounts_across_bots(self):
         from fxbot.plugins.entertain import musicshare
 
-        owner = "onebot11:100:private:200"
-        other = "onebot11:101:private:200"
+        owner = "200"
+        other = "201"
         bucket = {"accounts": [{"auth": "fake-auth"}]}
+
+        async def get_bucket(name, platform):
+            return bucket if name == other else {"accounts": []}
+
         with (
             patch.object(musicshare, "_LOGIN_SESSIONS", {"qq:" + other: bucket}),
-            patch.object(musicshare, "_get_login_session_data", return_value={"accounts": []}) as get_bucket,
+            patch.object(musicshare, "_get_login_session_data", side_effect=get_bucket),
             patch.object(musicshare, "_login_mode", return_value="shared"),
         ):
-            self.assertEqual(await musicshare._auth_candidates(owner, "qq"), [])
-        self.assertEqual([call.args[0] for call in get_bucket.await_args_list], [owner])
+            candidates = await musicshare._auth_candidates(owner, "qq")
+        self.assertEqual([item[0] for item in candidates], [other])
 
     async def test_welcome_rejects_legacy_or_traversal_data(self):
         welcome = Welcome(self.app, Mock())
@@ -738,14 +785,15 @@ class NativeValidationTests(unittest.TestCase):
             self.assertTrue(can_parse_url(url))
         self.assertEqual(find_url("观看 av123456"), "av123456")
 
-    def test_configuration_does_not_coerce_bool_or_legacy_ids(self):
+    def test_configuration_does_not_coerce_bool_or_full_session_keys(self):
         for cfg in (
             {"box": {"only_admin": "false"}},
-            {"box": {"auto_box_groups": ["300"]}},
+            {"box": {"auto_box_groups": ["onebot11:100:group:300"]}},
             {"music": {"login_mode": "own"}},
         ):
             with self.assertRaises(ValueError):
                 validate_entertain(cfg)
+        validate_entertain({"box": {"auto_box_groups": ["300"], "box_blacklist": ["200"]}})
         for cfg in (
             {"general": {"global_enabled": "false"}},
             {"platforms": {"bilibili": 1}},

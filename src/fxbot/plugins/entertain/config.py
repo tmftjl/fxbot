@@ -6,7 +6,6 @@ from typing import Any
 
 from ...config import get_manager
 from .defaults import DEFAULTS
-from ...core.types import SessionTarget
 
 
 def validate_config(data: dict[str, Any]) -> None:
@@ -25,10 +24,10 @@ def validate_config(data: dict[str, Any]) -> None:
     if "provider_default" in music and music["provider_default"] not in {"tencent", "netease"}:
         raise ValueError("默认音乐平台错误")
     box = data.get("box", {})
-    for field, kind in (("box_blacklist", "private"), ("auto_box_groups", "group")):
+    for field in ("box_blacklist", "auto_box_groups"):
         for key in box.get(field, []):
-            if not isinstance(key, str) or SessionTarget.from_key(key).kind != kind:
-                raise ValueError(f"{field} 必须使用完整会话键")
+            if not isinstance(key, str) or not key or key != key.strip() or ":" in key:
+                raise ValueError(f"{field} 必须填写用户 ID 或群 ID")
     display = data.get("image_display", {})
     if "type" in display and display["type"] not in {1, 2, 3}:
         raise ValueError("图片外显类型必须为 1、2、3")

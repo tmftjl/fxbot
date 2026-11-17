@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 from loguru import logger
 
 from .config import cfg_music
-from ...core.types import Event, Message, BotClient, SessionTarget, MessageSegment
+from ...core.types import Event, Message, BotClient, MessageSegment
 from ...utils.http import get_shared_async_client
 from ...core.plugin import Service, on_regex, scheduled, on_message
 from ...core.router import HandlerContext
@@ -102,30 +102,55 @@ class MusicPlayUnavailable(Exception):
 
 
 def _load_login_sessions() -> dict[str, dict[str, Any]]:
-    data = read_json(_LOGIN_SESSION_FILE, dict)
+    """读取登录会话；坏条目跳过，避免轮询任务反复失败。"""
+    try:
+        data = read_json(_LOGIN_SESSION_FILE, dict)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        logger.opt(exception=True).warning("[musicshare] 音乐会话文件无法读取，已忽略")
+        return {}
     if not isinstance(data, dict):
-        raise ValueError("音乐会话必须为对象")
+        logger.warning("[musicshare] 音乐会话必须为对象，已忽略")
+        return {}
+    sessions: dict[str, dict[str, Any]] = {}
+    changed = False
     for key, value in data.items():
         platform, separator, owner = key.partition(":")
-        if not separator or platform not in {"qq", "netease"} or SessionTarget.from_key(owner).kind != "private":
-            raise ValueError("音乐账号需要完整用户身份")
+        if not separator or platform not in {"qq", "netease"} or not owner or ":" in owner:
+            logger.warning("[musicshare] 跳过无效的登录会话: {}", key)
+            changed = True
+            continue
         if (
             not isinstance(value, dict)
             or value.get("provider") != platform
             or value.get("owner") != owner
             or not isinstance(value.get("accounts"), list)
         ):
-            raise ValueError("音乐会话格式错误")
+            logger.warning("[musicshare] 跳过格式错误的登录会话: {}", key)
+            changed = True
+            continue
+        accounts = []
         for account in value["accounts"]:
             if (
-                not isinstance(account, dict)
-                or not isinstance(account.get("auth"), str)
-                or not account["auth"]
-                or account.get("owner") != owner
-                or account.get("provider") != platform
+                isinstance(account, dict)
+                and isinstance(account.get("auth"), str)
+                and account["auth"]
+                and account.get("owner") == owner
+                and account.get("provider") == platform
             ):
-                raise ValueError("音乐账号格式错误")
-    return data
+                accounts.append({**account, "owner": owner, "provider": platform})
+            else:
+                logger.warning("[musicshare] 跳过格式错误的音乐账号: {}", key)
+                changed = True
+        if not accounts:
+            changed = True
+            continue
+        sessions[key] = {"provider": platform, "owner": owner, "accounts": accounts}
+    if changed:
+        try:
+            write_json(_LOGIN_SESSION_FILE, sessions)
+        except OSError:
+            logger.opt(exception=True).warning("[musicshare] 清理无效音乐会话失败")
+    return sessions
 
 
 _LOGIN_SESSIONS: dict[str, dict[str, Any]] = {}
@@ -389,8 +414,6 @@ async def _auth_candidates(user_id: str, platform: Platform) -> list[tuple[str, 
     if _login_mode() == "shared" and user_id not in owners:
         owners.append(user_id)
 
-    scope = SessionTarget.from_key(user_id).bot_key()
-    owners = [owner for owner in owners if SessionTarget.from_key(owner).bot_key() == scope]
     candidates: list[tuple[str, dict[str, Any]]] = []
     for owner in owners:
         bucket = await _get_login_session_data(owner, platform)
@@ -415,11 +438,7 @@ async def _next_auth_account(
     ]
     if not candidates:
         return None
-    cursor_key = (
-        f"{SessionTarget.from_key(user_id).bot_key()}:{platform}"
-        if _login_mode() == "shared"
-        else f"{user_id}:{platform}"
-    )
+    cursor_key = f"{_login_mode()}:{platform}" if _login_mode() == "shared" else f"{user_id}:{platform}"
     index = _AUTH_POOL_CURSORS.get(cursor_key, 0) % len(candidates)
     _AUTH_POOL_CURSORS[cursor_key] = index + 1
     return candidates[index]
@@ -642,7 +661,7 @@ async def _get_song_url_with_pool(
 
 
 def _draw_music_list(platform: Platform, keyword: str, songs: list[Song]) -> bytes:
-    """按旧版双列卡片排版绘制搜索结果。"""
+    """按双列卡片排版绘制搜索结果。"""
     bg_color = (240, 242, 245)
     header_color = (64, 84, 180)
     card_bg = (255, 255, 255)
@@ -772,7 +791,7 @@ class Music(Service):
 
     @staticmethod
     def owner(event: Event) -> str:
-        return SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
+        return event.user_id
 
     @staticmethod
     def selection_key(event: Event):

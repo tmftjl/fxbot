@@ -14,6 +14,15 @@ from ..core.router import Guard
 from ..core.commands import Command
 
 
+def _matches_identity(entries: set[str], identity: str) -> bool:
+    """Bot 管理员名单只存裸用户 ID，匹配时从上下文键中取出目标 ID。"""
+    try:
+        target_id = SessionTarget.from_key(identity).target_id
+    except ValueError:
+        return False
+    return target_id in entries
+
+
 class Authorizer:
     """应用显式拥有配置、存储和领域策略，不依赖外部框架。"""
 
@@ -31,7 +40,7 @@ class Authorizer:
         admins.update(permissions.get("top", {}).get("bot_admins", []))
         if is_superuser_identity(system, user):
             level = PermLevel.SUPERUSER
-        elif user in admins:
+        elif _matches_identity(admins, user):
             level = PermLevel.BOT_ADMIN
         elif event.is_group and event.metadata.get("sender_role") == "owner":
             level = PermLevel.OWNER

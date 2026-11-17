@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from .store import LiveStore
-from ...core import Message, SessionTarget, HandlerContext, MessageSegment
+from ...core import Message, HandlerContext, MessageSegment
 from .client import LiveRoomSnapshot, BilibiliLiveError, fetch_room, parse_room_id, fetch_room_by_uid
 from ...core.plugin import on_regex
 
@@ -41,8 +41,8 @@ class LiveCommands:
 
     async def _save(self, context: HandlerContext, room: LiveRoomSnapshot) -> None:
         event = context.event
-        actor = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
-        created = self.store.add_room(event.target, room, actor)
+        kind = "group" if event.is_group else "private"
+        created = self.store.add_room(kind, event.target.target_id, room, event.user_id)
         location = "本群" if event.is_group else "当前私聊"
         text = (
             f"已为{location}订阅 {room.name} 的直播间 {room.room_id}"
@@ -72,12 +72,16 @@ class LiveCommands:
         except BilibiliLiveError as exc:
             await context.finish(str(exc))
         location = "本群" if context.event.is_group else "当前私聊"
-        if self.store.remove_room(context.event.target, room.room_id):
+        event = context.event
+        kind = "group" if event.is_group else "private"
+        if self.store.remove_room(kind, event.target.target_id, room.room_id):
             await context.finish(f"已取消{location}对 {room.name} 直播间 {room.room_id} 的订阅")
         await context.finish(f"{location}没有订阅直播间 {room.room_id}")
 
     async def subscription_list(self, context: HandlerContext) -> None:
-        subscription = self.store.subscription(context.event.target)
+        event = context.event
+        kind = "group" if event.is_group else "private"
+        subscription = self.store.subscription(kind, event.target.target_id)
         if subscription is None or not subscription.rooms:
             await context.finish("当前会话没有 B 站直播订阅")
         lines = ["当前会话的 B 站直播订阅："]

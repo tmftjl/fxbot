@@ -13,7 +13,7 @@ from PIL import Image
 
 from .config import cfg_box
 from ...utils.tz import SHANGHAI_TZ
-from ...core.types import Message, SessionTarget, MessageSegment
+from ...core.types import Message, MessageSegment
 from ...utils.http import get_shared_async_client
 from ...core.plugin import on_event, on_regex
 from ...core.capabilities import Capability
@@ -38,8 +38,7 @@ class Box:
         user_id = next((uid for uid in mentions if uid != event.bot_id), None) or (
             number.group() if number else event.user_id
         )
-        key = SessionTarget(event.platform, event.bot_id, "private", user_id).key()
-        if key in cfg["box_blacklist"]:
+        if user_id in cfg["box_blacklist"]:
             await context.finish("该用户无法被开盒")
         await context.send(await self.render(context.bot, user_id, event.target.target_id if event.is_group else None))
 
@@ -70,10 +69,9 @@ class Box:
             or Capability.QQ_PROFILE not in context.bot.capabilities
         ):
             return
-        if event.target.key() not in cfg["auto_box_groups"]:
+        if event.target.target_id not in cfg["auto_box_groups"]:
             return
-        key = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
-        if key not in cfg["box_blacklist"]:
+        if event.user_id not in cfg["box_blacklist"]:
             await context.send(await self.render(context.bot, event.user_id, event.target.target_id))
 
 

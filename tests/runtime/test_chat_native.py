@@ -253,6 +253,7 @@ class NativeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         config = deepcopy(SYSTEM_DEFAULTS["chat"])
         with (
             patch.object(router, "_chat_cfg", return_value=config),
+            patch.object(router.provider_manager, "has_provider", return_value=True),
             patch.object(router, "can_reply", return_value=True),
             patch.object(router, "direct_reply_mode", return_value=True),
             patch.object(router, "chat_service", service),

@@ -23,13 +23,15 @@ class AuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.authorizer.check("feature", self.event))
         self.assertFalse(await self.authorizer.check_target("feature", self.event.target))
 
-    async def test_background_target_uses_current_scoped_blacklist(self) -> None:
+    async def test_background_target_blacklist_uses_bare_group_id(self) -> None:
         target = self.event.target
         self.assertTrue(await self.authorizer.check_target("feature", target))
-        self.permissions["top"]["blacklist"]["groups"] = [target.key()]
+        self.permissions["top"]["blacklist"]["groups"] = [target.target_id]
         self.assertFalse(await self.authorizer.check_target("feature", target))
-        other = SessionTarget(target.platform, "101", target.kind, target.target_id)
-        self.assertTrue(await self.authorizer.check_target("feature", other))
+        other_bot = SessionTarget(target.platform, "101", target.kind, target.target_id)
+        self.assertFalse(await self.authorizer.check_target("feature", other_bot))
+        other_group = SessionTarget(target.platform, "101", target.kind, "301")
+        self.assertTrue(await self.authorizer.check_target("feature", other_group))
 
     def setUp(self) -> None:
         self.system = deepcopy(SYSTEM_DEFAULTS)
@@ -51,7 +53,7 @@ class AuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.authorizer.check("feature:run", self.event))
         self.permissions["top"]["enabled"] = True
         command = self.permissions["sub_plugins"]["feature"]["commands"]["run"]
-        command["blacklist"]["users"] = [self.identity]
+        command["blacklist"]["users"] = ["200"]
         self.assertFalse(await self.authorizer.check("feature:run", self.event))
 
     async def test_owner_exemption_is_recomputed_after_configuration_change(self) -> None:
@@ -60,7 +62,7 @@ class AuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.system["system"]["superusers"] = [self.identity]
         self.assertTrue(await self.authorizer.check("feature:run", self.event))
         self.system["system"]["superusers"] = []
-        self.system["system"]["bot_admins"] = [self.identity]
+        self.system["system"]["bot_admins"] = ["200"]
         self.assertFalse(await self.authorizer.check("feature:run", self.event))
 
     async def test_raw_id_grants_superuser_for_nonebot_compatibility(self) -> None:
@@ -75,17 +77,23 @@ class AuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.event.metadata["sender_role"] = None
         self.assertFalse(await self.authorizer.check("feature:run", self.event))
 
-    async def test_whitelist_requires_full_group_or_user_identity(self) -> None:
+    async def test_whitelist_accepts_bare_group_id_and_rejects_full_key(self) -> None:
         self.permissions["top"]["whitelist"]["groups"] = ["300"]
+        self.assertTrue(await self.authorizer.check("feature:run", self.event))
+        self.permissions["top"]["whitelist"]["groups"] = [self.event.target.key()]
         with self.assertRaises(ValueError):
             await self.authorizer.check("feature:run", self.event)
-        self.permissions["top"]["whitelist"]["groups"] = [self.event.target.key()]
+
+    async def test_bare_blacklist_user_id_still_matches(self) -> None:
+        self.permissions["top"]["blacklist"]["users"] = ["200"]
+        self.assertFalse(await self.authorizer.check("feature:run", self.event))
+        self.permissions["top"]["blacklist"]["users"] = ["201"]
         self.assertTrue(await self.authorizer.check("feature:run", self.event))
 
-    async def test_unmigrated_blacklist_does_not_silently_stop_matching(self) -> None:
-        self.permissions["top"]["blacklist"]["users"] = ["200"]
-        with self.assertRaises(ValueError):
-            await self.authorizer.check("feature:run", self.event)
+    async def test_bare_id_grants_bot_admin(self) -> None:
+        self.system["system"]["bot_admins"] = ["200"]
+        self.permissions["top"]["level"] = "bot_admin"
+        self.assertTrue(await self.authorizer.check("feature:run", self.event))
 
     async def test_scene_is_checked_for_non_owner(self) -> None:
         self.permissions["top"]["scene"] = "private"

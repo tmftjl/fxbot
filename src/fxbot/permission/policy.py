@@ -4,12 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..core import SessionTarget
 from .types import PermLevel, PermScene, PermContext
 
 
+def _matches(values: object, identity: str) -> bool:
+    """权限列表只存裸 ID，匹配时从上下文键中取出目标 ID 比较。"""
+    if not isinstance(values, list):
+        return False
+    try:
+        target_id = SessionTarget.from_key(identity).target_id
+    except ValueError:
+        return False
+    return target_id in values
+
+
 def _listed(scope: dict, context: PermContext) -> bool:
-    return context.user_id in scope.get("users", []) or bool(
-        context.group_id and context.group_id in scope.get("groups", [])
+    return _matches(scope.get("users", []), context.user_id) or bool(
+        context.group_id and _matches(scope.get("groups", []), context.group_id)
     )
 
 

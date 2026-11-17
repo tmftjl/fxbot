@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from fxbot.core import SessionTarget, HistoryMessage
 from fxbot.config import SYSTEM_DEFAULTS, ConfigManager, get_manager
+from fxbot.core.errors import ActionFailed
 from fxbot.core.plugins import PluginContext, PluginDefinition, load_plugins
 from fxbot.core.scheduler import Scheduler
 from fxbot.runtime.server import create_app
@@ -40,12 +41,12 @@ SECOND = SessionTarget("onebot11", "101", "group", "300")
 class ReportConfigTests(unittest.TestCase):
     """配置不能猜测平台归属，也不能把错误值强制转换成有效计划。"""
 
-    def test_full_scoped_targets_are_required(self) -> None:
+    def test_bare_group_ids_are_required(self) -> None:
         for group, key in (("basic", "groups"), ("auto", "auto_groups")):
-            for value in ("300", ["300"], ["onebot11:100:private:200"], [True]):
+            for value in ("300", ["onebot11:100:group:300"], [True], [""]):
                 with self.subTest(value=value), self.assertRaises(ValueError):
                     config.validate_config({group: {key: value}})
-            config.validate_config({group: {key: [FIRST.key()]}})
+            config.validate_config({group: {key: ["300"]}})
 
     def test_invalid_schedule_and_limits_are_rejected(self) -> None:
         for item in (
@@ -159,10 +160,12 @@ class ReportGenerationTests(unittest.IsolatedAsyncioTestCase):
             await self.generate(target=SECOND)
         self.history.assert_not_awaited()
 
-    async def test_group_allowlist_does_not_grant_same_id_to_other_bot(self) -> None:
-        self.settings["basic"]["groups"] = [SECOND.key()]
-        self.assertEqual((await self.generate()).reason, "group_not_allowed")
-        self.history.assert_not_awaited()
+    def test_group_allowlist_uses_bare_group_id(self) -> None:
+        self.settings["basic"]["groups"] = ["300"]
+        self.assertTrue(config.group_allowed(FIRST.key()))
+        self.assertTrue(config.group_allowed(SECOND.key()))
+        self.settings["basic"]["groups"] = ["301"]
+        self.assertFalse(config.group_allowed(FIRST.key()))
 
 
 class ReportPluginTests(unittest.IsolatedAsyncioTestCase):
@@ -183,7 +186,7 @@ class ReportPluginTests(unittest.IsolatedAsyncioTestCase):
         self.notifications.allowed = AsyncMock(return_value=True)
         self.notifications.send = AsyncMock(return_value=True)
         self.settings = deepcopy(config.DEFAULTS)
-        self.settings["auto"]["auto_groups"] = [FIRST.key()]
+        self.settings["auto"]["auto_groups"] = ["300"]
         self.enterContext(patch.object(config, "get_config", side_effect=lambda: deepcopy(self.settings)))
         self.enterContext(
             patch("fxbot.plugins.group_analysis.scheduler.get_config", side_effect=lambda: deepcopy(self.settings))
@@ -261,14 +264,27 @@ class ReportPluginTests(unittest.IsolatedAsyncioTestCase):
         self.settings["auto"]["auto_groups"] = []
         self.assertFalse(send.kwargs["valid"]())
 
-    async def test_offline_exact_target_does_not_fall_back_to_another_bot(self) -> None:
+    async def test_background_skips_group_when_no_bot_can_resolve_it(self) -> None:
         self.app.unregister(self.bot)
         other = OneBot11ExtendedClient("101", AsyncMock())
+        self.enterContext(patch.object(other, "target_name", AsyncMock(side_effect=ActionFailed("offline"))))
         self.app.register(other, close=AsyncMock())
         with patch("fxbot.plugins.group_analysis.scheduler.generate", AsyncMock()) as generate:
             await self.feature.run()
         generate.assert_not_awaited()
         other._sender.assert_not_awaited()
+
+    async def test_background_falls_back_to_bot_that_can_resolve_group(self) -> None:
+        self.app.unregister(self.bot)
+        other = OneBot11ExtendedClient("101", AsyncMock())
+        self.enterContext(patch.object(other, "target_name", AsyncMock(return_value="测试群")))
+        self.app.register(other, close=AsyncMock())
+        with patch(
+            "fxbot.plugins.group_analysis.scheduler.generate", AsyncMock(return_value=report.ReportResult(True, b"PNG"))
+        ) as generate:
+            await self.feature.run()
+        self.assertEqual(generate.await_args.args[:2], (other, SECOND))
+        self.assertEqual(self.notifications.send.await_args.args[1], SECOND)
 
 
 class StandaloneReportTests(unittest.TestCase):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import random
 from dataclasses import dataclass
@@ -80,34 +81,48 @@ class JoinVerification(Service):
         self.pending: dict[tuple[str, str], Pending] = {}
         self._joining: dict[tuple[str, str], object] = {}
 
-    def configs(self) -> dict:
-        data = read_json(self.path, dict)
+    def configs(self) -> dict[str, dict[str, bool]]:
+        """读取群号开关；单个坏条目不能拖垮周期任务。"""
+        try:
+            data = read_json(self.path, dict)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            logger.opt(exception=True).warning("[join_verify] 配置无法读取，已忽略")
+            return {}
         if not isinstance(data, dict):
-            raise ValueError("入群验证配置必须为对象")
+            logger.warning("[join_verify] 入群验证配置必须为对象，已忽略")
+            return {}
+        cleaned: dict[str, dict[str, bool]] = {}
         for key, item in data.items():
-            if (
-                SessionTarget.from_key(key).kind != "group"
-                or not isinstance(item, dict)
-                or set(item) != {"enabled"}
-                or type(item.get("enabled")) is not bool
-            ):
-                raise ValueError("入群验证必须明确群身份和布尔开关")
-        return data
+            if not isinstance(item, dict) or set(item) != {"enabled"} or type(item.get("enabled")) is not bool:
+                logger.warning("[join_verify] 跳过无效配置条目: {}", key)
+                continue
+            group_id = key.strip()
+            if ":" in key or not group_id or key != group_id:
+                logger.warning("[join_verify] 跳过无效群号: {!r}", key)
+                continue
+            cleaned[group_id] = {"enabled": item["enabled"]}
+        if cleaned != data:
+            try:
+                write_json(self.path, cleaned)
+            except OSError:
+                logger.opt(exception=True).warning("[join_verify] 清理无效配置失败")
+        return cleaned
 
     def enabled(self, target: SessionTarget) -> bool:
-        return self.configs().get(target.key(), {}).get("enabled", False)
+        return self.configs().get(target.target_id, {}).get("enabled", False)
 
     async def toggle(self, context: HandlerContext) -> None:
         data = self.configs()
+        target = context.event.target
         enabled = "开启" in context.arguments
         if enabled and Capability.MEMBER_MODERATION not in context.bot.capabilities:
             await context.finish("当前平台不支持自动入群验证")
-        data[context.event.target.key()] = {"enabled": enabled}
+        data[target.target_id] = {"enabled": enabled}
         write_json(self.path, data)
         if not enabled:
-            for key in [key for key in self.pending if key[0] == context.event.target.key()]:
+            for key in [key for key in self.pending if key[0] == target.key()]:
                 self.pending.pop(key)
-            for key in [key for key in self._joining if key[0] == context.event.target.key()]:
+            for key in [key for key in self._joining if key[0] == target.key()]:
                 self._joining.pop(key)
         await context.finish(f"已{'开启' if enabled else '关闭'}进群验证")
 

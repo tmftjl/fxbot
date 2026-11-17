@@ -1,4 +1,4 @@
-"""B 站直播轮询、启动状态校准和逐订阅目标交付。"""
+"""B 站直播轮询、启动状态校准和开播推送。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Callable, Awaitable
 
 from loguru import logger
 
-from .store import LiveStore
+from .store import LiveStore, Subscription
 from ...core import Message, SessionTarget, MessageSegment
 from .client import LiveRoomSnapshot, BilibiliLiveError, fetch_room
 from ...runtime.notifications import NotificationService
@@ -26,7 +26,7 @@ def _push_text(room: LiveRoomSnapshot) -> str:
 
 
 class LivePoller:
-    """同一实例串行校准与轮询，不按平台动作失败猜测其他 Bot。"""
+    """按群号/用户 ID 订阅，推送时依次尝试在线 Bot。"""
 
     def __init__(
         self, store: LiveStore, notifications: NotificationService | None = None, fetcher: RoomFetcher = fetch_room
@@ -59,18 +59,9 @@ class LivePoller:
 
     async def _calibrate(self) -> None:
         for room in await self._fetch_all():
-            subscriptions = self.store.subscriptions(room.room_id)
-            if not subscriptions:
+            if not self.store.subscriptions(room.room_id):
                 continue
-            previous = self.store.room_state(room.room_id)
-            delivered = (
-                previous.delivered
-                if previous is not None and previous.is_live and room.is_live
-                else frozenset(sub.target.key() for sub in subscriptions)
-                if room.is_live
-                else frozenset()
-            )
-            self.store.record_state(room.room_id, room.is_live, delivered)
+            self.store.record_state(room.room_id, room.is_live, room.is_live)
         self._calibrated = True
 
     async def calibrate(self) -> None:
@@ -82,26 +73,23 @@ class LivePoller:
         """每次应用首次运行只校准状态；通知服务由本次执行显式提供。"""
         return await self.check_and_push(notifications, initial=initial)
 
-    def _subscribed(self, target: SessionTarget, room_id: int) -> bool:
-        subscription = self.store.subscription(target)
-        return subscription is not None and room_id in subscription.rooms
+    def _subscribed(self, sub: Subscription, room_id: int) -> bool:
+        current = self.store.subscription(sub.kind, sub.target_id)
+        return current is not None and room_id in current.rooms
 
-    def _pending(self, target: SessionTarget, room_id: int, generation: int) -> bool:
+    def _pending(self, sub: Subscription, room_id: int) -> bool:
         status = self.store.room_state(room_id)
-        return (
-            self._subscribed(target, room_id)
-            and status is not None
-            and status.is_live
-            and status.generation == generation
-            and target.key() not in status.delivered
-        )
+        return self._subscribed(sub, room_id) and status is not None and status.is_live and not status.delivered
 
     async def check_and_push(self, notifications: NotificationService | None = None, *, initial: bool = False) -> int:
-        """离线目标保留待交付状态，其他目标成功不能替它确认交付。"""
+        """同一开播周期只推送一次；没有可用 Bot 时保留待推送状态。"""
         async with self._lock:
             if initial or not self._calibrated:
                 await self._calibrate()
                 return 0
+            sender = notifications if notifications is not None else self.notifications
+            if sender is None:
+                raise ValueError("直播推送缺少通知服务")
             pushed = 0
             for room in await self._fetch_all():
                 subscriptions = self.store.subscriptions(room.room_id)
@@ -109,36 +97,30 @@ class LivePoller:
                     continue
                 previous = self.store.room_state(room.room_id)
                 if not room.is_live:
-                    self.store.record_state(room.room_id, False, frozenset())
+                    self.store.record_state(room.room_id, False, False)
                     continue
-                if previous is None:
-                    self.store.record_state(room.room_id, True, frozenset(sub.target.key() for sub in subscriptions))
+                if previous is None or not previous.is_live:
+                    self.store.record_state(room.room_id, True, False)
+                current = self.store.room_state(room.room_id)
+                if current is not None and current.delivered:
                     continue
-                if not previous.is_live:
-                    self.store.record_state(room.room_id, True, frozenset())
-                generation = self.store.room_state(room.room_id).generation
                 segments = [MessageSegment.text(_push_text(room))]
                 if room.cover:
                     segments.append(MessageSegment.image(room.cover))
+                delivered = False
                 for sub in subscriptions:
-                    status = self.store.room_state(room.room_id)
-                    if status is None or not status.is_live or status.generation != generation:
-                        break
-                    if sub.target.key() in status.delivered:
-                        continue
-                    sender = notifications if notifications is not None else self.notifications
-                    if sender is None:
-                        raise ValueError("直播推送缺少通知服务")
-                    sent = await sender.send(
-                        "bilibili_live",
-                        sub.target,
-                        Message(segments),
-                        valid=lambda target=sub.target, rid=room.room_id, generation=status.generation: self._pending(
-                            target, rid, generation
-                        ),
-                    )
-                    if sent:
-                        pushed += 1
-                        if self._subscribed(sub.target, room.room_id):
-                            self.store.mark_delivered(room.room_id, sub.target, generation=status.generation)
+                    for bot in sender.application.bots:
+                        target = SessionTarget(bot.platform, bot.bot_id, sub.kind, sub.target_id)
+                        sent = await sender.send(
+                            "bilibili_live",
+                            target,
+                            Message(segments),
+                            valid=lambda sub=sub, rid=room.room_id: self._pending(sub, rid),
+                        )
+                        if sent:
+                            delivered = True
+                            pushed += 1
+                            break
+                if delivered:
+                    self.store.mark_delivered(room.room_id)
             return pushed

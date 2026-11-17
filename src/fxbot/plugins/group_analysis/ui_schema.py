@@ -29,7 +29,7 @@ def get_ui_schema() -> dict[str, Any]:
                         "label": "允许分析的群",
                         "component": "GArrayInput",
                         "default": DEFAULTS["basic"]["groups"],
-                        "helpMessage": "填写完整群会话键，例如 onebot11:100:group:300；留空表示所有群。",
+                        "helpMessage": "填写群号；留空表示所有群。",
                     },
                     {
                         "field": "days",
@@ -94,7 +94,7 @@ def get_ui_schema() -> dict[str, Any]:
                         "label": "自动推送的群",
                         "component": "GArrayInput",
                         "default": DEFAULTS["auto"]["auto_groups"],
-                        "helpMessage": "填写完整群会话键；留空不自动推送。目标需在允许分析的群中。",
+                        "helpMessage": "填写群号；留空不自动推送。目标需在允许分析的群中。",
                     },
                     {
                         "field": "auto_hour",

@@ -225,17 +225,14 @@ def _all_config_tab() -> dict[str, Any]:
                         "label": "超级用户",
                         "component": "GTags",
                         "default": SYSTEM_DEFAULTS["system"]["superusers"],
-                        "helpMessage": (
-                            "可填 QQ 号/openid 等平台用户 ID，也可填完整身份 "
-                            "平台:BotID:private:用户ID；裸 ID 会在所有平台和 Bot 上生效。"
-                        ),
+                        "helpMessage": "填 QQ 号 / openid 等用户 ID，对所有平台和 Bot 生效。",
                     },
                     {
                         "field": "bot_admins",
                         "label": "Bot 管理员",
                         "component": "GTags",
                         "default": SYSTEM_DEFAULTS["system"]["bot_admins"],
-                        "helpMessage": "这些账号拥有 Bot 管理员权限。",
+                        "helpMessage": "填 QQ 号 / openid 等用户 ID",
                     },
                 ],
             },
@@ -263,7 +260,7 @@ def _all_config_tab() -> dict[str, Any]:
                         "label": "私聊白名单",
                         "component": "GTags",
                         "default": SYSTEM_DEFAULTS["chat"]["private_allowlist"],
-                        "helpMessage": "留空表示所有私聊用户可用；填写后仅这些用户 ID 可用。",
+                        "helpMessage": "留空表示所有私聊用户可用；填写后仅这些会话 ID 可用，可从下拉选择最近会话。",
                         "componentProps": {"suggestScene": "private"},
                     },
                     {
@@ -289,7 +286,10 @@ def _all_config_tab() -> dict[str, Any]:
                         "label": "群聊白名单",
                         "component": "GTags",
                         "default": SYSTEM_DEFAULTS["chat"]["group_allowlist"],
-                        "helpMessage": "留空表示所有群在 @Bot 时可用；填写后仅这些群 ID 可用（QQ 官方群填 openid）。",
+                        "helpMessage": (
+                            "留空表示所有群在 @Bot 时可用；填写后仅这些会话 ID 可用"
+                            "（QQ 官方群填 openid），可从下拉选择最近会话。"
+                        ),
                         "componentProps": {"suggestScene": "group"},
                     },
                     {

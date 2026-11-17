@@ -50,7 +50,7 @@ class ConsoleTests(unittest.TestCase):
         fields = {field["field"]: field for field in cards["system"]["schemas"]}
         self.assertEqual(fields["superusers"]["component"], "GTags")
         self.assertEqual(fields["superusers"]["default"], [])
-        self.assertIn("private", fields["superusers"]["helpMessage"])
+        self.assertIn("用户 ID", fields["superusers"]["helpMessage"])
 
     def test_invalid_permission_update_is_rejected_without_changing_existing_rules(self) -> None:
         from copy import deepcopy

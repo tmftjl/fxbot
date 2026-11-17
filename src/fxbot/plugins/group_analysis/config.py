@@ -35,10 +35,10 @@ def validate_config(value: dict[str, Any]) -> None:
     for settings, key in ((basic, "groups"), (auto, "auto_groups")):
         if key in settings:
             if not isinstance(settings[key], list):
-                raise ValueError(f"{key} 必须为完整群会话键数组")
+                raise ValueError(f"{key} 必须为群号数组")
             for item in settings[key]:
-                if not isinstance(item, str) or SessionTarget.from_key(item).kind != "group":
-                    raise ValueError(f"{key} 必须使用明确平台和 Bot 的群会话键")
+                if not isinstance(item, str) or not item or item != item.strip() or ":" in item:
+                    raise ValueError(f"{key} 必须填写群号")
     features = value.get("analysis_features") or {}
     for key in (
         "topic_analysis_enabled",
@@ -80,11 +80,14 @@ def allowed_groups() -> set[str]:
     return {str(item).strip() for item in basic_config().get("groups") or [] if str(item).strip()}
 
 
-def group_allowed(group_id: str) -> bool:
-    if SessionTarget.from_key(group_id).kind != "group":
-        return False
+def group_allowed(group_key: str) -> bool:
+    """配置存群号；调用方传入完整会话键时取出目标群号再比较。"""
+    try:
+        group_id = SessionTarget.from_key(group_key).target_id
+    except ValueError:
+        group_id = str(group_key).strip()
     groups = allowed_groups()
-    return not groups or str(group_id) in groups
+    return not groups or group_id in groups
 
 
 def analysis_features() -> dict[str, Any]:

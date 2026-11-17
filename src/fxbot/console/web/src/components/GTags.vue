@@ -19,6 +19,7 @@ const visible = ref(false)
 const keyword = ref('')
 const inputEl = ref<{ focus: () => void }>()
 const suggestions = ref<{ id: string; label: string }[]>([])
+const bareToTenant = new Map<string, string>()
 let suggestionsLoaded = false
 
 const tags = computed(() => (Array.isArray(props.modelValue) ? props.modelValue.map(String) : []))
@@ -46,12 +47,15 @@ const loadSuggestions = async () => {
     const seen = new Set<string>()
     const picked: { id: string; label: string }[] = []
     for (const item of tenants || []) {
-      const parts = String(item.tenant).split(':')
+      const tenant = String(item.tenant)
+      const parts = tenant.split(':')
       if (parts.length < 4 || parts[2] !== props.suggestScene) continue
-      const id = parts.slice(3).join(':')
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-      picked.push({ id, label: `${id} · ${parts[0]}` })
+      if (seen.has(tenant)) continue
+      seen.add(tenant)
+      const target = parts.slice(3).join(':')
+      if (!target) continue
+      bareToTenant.set(target, tenant)
+      picked.push({ id: tenant, label: `${target} · ${parts[0]} · Bot ${parts[1]}` })
     }
     suggestions.value = picked
   } catch {
@@ -62,8 +66,10 @@ const loadSuggestions = async () => {
 const setTags = (next: string[]) => emit('update:modelValue', next)
 
 const add = () => {
-  const value = keyword.value.trim()
-  if (!value) return
+  const raw = keyword.value.trim()
+  if (!raw) return
+  // 支持直接填群号/QQ 号：命中最近会话时补成完整会话键。
+  const value = raw.includes(':') ? raw : bareToTenant.get(raw) || raw
   if (!tags.value.includes(value)) setTags([...tags.value, value])
   keyword.value = ''
 }

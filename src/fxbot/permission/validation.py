@@ -1,7 +1,6 @@
 """权限配置的明确输入边界，非法限制不能被默认值放宽。"""
 
 from .types import PermLevel, PermScene
-from ..core.types import SessionTarget
 
 
 def _fields(value: object, allowed: set[str], label: str) -> dict:
@@ -10,12 +9,14 @@ def _fields(value: object, allowed: set[str], label: str) -> dict:
     return value
 
 
-def _identities(values: object, kind: str) -> None:
-    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-        raise ValueError("权限身份必须为规范会话键数组")
+def _identities(values: object) -> None:
+    if not isinstance(values, list) or any(not isinstance(value, str) or not value for value in values):
+        raise ValueError("权限身份必须为非空字符串数组")
     for value in values:
-        if SessionTarget.from_key(value).kind != kind:
-            raise ValueError("权限身份类型与列表不匹配")
+        if value != value.strip():
+            raise ValueError("权限身份不能包含首尾空白")
+        if ":" in value:
+            raise ValueError("权限身份必须是 QQ 号、群号或 OpenID")
 
 
 def validate_entry(value: object) -> None:
@@ -26,9 +27,9 @@ def validate_entry(value: object) -> None:
     PermScene.from_str(entry.get("scene", "all"))
     for name in ("whitelist", "blacklist"):
         scope = _fields(entry.get(name, {}), {"users", "groups"}, name)
-        _identities(scope.get("users", []), "private")
-        _identities(scope.get("groups", []), "group")
-    _identities(entry.get("bot_admins", []), "private")
+        _identities(scope.get("users", []))
+        _identities(scope.get("groups", []))
+    _identities(entry.get("bot_admins", []))
 
 
 def validate_permissions(value: object) -> None:
@@ -36,7 +37,7 @@ def validate_permissions(value: object) -> None:
     if "top" not in document:
         raise ValueError("权限配置缺少全局策略")
     validate_entry(document["top"])
-    _identities(document.get("bot_admins", []), "private")
+    _identities(document.get("bot_admins", []))
     plugins = document.get("sub_plugins", {})
     if not isinstance(plugins, dict):
         raise ValueError("插件权限必须为对象")
