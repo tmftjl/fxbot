@@ -17,8 +17,9 @@ services:
         all_proxy: ${PROXY_URL:-}
         no_proxy: ${NO_PROXY:-localhost,127.0.0.1,::1}
     image: fxbot:local
-    # 本地镜像不存在时直接构建，不要尝试从 registry 拉取。
-    pull_policy: build
+    # 复用本地镜像，不访问 registry；镜像不存在时由 build 构建。
+    # 日常改源码只需重启容器；改了依赖或 Dockerfile 再执行 docker compose build。
+    pull_policy: never
     container_name: fxbot
     restart: unless-stopped
     init: true
@@ -55,6 +56,9 @@ services:
       # 源码以 editable 方式安装，挂载后改代码只需重启容器，不用重新 build。
       # 新增或修改 pyproject.toml / uv.lock 仍需重新 build。
       - ./src:/app/src
+      # 容器内 #更新 通过这个挂载执行 git pull；宿主机仓库需可被 uid 1000 写入。
+      # 首次使用前执行：sudo chown -R 1000:1000 .
+      - ./:/repo
     logging:
       driver: json-file
       options:

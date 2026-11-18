@@ -7,8 +7,10 @@ import sys
 import json
 import time
 import atexit
+import shutil
 import signal
 import asyncio
+from pathlib import Path
 from collections.abc import Callable
 
 from loguru import logger
@@ -29,6 +31,7 @@ _UPDATE_TIMEOUT_SECONDS = 180
 _GIT_QUERY_TIMEOUT_SECONDS = 15
 _PROCESS_CLOSE_TIMEOUT_SECONDS = 5
 _REPORT_TIMEOUT_SECONDS = 5
+_DOCKER_APP = Path("/app")
 _UP_TO_DATE_MARKERS = ("already up to date", "already up-to-date", "已经是最新")
 
 _PENDING_ARGV: list[str] | None = None
@@ -41,6 +44,22 @@ def superuser_check(configuration: ConfigManager):
         return is_superuser_event(configuration.get_system()["system"], event)
 
     return check
+
+
+def _docker_deployment() -> bool:
+    """判断进程是否运行在容器中。"""
+    return os.path.exists("/.dockerenv")
+
+
+def _docker_repo() -> Path | None:
+    """返回容器内挂载的仓库目录；没有挂载时返回 None。"""
+    repo = Path("/repo")
+    return repo if (repo / ".git").exists() else None
+
+
+def _git_root() -> Path:
+    """容器内优先使用挂载仓库，其他部署使用项目根目录。"""
+    return _docker_repo() or project_root()
 
 
 def _restart_argv() -> list[str]:
@@ -168,17 +187,17 @@ def _already_up_to_date(output: str) -> bool:
     return any(marker in normalized for marker in _UP_TO_DATE_MARKERS)
 
 
-async def _run_git(*args: str, timeout: float = _GIT_QUERY_TIMEOUT_SECONDS) -> tuple[int, str]:
+async def _run_command(*args: str, cwd: Path, timeout: float) -> tuple[int, str]:
+    """等待自有子进程；超时或取消时终止进程树并收完输出。"""
     process = await asyncio.create_subprocess_exec(
-        "git",
         *args,
-        cwd=str(project_root()),
+        cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.DEVNULL,
         start_new_session=sys.platform != "win32",
     )
-    exchange = asyncio.create_task(process.communicate(), name="git.communicate")
+    exchange = asyncio.create_task(process.communicate(), name=f"{args[0]}.communicate")
     try:
         stdout, stderr = await asyncio.wait_for(asyncio.shield(exchange), timeout=timeout)
     finally:
@@ -193,6 +212,10 @@ async def _run_git(*args: str, timeout: float = _GIT_QUERY_TIMEOUT_SECONDS) -> t
     output = "\n".join(part.decode("utf-8", errors="replace").strip() for part in (stdout, stderr) if part).strip()
     assert process.returncode is not None
     return process.returncode, output
+
+
+async def _run_git(*args: str, timeout: float = _GIT_QUERY_TIMEOUT_SECONDS) -> tuple[int, str]:
+    return await _run_command("git", *args, cwd=_git_root(), timeout=timeout)
 
 
 async def _git_head() -> str:
@@ -225,6 +248,30 @@ async def _git_pull(on_success: Callable[[], None]) -> tuple[bool, str, list[str
         logger.opt(exception=True).warning("代码更新成功，但读取提交日志失败；仍将重启")
         logs = ["提交日志读取失败，代码更新已完成。"]
     return True, output or "Already up to date.", logs
+
+
+async def _sync_docker_dependencies() -> tuple[bool, str]:
+    """把挂载仓库的依赖文件同步进运行目录，并在容器内更新虚拟环境。"""
+    repo = _docker_repo()
+    if repo is None:
+        return False, "未挂载仓库目录"
+    try:
+        for name in ("pyproject.toml", "uv.lock"):
+            shutil.copy2(repo / name, _DOCKER_APP / name)
+        code, output = await _run_command(
+            "uv",
+            "sync",
+            "--frozen",
+            "--no-dev",
+            "--inexact",
+            cwd=_DOCKER_APP,
+            timeout=_UPDATE_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        return False, "依赖同步超时"
+    except OSError as error:
+        return False, str(error)
+    return code == 0, output
 
 
 async def _send_report(context: HandlerContext, lines: list[str]) -> None:
@@ -261,6 +308,15 @@ async def _shutdown(context: HandlerContext) -> None:
 
 async def _update(context: HandlerContext) -> None:
     logger.warning("超级用户触发 Bot 更新: {}", context.event.user_id)
+    docker = _docker_deployment()
+    if docker and _docker_repo() is None:
+        await context.send(
+            "当前运行在 Docker 中，但没有挂载仓库目录，#更新无法执行。\n"
+            "请在 docker-compose.yml 增加：\n"
+            "- ./:/repo\n"
+            "然后重建一次镜像；之后即可在容器内更新。"
+        )
+        return
     await context.send("正在尝试更新 FxBot，请稍等片刻。")
     restart_ready = False
 
@@ -270,13 +326,36 @@ async def _update(context: HandlerContext) -> None:
         _set_pending_restart()
         restart_ready = True
 
+    def on_pull_success() -> None:
+        # 容器需要先同步依赖，不能在这一步承诺重启。
+        if not docker:
+            prepare_restart()
+
     try:
-        ok, output, logs = await _git_pull(prepare_restart)
+        ok, output, logs = await _git_pull(on_pull_success)
         if not ok:
             logger.error("git pull 失败: {}", _truncate(output))
             await _send_report(context, ["❌ FxBot 更新失败！", "git pull 返回错误，完整信息已记录到后台日志。"])
             return
         status = "本次无更新内容" if _already_up_to_date(output) else "更新完成"
+        if docker:
+            # Git 已是最新也要执行：上次依赖同步可能失败或被取消。
+            synced, detail = await _sync_docker_dependencies()
+            if not synced:
+                logger.error("容器依赖同步失败: {}", _truncate(detail))
+                await asyncio.wait_for(
+                    _send_report(
+                        context,
+                        [
+                            "❌ FxBot 依赖同步失败，本次未重启！",
+                            "仓库代码已拉取，但依赖未就绪；处理后台日志中的错误后，可再次发送 #更新 重试。",
+                            *logs,
+                        ],
+                    ),
+                    timeout=_REPORT_TIMEOUT_SECONDS,
+                )
+                return
+            prepare_restart()
         try:
             await asyncio.wait_for(
                 _send_report(context, [f"✅ FxBot {status}！", *logs]), timeout=_REPORT_TIMEOUT_SECONDS

@@ -26,7 +26,8 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tzdata libatomic1 \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tzdata libatomic1 \
+    && git config --system --add safe.directory /repo \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip install --no-cache-dir uv
@@ -34,6 +35,13 @@ RUN python -m pip install --no-cache-dir uv
 # 先只装依赖，源码变化时不需要重装整个依赖树。
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
+
+# Playwright 的 Chromium 及系统依赖只依赖 Python 依赖，不依赖源码；
+# 放在 COPY src 之前，改源码不会让浏览器层失效。
+RUN /app/.venv/bin/python -m playwright install --with-deps chromium \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 COPY src ./src
 # editable 安装：运行时可被 docker-compose 挂载的 ./src 覆盖，改源码后重启容器即可生效。
@@ -43,12 +51,6 @@ RUN uv sync --frozen --no-dev
 RUN cat src/fxbot/plugins/*/requirements.txt > /tmp/plugin-requirements.txt \
     && uv pip install --python /app/.venv/bin/python -r /tmp/plugin-requirements.txt \
     && rm -f /tmp/plugin-requirements.txt
-
-# Playwright 的 Chromium 及系统依赖；中文字体用于帮助图/日报长图。
-RUN /app/.venv/bin/python -m playwright install --with-deps chromium \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 RUN groupadd --gid 1000 fxbot \
     && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin fxbot \

@@ -160,6 +160,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(setattr, system, "_PENDING_ARGV", None)
+        self.enterContext(patch.object(system, "_docker_deployment", return_value=False))
         self.event = make_event()
 
     def context(self, bot=None) -> HandlerContext:
@@ -244,6 +245,118 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         bot.send.assert_not_awaited()
         self.assertFalse(self.flag.exists())
 
+    async def test_docker_without_repo_mount_reports_setup(self) -> None:
+        context = self.context()
+        with (
+            patch.object(system, "_docker_deployment", return_value=True),
+            patch.object(system, "_docker_repo", return_value=None),
+            patch.object(system, "_git_pull", AsyncMock()) as pull,
+            patch.object(system, "_request_exit") as exit_process,
+            patch.object(system, "_set_pending_restart") as pending,
+        ):
+            await system._update(context)
+        pull.assert_not_awaited()
+        exit_process.assert_not_called()
+        pending.assert_not_called()
+        text = context.bot.send.await_args.args[1].plain_text()
+        self.assertIn("./:/repo", text)
+
+    async def test_docker_with_mounted_repo_syncs_and_restarts(self) -> None:
+        context = self.context()
+        with (
+            patch.object(system, "_docker_deployment", return_value=True),
+            patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_git_pull", self.successful_pull("updated")),
+            patch.object(system, "_sync_docker_dependencies", AsyncMock(return_value=(True, ""))) as sync,
+            patch.object(system, "_send_report", AsyncMock()),
+            patch.object(system, "_request_exit") as exit_process,
+            patch.object(system, "_set_pending_restart") as pending,
+        ):
+            await system._update(context)
+        sync.assert_awaited_once()
+        exit_process.assert_called_once()
+        pending.assert_called_once()
+
+    async def test_docker_retries_failed_dependencies_when_git_is_up_to_date(self) -> None:
+        outputs = iter(("updated", "Already up to date."))
+
+        async def pull(on_success):
+            on_success()
+            return True, next(outputs), []
+
+        with (
+            patch.object(system, "_docker_deployment", return_value=True),
+            patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_git_pull", AsyncMock(side_effect=pull)),
+            patch.object(
+                system, "_sync_docker_dependencies", AsyncMock(side_effect=[(False, "install failed"), (True, "")])
+            ) as sync,
+            patch.object(system, "_send_report", AsyncMock()) as report,
+            patch.object(system, "_request_exit") as exit_process,
+        ):
+            await system._update(self.context())
+            self.assertIn("依赖同步失败", report.await_args.args[1][0])
+            self.assertIn("#更新", report.await_args.args[1][1])
+            self.assertIsNone(system._PENDING_ARGV)
+            self.assertFalse(self.flag.exists())
+            exit_process.assert_not_called()
+            await system._update(self.context())
+            self.assertEqual(sync.await_count, 2)
+            self.assertIn("✅", report.await_args.args[1][0])
+            self.assertIsNotNone(system._PENDING_ARGV)
+            self.assertTrue(self.flag.exists())
+            exit_process.assert_called_once()
+
+    async def test_docker_does_not_prepare_restart_before_dependencies_succeed(self) -> None:
+        async def sync():
+            self.assertIsNone(system._PENDING_ARGV)
+            self.assertFalse(self.flag.exists())
+            return True, ""
+
+        async def report(context, lines):
+            self.assertIsNotNone(system._PENDING_ARGV)
+            self.assertTrue(self.flag.exists())
+
+        with (
+            patch.object(system, "_docker_deployment", return_value=True),
+            patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_git_pull", self.successful_pull()),
+            patch.object(system, "_sync_docker_dependencies", AsyncMock(side_effect=sync)),
+            patch.object(system, "_send_report", report),
+            patch.object(system, "_request_exit") as exit_process,
+        ):
+            await system._update(self.context())
+            exit_process.assert_called_once()
+
+    async def test_docker_dependency_cancellation_does_not_restart(self) -> None:
+        with (
+            patch.object(system, "_docker_deployment", return_value=True),
+            patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_git_pull", self.successful_pull()),
+            patch.object(system, "_sync_docker_dependencies", AsyncMock(side_effect=asyncio.CancelledError())),
+            patch.object(system, "_send_report", AsyncMock()) as report,
+            patch.object(system, "_request_exit") as exit_process,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await system._update(self.context())
+            self.assertIsNone(system._PENDING_ARGV)
+            self.assertFalse(self.flag.exists())
+            report.assert_not_awaited()
+            exit_process.assert_not_called()
+
+    async def test_docker_report_failure_after_sync_still_restarts(self) -> None:
+        with (
+            patch.object(system, "_docker_deployment", return_value=True),
+            patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_git_pull", self.successful_pull()),
+            patch.object(system, "_sync_docker_dependencies", AsyncMock(return_value=(True, ""))),
+            patch.object(system, "_send_report", AsyncMock(side_effect=TimeoutError())),
+            patch.object(system, "_request_exit") as exit_process,
+        ):
+            await system._update(self.context())
+            self.assertIsNotNone(system._PENDING_ARGV)
+            exit_process.assert_called_once()
+
     async def test_update_failure_reports_without_restarting(self) -> None:
         context = self.context()
         with (
@@ -269,6 +382,123 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("无更新", report.await_args.args[1][0])
         exit_process.assert_called_once()
         pending.assert_called_once()
+
+
+class DockerDependencyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.repo, self.app = root / "repo", root / "app"
+        self.repo.mkdir()
+        self.app.mkdir()
+        for name in ("pyproject.toml", "uv.lock"):
+            (self.repo / name).write_text(f"# {name}\n", encoding="utf-8")
+        self.enterContext(patch.object(system, "_docker_repo", return_value=self.repo))
+        self.enterContext(patch.object(system, "_DOCKER_APP", self.app))
+
+    async def test_sync_preserves_extra_packages_and_copies_required_files(self) -> None:
+        process = Mock(returncode=0)
+        process.communicate = AsyncMock(return_value=(b"synced", b""))
+        with patch.object(system.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)) as spawn:
+            self.assertEqual(await system._sync_docker_dependencies(), (True, "synced"))
+        self.assertEqual(spawn.call_args.args, ("uv", "sync", "--frozen", "--no-dev", "--inexact"))
+        self.assertEqual(spawn.call_args.kwargs["cwd"], str(self.app))
+        self.assertEqual(spawn.call_args.kwargs["stdin"], asyncio.subprocess.DEVNULL)
+        self.assertEqual(spawn.call_args.kwargs["start_new_session"], sys.platform != "win32")
+        for name in ("pyproject.toml", "uv.lock"):
+            self.assertEqual((self.repo / name).read_bytes(), (self.app / name).read_bytes())
+
+    async def test_missing_required_file_is_reported_without_running_uv(self) -> None:
+        (self.repo / "uv.lock").unlink()
+        with patch.object(system.asyncio, "create_subprocess_exec", AsyncMock()) as spawn:
+            ok, detail = await system._sync_docker_dependencies()
+        self.assertFalse(ok)
+        self.assertTrue(detail)
+        spawn.assert_not_awaited()
+
+    async def test_missing_uv_is_reported(self) -> None:
+        with patch.object(
+            system.asyncio, "create_subprocess_exec", AsyncMock(side_effect=FileNotFoundError("uv missing"))
+        ):
+            self.assertEqual(await system._sync_docker_dependencies(), (False, "uv missing"))
+
+    async def test_nonzero_exit_is_reported(self) -> None:
+        process = Mock(returncode=1)
+        process.communicate = AsyncMock(return_value=(b"", b"install failed"))
+        with patch.object(system.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)):
+            self.assertEqual(await system._sync_docker_dependencies(), (False, "install failed"))
+
+    async def test_timeout_and_cancel_reclaim_installation_process(self) -> None:
+        for cancel in (False, True):
+            entered, released, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            process = Mock(pid=123, returncode=None)
+
+            async def communicate():
+                entered.set()
+                await released.wait()
+                drained.set()
+                return b"", b""
+
+            process.communicate = AsyncMock(side_effect=communicate)
+
+            def terminate(child):
+                child.returncode = -1
+                released.set()
+
+            with (
+                patch.object(system.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)),
+                patch.object(system, "terminate_process", side_effect=terminate) as kill,
+                patch.object(system, "_UPDATE_TIMEOUT_SECONDS", 0.02),
+            ):
+                task = asyncio.create_task(system._sync_docker_dependencies())
+                await asyncio.wait_for(entered.wait(), 1)
+                if cancel:
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                else:
+                    self.assertEqual(await task, (False, "依赖同步超时"))
+                kill.assert_called_once_with(process)
+                self.assertTrue(drained.is_set())
+                self.assertEqual(process.communicate.await_count, 1)
+
+
+class CommandProcessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_process_is_reaped_on_timeout_and_cancel(self) -> None:
+        spawn = asyncio.create_subprocess_exec
+        for cancel in (False, True):
+            started = asyncio.Event()
+            children = []
+
+            async def launch(*args, **kwargs):
+                child = await spawn(*args, **kwargs)
+                children.append(child)
+                started.set()
+                return child
+
+            try:
+                with patch.object(system.asyncio, "create_subprocess_exec", side_effect=launch):
+                    task = asyncio.create_task(
+                        system._run_command(
+                            sys.executable,
+                            "-c",
+                            "import time; time.sleep(30)",
+                            cwd=Path.cwd(),
+                            timeout=0.2,
+                        )
+                    )
+                    await asyncio.wait_for(started.wait(), 5)
+                    if cancel:
+                        task.cancel()
+                    with self.assertRaises(asyncio.CancelledError if cancel else TimeoutError):
+                        await task
+                    self.assertIsNotNone(children[0].returncode)
+            finally:
+                for child in children:
+                    if child.returncode is None:
+                        processes.terminate_process(child)
+                        await asyncio.wait_for(child.wait(), 5)
 
 
 class ProcessCleanupTests(unittest.TestCase):
