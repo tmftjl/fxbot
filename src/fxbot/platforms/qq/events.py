@@ -32,6 +32,7 @@ class QQEventStream:
             raise RuntimeError("QQ 事件流不能重复启动")
         self.application.register(self.client, close=close)
         self._started = True
+        logger.info("[QQ] Bot {} 已连接", self.client.bot_id)
 
     def receive(self, payload: dict):
         if self.closed or not self._started:

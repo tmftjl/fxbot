@@ -126,6 +126,7 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
         close_code = 1011
         try:
             await websocket.accept(subprotocol=subprotocol)
+            logger.info("[OneBot] {} Bot {} 已连接", protocol.platform, bot_id)
             while True:
                 connection.receive(await websocket.receive_json())
         except WebSocketDisconnect:
