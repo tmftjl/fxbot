@@ -85,7 +85,7 @@ def _allowed_group_id(cfg: dict[str, Any], event: Event) -> str | None:
     if not group_id:
         return None
     allowlist = _id_allowlist(cfg, "group_allowlist")
-    return group_id if not allowlist or event.target.key() in allowlist else None
+    return group_id if not allowlist or group_id in allowlist else None
 
 
 def _message_filtered(cfg: dict[str, Any], event: Event) -> bool:
@@ -118,7 +118,7 @@ def _match_context(cfg: dict[str, Any], bot: BotClient, event: Event) -> bool:
     if not bool(cfg["private_enabled"]):
         return False
     allowlist = _id_allowlist(cfg, "private_allowlist")
-    if allowlist and event.target.key() not in allowlist:
+    if allowlist and event.user_id not in allowlist:
         return False
     return True
 
@@ -137,7 +137,7 @@ def _should_record_context(cfg: dict[str, Any], bot: BotClient, event: Event) ->
     if not bool(cfg["private_enabled"]):
         return False
     allowlist = _id_allowlist(cfg, "private_allowlist")
-    if allowlist and event.target.key() not in allowlist:
+    if allowlist and event.user_id not in allowlist:
         return False
     return False
 

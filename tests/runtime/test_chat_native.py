@@ -57,6 +57,31 @@ def client() -> OneBot11Client:
     return OneBot11Client("100", AsyncMock(return_value={"message_id": 11}))
 
 
+class ChatAllowlistTests(unittest.TestCase):
+    def test_group_allowlist_uses_bare_group_id(self) -> None:
+        cfg = deepcopy(SYSTEM_DEFAULTS["chat"])
+        cfg["group_allowlist"] = ["300"]
+        self.assertEqual(router._allowed_group_id(cfg, event()), "300")
+        cfg["group_allowlist"] = ["301"]
+        self.assertIsNone(router._allowed_group_id(cfg, event()))
+
+    def test_private_allowlist_uses_bare_user_id(self) -> None:
+        cfg = deepcopy(SYSTEM_DEFAULTS["chat"])
+        private = event(target=SessionTarget("onebot11", "100", "private", "200"))
+        cfg["private_allowlist"] = ["200"]
+        self.assertTrue(router._match_context(cfg, client(), private))
+        cfg["private_allowlist"] = ["201"]
+        self.assertFalse(router._match_context(cfg, client(), private))
+
+    def test_full_session_keys_are_not_accepted(self) -> None:
+        cfg = deepcopy(SYSTEM_DEFAULTS["chat"])
+        cfg["group_allowlist"] = ["onebot11:100:group:300"]
+        self.assertIsNone(router._allowed_group_id(cfg, event()))
+        cfg["private_allowlist"] = ["onebot11:100:private:200"]
+        private = event(target=SessionTarget("onebot11", "100", "private", "200"))
+        self.assertFalse(router._match_context(cfg, client(), private))
+
+
 class NativeMessageTests(unittest.IsolatedAsyncioTestCase):
     """协议查询只经过已声明的客户端能力。"""
 

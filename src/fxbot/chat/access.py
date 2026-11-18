@@ -33,13 +33,13 @@ async def continuation_allowed(
         return False
     if context.group_id:
         allowlist = id_allowlist(chat, "group_allowlist")
-        if allowlist and target.key() not in allowlist:
+        if allowlist and target.target_id not in allowlist:
             return False
         if await proactive_switch(context.session_id) is False:
             return False
     else:
         allowlist = id_allowlist(chat, "private_allowlist")
-        if not chat["private_enabled"] or (allowlist and target.key() not in allowlist):
+        if not chat["private_enabled"] or (allowlist and target.target_id not in allowlist):
             return False
     config = settings["membership"]
     if context.group_id and config["enabled"] and target.bot_key() not in config["free_bot_ids"]:
