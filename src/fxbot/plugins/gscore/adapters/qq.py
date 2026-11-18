@@ -6,8 +6,7 @@ from typing import Any
 
 from loguru import logger
 
-from fxbot.core import Event, Message as CoreMessage, BotClient, SessionTarget, MessageSegment, ApplicationServices
-from fxbot.core.context import current_event_context
+from fxbot.core import Event, Message as CoreMessage, BotClient, SessionTarget, MessageSegment
 from fxbot.platforms.qq.message import keyboard, markdown as qq_markdown
 
 from .base import CoreAdapter, ReceiveScope, outbound_file, outbound_media
@@ -85,34 +84,15 @@ class QQAdapter(CoreAdapter):
                 return str(segment.data)
         return None
 
-    def check_passive(
-        self, bot: BotClient, target: SessionTarget, msg: MessageSend, services: ApplicationServices
-    ) -> None:
-        """当前 QQClient 只能从正在处理的事件取得被动 msg_id。"""
-        if not msg.msg_id:
-            return
-        try:
-            runtime = current_event_context()
-        except RuntimeError:
-            passive = False
-        else:
-            passive = runtime.bot is bot and runtime.event.target == target
-        if not passive:
-            logger.warning(
-                "[gscore] QQ 被动消息 msg_id={} 无法在后台发送中显式传给 QQClient；"
-                "当前只使用事件上下文中的 msg_id，本次发送不具备被动 msg_id，平台可能拒绝",
-                msg.msg_id,
-            )
-
     def build_message(
         self, bot: BotClient, target: SessionTarget, msg: MessageSend, frame: list[WireMessage]
     ) -> CoreMessage | None:
         restricted = target.kind == "channel" or (target.kind == "private" and target.target_id.startswith("dms/"))
         c2c = target.kind == "private" and not restricted
         segments: list[MessageSegment] = []
-        has_reply = any(segment.type == "reply" for segment in frame)
-        if msg.msg_id and not has_reply:
-            segments.append(MessageSegment.reply(msg.msg_id))
+        if msg.msg_id:
+            # 与 gscore 原版一致：被动消息 ID 显式透传给 QQClient，不依赖事件上下文。
+            segments.append(MessageSegment("qq:passive", {"msg_id": msg.msg_id}))
         for segment in frame:
             kind, data = segment.type, segment.data
             if kind == "text":

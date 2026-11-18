@@ -57,13 +57,15 @@ Webhook 模式下控制台的 qq 账号表示已有验签消息；WebSocket 模�
 或 Resume 的首个回放 Dispatch/RESUMED 后登记，断线立即注销，不代表探测过全部接口权限。
 
 QQ API 使用独立缓存的 access token 和刷新锁；请求头为 QQBot token 与 X-Union-Appid。
-被动回复只使用当前事件的 msg_id，按目标和 msg_id 单调递增 msg_seq；失败也不复用序号。
+被动回复优先使用当前事件的 msg_id；后台发送（如 gscore 下行）可用 qq:passive 段显式传入触发消息 ID，
+按目标和该 ID 单调递增 msg_seq，群/C2C 发送同时把它作为 event_id；失败也不复用序号。
 支持事件被动回复的通知只传 event_id，不自动添加 msg_seq；未支持事件回复的通知按主动消息发送，
 需要官方主动发送权限，不能借用任意通知 ID 绕过权限。
 成员入群通知依据参考实现支持 event_id 回复，接收开关恢复事件依据官方文档保留支持。
 通知 Unix 秒整数显式转为 UTC，带时区 ISO 字段按声明解析，不将布尔值或浮点数猜成时间戳。
 HTTP 写操作不自动重试；401 只使后续调用重新鉴权，不重试本次写入。
 媒体段先整体校验再上传；最多一项媒体，不把部分上传或缺少返回 ID 当作成功。
+上传请求不限制请求体写入时间，只限制等待响应的 30 秒，避免大文件被普通动作超时截断。
 平台不支持的能力抛 UnsupportedCapability，不用 OpenID 构造 QQ 号头像或套用 OneBot 动作。
 关闭先取消事件处理并等待清理，再关闭独占 HTTP 客户端并注销 Bot。
 Webhook 与 WebSocket 使用同一 QQEventStream、核心事件和 QQClient，传输边界不互相继承或猜测。
@@ -300,7 +302,8 @@ await ctx.send(Message([
 高级格式与图片/音频/视频/文件或预上传 media 混合时，在任何上传前拒绝；单独的预上传 media 仍可使用。
 upload_id 合并请求保留 srv_send_msg 开关，上传不自动变成发送。通知缺失 d 对象按输入错误返回 400。
 成员与禁言查询在解析边界验证必需字段，结构异常为 ActionFailed，不把部分成员页伪装成完整结果。
-被动消息自动使用当前消息的 msg_id/msg_seq；支持事件被动回复的通知只使用 event_id，不自动添加 msg_seq。
+被动消息默认使用当前消息的 msg_id/msg_seq；后台发送可用 qq:passive 段显式传入 passive msg_id，
+群/C2C 同时作为 event_id；支持事件被动回复的通知只使用 event_id，不自动添加 msg_seq。
 按官方列表接受交互、机器人入群、群/C2C 恢复消息接收、好友新增事件；成员入群事件按本地参考
 `bot.py` 的 `GroupMemberAddEvent` 分支同样支持事件回复。其他通知按主动发送处理，
 仍需账号具备主动消息权限，不会借用不支持的 event_id。

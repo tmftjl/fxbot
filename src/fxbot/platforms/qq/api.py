@@ -14,6 +14,8 @@ from fxbot.core.errors import BotOffline, ActionFailed
 
 API_BASE = "https://api.bot.qq.com"
 AUTH_URL = "https://api.bot.qq.com/app/getAppAccessToken"
+# 与 NoneBot 默认 HTTP 超时一致：上传不设写超时，只限制等待响应的时间。
+UPLOAD_READ_TIMEOUT = 30.0
 
 
 class QQAPIError(ActionFailed):
@@ -83,8 +85,13 @@ class QQHTTP:
             raise QQAPIError(response.status_code, code if type(code) is int else None)
         return data
 
+    def _upload_timeout(self) -> httpx.Timeout:
+        """上传沿用连接/等待响应的超时，但不限制请求体写入时间。"""
+        base = self._http.timeout
+        return httpx.Timeout(base.connect, read=UPLOAD_READ_TIMEOUT, write=None, pool=base.pool)
+
     async def request(
-        self, method: str, path: str, *, json=None, data=None, files=None, params=None, available=None
+        self, method: str, path: str, *, json=None, data=None, files=None, params=None, available=None, upload=False
     ) -> dict:
         if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
             raise ValueError("QQ 接口必须使用固定相对路径")
@@ -93,6 +100,7 @@ class QQHTTP:
             raise BotOffline("QQ 客户端已关闭")
         if available is not None:
             available()
+        options = {"timeout": self._upload_timeout()} if upload else {}
         response = await self._http.request(
             method,
             self._api_base + path,
@@ -101,6 +109,7 @@ class QQHTTP:
             data=data,
             files=files,
             params=params,
+            **options,
         )
         if response.status_code == 204:
             return {}
@@ -118,7 +127,7 @@ class QQHTTP:
             raise BotOffline("QQ 客户端已关闭")
         if available is not None:
             available()
-        response = await self._http.put(url, content=content)
+        response = await self._http.put(url, content=content, timeout=self._upload_timeout())
         if not 200 <= response.status_code < 300:
             raise QQAPIError(response.status_code)
 

@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from fxbot.core import Message, BotClient, Capability, SessionTarget, MessageSegment, UnsupportedCapability
 from fxbot.core.context import bind_event, reset_event
 from fxbot.core.application import Application
-from fxbot.platforms.qq.api import QQHTTP, AUTH_URL, QQAPIError
+from fxbot.platforms.qq.api import QQHTTP, AUTH_URL, UPLOAD_READ_TIMEOUT, QQAPIError
 from fxbot.runtime.settings import Settings
 from fxbot.platforms.qq.codec import parse_event
 from fxbot.platforms.qq.client import QQClient
@@ -295,6 +295,29 @@ class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await api.close()
 
+    async def test_upload_requests_drop_write_timeout(self):
+        fake = SimpleNamespace(
+            timeout=httpx.Timeout(15.0),
+            request=AsyncMock(return_value=httpx.Response(200, json={})),
+            put=AsyncMock(return_value=httpx.Response(200)),
+            aclose=AsyncMock(),
+        )
+        api = QQHTTP(APP_ID, SECRET, fake)  # type: ignore[arg-type]
+        api.token = AsyncMock(return_value="fake-token")
+        try:
+            await api.request("POST", "/v2/groups/GROUP/files", json={}, upload=True)
+            timeout = fake.request.await_args.kwargs["timeout"]
+            self.assertEqual(timeout.connect, 15.0)
+            self.assertEqual(timeout.read, UPLOAD_READ_TIMEOUT)
+            self.assertIsNone(timeout.write)
+            await api.request("GET", "/users/@me")
+            self.assertNotIn("timeout", fake.request.await_args.kwargs)
+            await api.put_upload_part("https://upload.example.test/part", b"x")
+            self.assertEqual(fake.put.await_args.kwargs["timeout"].read, UPLOAD_READ_TIMEOUT)
+            self.assertIsNone(fake.put.await_args.kwargs["timeout"].write)
+        finally:
+            await api.close()
+
     async def test_missing_token_or_invalid_expiry_rejected(self):
         for body in (
             {"expires_in": 3600},
@@ -339,6 +362,47 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0].kwargs["json"]["msg_id"], "msg=1")
         self.assertEqual(calls[0].kwargs["json"]["msg_seq"], 1)
         self.assertEqual(calls[1].kwargs["json"]["msg_seq"], 2)
+
+    async def test_passive_segment_supplies_msg_id_event_id_and_seq(self):
+        message = Message([MessageSegment("qq:passive", {"msg_id": "ROBOT1.0_trigger"}), MessageSegment.text("一")])
+        await self.bot.send(self.event.target, message)
+        await self.bot.send(self.event.target, message)
+        calls = self.api.request.await_args_list
+        self.assertEqual(calls[0].kwargs["json"]["msg_id"], "ROBOT1.0_trigger")
+        self.assertEqual(calls[0].kwargs["json"]["event_id"], "ROBOT1.0_trigger")
+        self.assertEqual(calls[0].kwargs["json"]["msg_seq"], 1)
+        self.assertEqual(calls[1].kwargs["json"]["msg_seq"], 2)
+
+    async def test_passive_segment_rejects_duplicates(self):
+        with self.assertRaises(ValueError):
+            await self.bot.send(
+                self.event.target,
+                Message(
+                    [
+                        MessageSegment("qq:passive", {"msg_id": "first"}),
+                        MessageSegment("qq:passive", {"msg_id": "second"}),
+                    ]
+                ),
+            )
+        self.api.request.assert_not_awaited()
+
+    async def test_channel_passive_segment_sets_msg_id_without_seq(self):
+        target = SessionTarget("qq", APP_ID, "channel", "CHANNEL")
+        await self.bot.send(
+            target,
+            Message([MessageSegment("qq:passive", {"msg_id": "guild-msg"}), MessageSegment.text("x")]),
+        )
+        payload = self.api.request.await_args.kwargs["json"]
+        self.assertEqual(payload["msg_id"], "guild-msg")
+        self.assertNotIn("event_id", payload)
+        self.assertNotIn("msg_seq", payload)
+
+    async def test_media_upload_marks_request_for_longer_write(self):
+        self.api.request.side_effect = [{"file_info": "media-info"}, {"id": "reply"}]
+        await self.bot.send(self.event.target, Message([MessageSegment.image(b"PNG")]))
+        upload, send = self.api.request.await_args_list
+        self.assertIs(upload.kwargs["upload"], True)
+        self.assertNotIn("upload", send.kwargs)
 
     async def test_timeout_does_not_reuse_sequence_or_retry(self):
         self.api.request.side_effect = [TimeoutError, {"id": "second"}]
@@ -393,6 +457,7 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.send(target, Message([MessageSegment.image(b"PNG")]))
         self.assertEqual(self.api.request.await_args.args, ("POST", "/channels/CHANNEL/messages"))
         self.assertEqual(self.api.request.await_args.kwargs["files"]["file_image"][1], b"PNG")
+        self.assertIs(self.api.request.await_args.kwargs["upload"], True)
         await self.bot.send(SessionTarget("qq", APP_ID, "private", "dms/GUILD/USER"), Message.text("私信"))
         self.assertEqual(self.api.request.await_args.args[1], "/dms/GUILD/messages")
 

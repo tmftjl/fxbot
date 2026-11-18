@@ -134,6 +134,7 @@ class QQClient:
         media = []
         advanced = {}
         reference = None
+        passive = None
         for part in message.segments:
             if part.type == "text":
                 value = part.text_value()
@@ -148,6 +149,11 @@ class QQClient:
                 if reference is not None:
                     raise ValueError("一条消息只能包含一个引用")
                 reference = opaque_id(part.data.get("message_id"))
+            elif part.type == "qq:passive":
+                if passive is not None:
+                    raise ValueError("一条消息只能声明一个被动消息 ID")
+                value = part.data.get("msg_id") if isinstance(part.data, dict) else part.data
+                passive = opaque_id(value)
             elif part.type in {"image", "voice", "audio", "video", "file"}:
                 source = part.data.get("file")
                 if not isinstance(source, bytes):
@@ -198,10 +204,14 @@ class QQClient:
                 and event.metadata.get("qq_event_type") in _EVENT_REPLY_TYPES
             ):
                 payload["event_id"] = event.event_id
-            if reply_id is not None:
-                payload["msg_id"] = reply_id
+            passive_id = passive if passive is not None else reply_id
+            if passive_id is not None:
+                payload["msg_id"] = passive_id
+                if passive is not None and route.startswith("v2/"):
+                    # 与 gscore 原版一致：群/C2C 后台发送把同一 ID 同时作为事件 ID。
+                    payload["event_id"] = passive_id
                 if route.startswith("v2/"):
-                    key = (target.key(), reply_id)
+                    key = (target.key(), passive_id)
                     now = time.monotonic()
                     while self._sequence and next(iter(self._sequence.values()))[1] <= now:
                         self._sequence.popitem(last=False)
@@ -254,7 +264,10 @@ class QQClient:
                             base64.b64encode(source).decode("ascii") if isinstance(source, bytes) else source
                         )
                         uploaded = await self._request(
-                            "POST", api_path(*route.split("/"), target_id, "files"), json=upload
+                            "POST",
+                            api_path(*route.split("/"), target_id, "files"),
+                            json=upload,
+                            upload=True,
                         )
                     if not isinstance(uploaded.get("file_info"), str) or not uploaded["file_info"]:
                         raise ValueError("QQ 媒体上传未返回 file_info")
@@ -274,7 +287,7 @@ class QQClient:
                     key: json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
                     for key, value in payload.items()
                 }
-                result = await self._request("POST", path, data=fields, files=files)
+                result = await self._request("POST", path, data=fields, files=files, upload=True)
             message_id = result.get("id")
             if not isinstance(message_id, str) or not message_id:
                 raise ValueError("QQ 发送成功但缺少消息 ID，未重试")

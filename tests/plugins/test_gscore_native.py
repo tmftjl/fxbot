@@ -239,9 +239,9 @@ class DownlinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target, SessionTarget("qq", "appid", "group", "group-openid"))
         self.assertEqual(
             [segment.type for segment in message.segments],
-            ["reply", "text", "qq:markdown", "qq:markdown", "qq:keyboard", "mention"],
+            ["qq:passive", "text", "qq:markdown", "qq:markdown", "qq:keyboard", "mention"],
         )
-        self.assertEqual(message.segments[0].data, {"message_id": "passive-id"})
+        self.assertEqual(message.segments[0].data, {"msg_id": "passive-id"})
         self.assertEqual(message.segments[2].data, {"content": "# hi"})
         self.assertEqual(message.segments[3].data["custom_template_id"], "t1")
         self.assertEqual(message.segments[3].data["params"], [{"key": "title", "values": ["标题"]}])
