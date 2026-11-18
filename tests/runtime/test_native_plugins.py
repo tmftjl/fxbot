@@ -312,7 +312,9 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(words.path(GROUP).name, "300.json")
         self.assertIn("危险", words.load(GROUP)["banned_words"])
         other = SessionTarget("onebot11", "101", "group", "301")
-        self.assertEqual(words.load(other)["banned_words"], {})
+        with patch("fxbot.plugins.group_admin.banwords.logger.warning") as warning:
+            self.assertEqual(words.load(other)["banned_words"], {})
+        warning.assert_not_called()
         words.path(GROUP).write_text("{bad", encoding="utf-8")
         self.assertEqual(words.load(GROUP), words._default())
         self.assertEqual(words.path(GROUP).read_text(encoding="utf-8"), "{bad")

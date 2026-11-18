@@ -96,7 +96,7 @@ class Banwords:
     def load(self, target: SessionTarget) -> dict:
         path = self.path(target)
         try:
-            data = read_json(path, dict)
+            data = read_json(path, self._default)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             logger.warning("[banwords] 配置读取失败 {}: {}", path.name, exc)
             return self._default()
