@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from datetime import time, datetime, timedelta
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 
 from loguru import logger
@@ -30,7 +30,6 @@ from .models import (
     utc_now_naive,
 )
 from .filtering import text_hash, sanitize_line, normalize_expression_style
-from ...utils.tz import SHANGHAI_TZ, today, to_naive_utc
 from ..message_context import message_metadata
 
 DIAGNOSTIC_RETENTION_HOURS = 72
@@ -1885,42 +1884,6 @@ class ChatRepository:
             .on_conflict_do_update(index_elements=["tenant", "job"], set_=updates)
         )
         await session.execute(statement)
-
-
-    @with_session
-    async def sent_stats_today(self, session: AsyncSession) -> list[tuple[str, int]]:
-        """按租户统计北京时间今天的已发送回复数。"""
-        start = to_naive_utc(datetime.combine(today(), time.min, tzinfo=SHANGHAI_TZ))
-        rows = await session.execute(
-            select(ChatTurnItem.tenant, func.count(ChatTurnItem.id))
-            .where(
-                ChatTurnItem.role == "assistant",
-                ChatTurnItem.visible.is_(True),
-                ChatTurnItem.send_status == "sent",
-                ChatTurnItem.created_at >= start,
-            )
-            .group_by(ChatTurnItem.tenant)
-        )
-        return [(str(tenant), int(count)) for tenant, count in rows.all()]
-
-    @with_session
-    async def sent_stats_history(self, session: AsyncSession, *, days: int) -> list[tuple[str, str, int]]:
-        """按北京日期和租户统计最近的已发送回复数。"""
-        start = to_naive_utc(
-            datetime.combine(today() - timedelta(days=days - 1), time.min, tzinfo=SHANGHAI_TZ)
-        )
-        day = func.date(ChatTurnItem.created_at, "+8 hours")
-        rows = await session.execute(
-            select(day, ChatTurnItem.tenant, func.count(ChatTurnItem.id))
-            .where(
-                ChatTurnItem.role == "assistant",
-                ChatTurnItem.visible.is_(True),
-                ChatTurnItem.send_status == "sent",
-                ChatTurnItem.created_at >= start,
-            )
-            .group_by(day, ChatTurnItem.tenant)
-        )
-        return [(str(value), str(tenant), int(count)) for value, tenant, count in rows.all()]
 
 
 chat_repository = ChatRepository()

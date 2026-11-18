@@ -15,6 +15,7 @@ from .types import Message, BotClient, SessionTarget
 from .router import Router
 
 Hook = Callable[[], Awaitable[None]]
+SendObserver = Callable[[BotClient, SessionTarget], Awaitable[None]]
 
 
 class ApplicationState(Enum):
@@ -52,6 +53,7 @@ class Application:
         self._tasks: set[asyncio.Task] = set()
         self._cancellation_requests: set[asyncio.Task] = set()
         self._message_transforms: list[Callable[[BotClient, SessionTarget, Message], Message]] = []
+        self._send_observers: list[SendObserver] = []
         self._connections: dict[tuple[str, str], _Connection] = {}
         self._retiring_connections: dict[int, _Connection] = {}
         self.plugin_metadata: dict[str, Any] = {}
@@ -101,6 +103,51 @@ class Application:
             raise DuplicateBotError("Bot 已连接")
         bot.message_transform = lambda target, message: self._prepare_message(bot, target, message)
         self._connections[key] = _Connection(bot, close)
+        if self._send_observers:
+            self._observe_sends(bot)
+
+    def add_send_observer(self, observer: SendObserver) -> Callable[[], None]:
+        """在成功发送后通知观察者；异常由应用边界记录，不影响实际发送。"""
+        if self.state in {ApplicationState.STOPPING, ApplicationState.STOPPED}:
+            raise RuntimeError("应用已停止接收发送观察者")
+        if observer in self._send_observers:
+            raise ValueError("发送观察者重复注册")
+        self._send_observers.append(observer)
+        if len(self._send_observers) == 1:
+            for connection in tuple(self._connections.values()):
+                self._observe_sends(connection.bot)
+        return lambda: self._send_observers.remove(observer)
+
+    def _observe_sends(self, bot: BotClient) -> None:
+        """在客户端实例上包一层发送成功回调，不改变返回值或异常。"""
+        sender = getattr(bot, "send", None)
+        if callable(sender) and getattr(sender, "_fxbot_observed_send", False) is not True:
+
+            async def observed_send(target: SessionTarget, message: Message) -> Any:
+                result = await sender(target, message)
+                await self._notify_sent(bot, target)
+                return result
+
+            setattr(observed_send, "_fxbot_observed_send", True)
+            setattr(bot, "send", observed_send)
+        forward = getattr(bot, "send_forward", None)
+        if callable(forward) and getattr(forward, "_fxbot_observed_forward", False) is not True:
+
+            async def observed_forward(target: SessionTarget, messages: list[Message]) -> Any:
+                result = await forward(target, messages)
+                await self._notify_sent(bot, target)
+                return result
+
+            setattr(observed_forward, "_fxbot_observed_forward", True)
+            setattr(bot, "send_forward", observed_forward)
+
+    async def _notify_sent(self, bot: BotClient, target: SessionTarget) -> None:
+        """通知所有发送观察者，单个失败不阻断消息发送。"""
+        for observer in tuple(self._send_observers):
+            try:
+                await observer(bot, target)
+            except Exception:
+                logger.opt(exception=True).error("发送后置观察者失败")
 
     def add_message_transform(
         self, transform: Callable[[BotClient, SessionTarget, Message], Message]

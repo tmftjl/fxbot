@@ -27,6 +27,7 @@ from .membership.commands import MembershipCommands
 from .console.chat_channel import console_chat
 from .platforms.qq.service import QQService
 from .runtime.notifications import NotificationService
+from .runtime.message_stats import MessageStats
 from .runtime.system_commands import install as install_system_commands
 from .permission.authorization import Authorizer
 from .permission.message_policy import MessagePolicy
@@ -44,6 +45,7 @@ class Runtime:
     authorizer: Authorizer
     chat: ChatLifecycle
     qq: QQService
+    message_stats: MessageStats
 
 
 _dependencies_checked = False
@@ -58,6 +60,8 @@ def create_runtime(settings: Settings) -> Runtime:
         ensure_plugin_dependencies((definition.name for definition in plugins), plugins_dir())
         _dependencies_checked = True
     application = Application()
+    message_stats = MessageStats()
+    application.add_send_observer(message_stats.record_send)
     config = get_manager()
     scheduler = Scheduler(application)
     authorizer = Authorizer(config, get_storage())
@@ -85,6 +89,7 @@ def create_runtime(settings: Settings) -> Runtime:
         application.spawn(scheduler.run(), name="scheduler")
 
     application.resource(start_services, resources.aclose)
+    application.resource(lambda: message_stats.start(application), message_stats.stop)
     application.router.add_preprocessor(MembershipGate(config, membership_guard))
     application.router.add_preprocessor(MessagePolicy(config))
     MembershipCommands(application, config, membership_service, membership_guard, settings, maintenance).install()
@@ -100,4 +105,4 @@ def create_runtime(settings: Settings) -> Runtime:
     application.resource(start_console, console_chat.stop)
     qq = QQService(application, settings)
     application.resource(qq.start, qq.close)
-    return Runtime(application, config, maintenance, scheduler, authorizer, chat, qq)
+    return Runtime(application, config, maintenance, scheduler, authorizer, chat, qq, message_stats)

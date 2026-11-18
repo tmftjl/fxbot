@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from loguru import logger
 from fastapi.testclient import TestClient
 
-from fxbot.core import SessionTarget
+from fxbot.core import Message, SessionTarget
 from fxbot.console import auth, account, log_store, log_stream
 from fxbot.core.errors import ActionFailed
 from fxbot.runtime.server import create_app
@@ -194,7 +194,8 @@ class ConsoleTests(unittest.TestCase):
         self.assertNotIn("internal database", response.text)
 
     def test_legacy_bare_membership_group_uses_managed_bot(self) -> None:
-        bot = SimpleNamespace(platform="onebot11", bot_id="100", send=AsyncMock())
+        send = AsyncMock()
+        bot = SimpleNamespace(platform="onebot11", bot_id="100", send=send)
         self.client.portal.call(lambda: self.app.state.runtime.register(bot, close=AsyncMock()))
         row = SimpleNamespace(group_id="757463664", managed_by_bot="100", expires_at=None)
         with patch.object(membership_service, "get_group", return_value=row):
@@ -204,8 +205,31 @@ class ConsoleTests(unittest.TestCase):
                 json={"group_id": "757463664"},
             )
         self.assertEqual(response.status_code, 200, response.text)
-        target, _ = bot.send.await_args.args
+        target, _ = send.await_args.args
         self.assertEqual(target, SessionTarget("onebot11", "100", "group", "757463664"))
+
+    def test_message_stats_counts_successful_group_sends_and_ignores_channels(self) -> None:
+        bot_id = "stats-bot"
+        target = SessionTarget("onebot11", bot_id, "group", "stats-group")
+        channel = SessionTarget("onebot11", bot_id, "channel", "stats-channel")
+        send = AsyncMock()
+        bot = SimpleNamespace(platform="onebot11", bot_id=bot_id, send=send)
+        self.client.portal.call(lambda: self.app.state.runtime.register(bot, close=AsyncMock()))
+
+        async def deliver() -> None:
+            await bot.send(target, Message.text("a"))
+            await bot.send(target, Message.text("b"))
+            await bot.send(channel, Message.text("channel"))
+            send.side_effect = ActionFailed("failed")
+            with self.assertRaises(ActionFailed):
+                await bot.send(target, Message.text("failed"))
+
+        self.client.portal.call(deliver)
+        data = self.client.get("/fxbot/stats/today", headers=self.headers).json()
+        self.assertEqual(
+            data["bots"][bot_id],
+            {"total_sent": 2, "group": {"count": 2, "targets": {"stats-group": 2}}},
+        )
 
     def test_notify_counts_unknown_offline_and_send_failures(self) -> None:
         online = SimpleNamespace(
