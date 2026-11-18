@@ -60,7 +60,7 @@ class MembershipTests(unittest.IsolatedAsyncioTestCase):
         )
         commands.install()
         self.key = SessionTarget("onebot11", "100", "group", self.group_id).key()
-        self.addAsyncCleanup(membership_service.delete_group, self.key)
+        self.addAsyncCleanup(membership_service.delete_group, self.group_id)
 
     def event(self, text: str):
         """构造当前测试群的协议事件。"""
@@ -81,10 +81,10 @@ class MembershipTests(unittest.IsolatedAsyncioTestCase):
         result = await self.application.router.dispatch(self.client, self.event(f"ww续费{code.code}"))
         self.assertFalse(result.failed)
         self.assertTrue(await self.gate(self.event("/ping")))
-        record = await membership_service.get_group(self.key)
-        self.assertEqual(record.managed_by_bot, "onebot11:100")
+        record = await membership_service.get_group(self.group_id)
+        self.assertEqual(record.managed_by_bot, "100")
         with self.assertRaises(MembershipError):
-            await membership_service.redeem_code(code.code, self.key)
+            await membership_service.redeem_code(code.code, self.group_id)
 
     async def test_database_failure_denies_business_and_does_not_query_for_recovery(self) -> None:
         error = OperationalError("query", {}, RuntimeError("unavailable"))
@@ -104,15 +104,16 @@ class MembershipTests(unittest.IsolatedAsyncioTestCase):
         event = self.event("/ping")
         with patch.object(self.guard, "check_membership_detail", return_value=SimpleNamespace(allowed=False)) as check:
             self.assertFalse(await self.gate(event))
-        self.assertEqual(check.call_args.args[0], self.key)
+        self.assertEqual(check.call_args.args[0], self.group_id)
 
-    async def test_cross_platform_actor_and_bare_group_id_are_rejected(self) -> None:
+    async def test_bare_group_and_user_ids_are_accepted(self) -> None:
+        decision = await self.guard.check_membership_detail(self.group_id, "200")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "not_registered")
         with self.assertRaises(ValueError):
-            await self.guard.check_membership_detail(self.key, "onebot12.qq:100:private:200")
-        with self.assertRaises(ValueError):
-            await self.guard.check_membership_detail(self.group_id, None)
+            await self.guard.check_membership_detail("", None)
 
     async def test_admin_exemption_is_recomputed_before_cached_denial(self) -> None:
         self.assertFalse(await self.gate(self.event("/ping")))
-        self.config.get_system()["system"]["superusers"] = ["onebot11:100:private:200"]
+        self.config.get_system()["system"]["superusers"] = ["200"]
         self.assertTrue(await self.gate(self.event("/ping")))

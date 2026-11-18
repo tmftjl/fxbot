@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 from loguru import logger
 from fastapi.testclient import TestClient
 
+from fxbot.core import SessionTarget
 from fxbot.console import auth, account, log_store, log_stream
 from fxbot.core.errors import ActionFailed
 from fxbot.runtime.server import create_app
@@ -191,6 +192,20 @@ class ConsoleTests(unittest.TestCase):
             response = self.client.get("/fxbot/logs/history", headers=self.headers)
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("internal database", response.text)
+
+    def test_legacy_bare_membership_group_uses_managed_bot(self) -> None:
+        bot = SimpleNamespace(platform="onebot11", bot_id="100", send=AsyncMock())
+        self.client.portal.call(lambda: self.app.state.runtime.register(bot, close=AsyncMock()))
+        row = SimpleNamespace(group_id="757463664", managed_by_bot="100", expires_at=None)
+        with patch.object(membership_service, "get_group", return_value=row):
+            response = self.client.post(
+                "/fxbot/membership/remind",
+                headers=self.headers,
+                json={"group_id": "757463664"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        target, _ = bot.send.await_args.args
+        self.assertEqual(target, SessionTarget("onebot11", "100", "group", "757463664"))
 
     def test_notify_counts_unknown_offline_and_send_failures(self) -> None:
         online = SimpleNamespace(

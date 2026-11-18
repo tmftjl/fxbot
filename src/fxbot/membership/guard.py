@@ -1,4 +1,4 @@
-"""按完整会话身份判定会员资格并缓存业务结果。"""
+"""按平台裸群号判定会员资格并缓存业务结果。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 
-from ..core import SessionTarget
 from .models import MembershipGroup, utc_now
 from ..config import ConfigManager, get_manager
 from .service import MembershipService, membership_service
@@ -35,23 +34,21 @@ class MembershipGuard:
         self.service = service
 
     async def check_membership_detail(self, group_id: str, user_id: str | None) -> MembershipDecision:
-        """群和操作者都必须是规范键，后台任务使用明确的空操作者。"""
-        group = SessionTarget.from_key(group_id)
-        if group.kind != "group":
-            raise ValueError("会员查询目标必须为群")
-        if user_id is not None:
-            user = SessionTarget.from_key(user_id)
-            if user.kind != "private" or (user.platform, user.bot_id) != (group.platform, group.bot_id):
-                raise ValueError("会员操作者不属于目标连接")
+        """群和操作者都使用平台裸 ID，后台任务使用明确的空操作者。"""
+        group = str(group_id or "").strip()
+        if not group:
+            raise ValueError("会员查询目标不能为空")
+        user = str(user_id or "").strip()
+        if user:
             system = self.configuration.get_system()["system"]
-            if is_superuser_identity(system, user_id):
+            if is_superuser_identity(system, user):
                 return MembershipDecision(True, "exempt_superuser")
-            if user_id in system["bot_admins"]:
+            if user in system["bot_admins"]:
                 return MembershipDecision(True, "exempt_bot_admin")
-        key = ("membership", group_id)
+        key = ("membership", group)
         decision = cache.get(key)
         if decision is None:
-            decision = await self._load_from_db(group_id)
+            decision = await self._load_from_db(group)
             cache.set(key, decision)
         if decision.expires_at is not None and decision.expires_at <= utc_now():
             return MembershipDecision(False, "expired", decision.expires_at, decision.status)

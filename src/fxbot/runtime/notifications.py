@@ -37,7 +37,7 @@ class NotificationService:
             return False
         settings = self.configuration.get_system()["membership"]
         if target.kind == "group" and settings["enabled"] and target.bot_key() not in settings["free_bot_ids"]:
-            decision = await self.membership.check_membership_detail(target.key(), None)
+            decision = await self.membership.check_membership_detail(target.target_id, None)
             if not decision.allowed:
                 return False
         if not valid() or self.application.get_bot(target.platform, target.bot_id) is not bot:

@@ -87,20 +87,16 @@ class MembershipMaintenance:
         expires = group.expires_at if group.expires_at.tzinfo else group.expires_at.replace(tzinfo=timezone.utc)
         if expires > utc_now():
             return MembershipTaskResult()
-        target = SessionTarget.from_key(group.group_id)
-        if not await self.service.mark_expired(group.group_id):
+        group_id = str(group.group_id)
+        if not await self.service.mark_expired(group_id):
             return MembershipTaskResult()
-        await self.guard.invalidate(group.group_id)
-        bot = next(
-            (
-                item
-                for item in self.application.bots
-                if (item.platform, item.bot_id) == (target.platform, target.bot_id)
-            ),
-            None,
-        )
+        await self.guard.invalidate(group_id)
+        manager = str(group.managed_by_bot or "").strip()
+        bot_id = manager.rsplit(":", 1)[-1] if ":" in manager else manager
+        bot = next((item for item in self.application.bots if item.bot_id == bot_id), None)
         if not auto_leave or bot is None:
             return MembershipTaskResult(expired=1)
+        target = SessionTarget(bot.platform, bot.bot_id, "group", group_id)
         notice = f"本群会员已到期，到期时间：{format_membership_expiry(expires)}。\n{renewal_contact_text()}"
         try:
             await bot.send(target, Message.text(notice))

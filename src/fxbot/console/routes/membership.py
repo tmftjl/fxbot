@@ -21,14 +21,26 @@ from ...membership.service import MembershipError, membership_service
 router = APIRouter(prefix="/membership", tags=["fxbot-membership"], dependencies=[Depends(bearer_auth)])
 
 
-def _online_group_bot(request: Request, group_id: str):
-    """完整会话身份只选择其所属连接，不轮询无关平台。"""
-    try:
-        target = SessionTarget.from_key(group_id)
-    except ValueError:
-        raise HTTPException(status_code=409, detail="群记录缺少有效平台身份，请先完成数据迁移") from None
-    if target.kind != "group":
-        raise HTTPException(status_code=409, detail="会员群记录不是群会话")
+def _online_group_bot(request: Request, row: Any):
+    """裸群号用 managed_by_bot 找回平台与 Bot，规范键继续兼容。"""
+    group_id = str(row.group_id).strip()
+    target = None
+    if ":" in group_id:
+        try:
+            target = SessionTarget.from_key(group_id)
+        except ValueError:
+            target = None
+        if target is not None and target.kind != "group":
+            raise HTTPException(status_code=409, detail="会员群记录不是群会话")
+    if target is None:
+        manager = str(row.managed_by_bot or "").strip()
+        if not manager:
+            raise HTTPException(status_code=409, detail="群记录缺少管理 Bot")
+        bot_id = manager.rsplit(":", 1)[-1]
+        bot = next((item for item in runtime_for(request).application.bots if item.bot_id == bot_id), None)
+        if bot is None:
+            raise HTTPException(status_code=503, detail="托管 Bot 不在线")
+        return bot, SessionTarget(bot.platform, bot.bot_id, "group", group_id)
     bot = next(
         (
             item
@@ -44,7 +56,7 @@ def _online_group_bot(request: Request, group_id: str):
 
 async def _send_group_message(request: Request, row: Any, message: str) -> str:
     """只通过记录所属平台的连接发送，不把失败包装成删除记录的理由。"""
-    bot, target = _online_group_bot(request, row.group_id)
+    bot, target = _online_group_bot(request, row)
     await bot.send(target, Message.text(message))
     return target.bot_key()
 
@@ -230,7 +242,7 @@ async def leave_group(payload: dict[str, Any], request: Request) -> dict[str, in
     row = await membership_service.get_group(group_id)
     if row is None:
         raise HTTPException(status_code=404, detail="群不存在")
-    bot, target = _online_group_bot(request, group_id)
+    bot, target = _online_group_bot(request, row)
     await bot.capabilities.require(Capability.GROUP_DIRECTORY).leave_group(target.target_id)
     await membership_service.delete_group(group_id)
     await membership_guard.invalidate(group_id)

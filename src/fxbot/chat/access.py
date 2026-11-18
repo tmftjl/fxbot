@@ -45,6 +45,6 @@ async def continuation_allowed(
     if context.group_id and config["enabled"] and target.bot_key() not in config["free_bot_ids"]:
         from ..membership.guard import membership_guard
 
-        decision = await membership_guard.check_membership_detail(target.key(), None)
+        decision = await membership_guard.check_membership_detail(target.target_id, None)
         return decision.allowed
     return True

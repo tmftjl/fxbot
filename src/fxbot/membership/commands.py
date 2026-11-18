@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from ..core import Event, SessionTarget, HandlerContext
+from ..core import Event, HandlerContext
 from .guard import MembershipGuard
 from .tasks import MembershipMaintenance
 from ..config import ConfigManager
@@ -42,9 +42,7 @@ class MembershipCommands:
 
     async def owner(self, event: Event) -> bool:
         """管理命令同时要求私聊和超级用户身份，允许裸平台用户 ID。"""
-        return event.target.kind == "private" and is_superuser_event(
-            self.config.get_system()["system"], event
-        )
+        return event.target.kind == "private" and is_superuser_event(self.config.get_system()["system"], event)
 
     def install(self) -> None:
         """注册自助命令和独立保护的管理命令。"""
@@ -67,7 +65,7 @@ class MembershipCommands:
         """在当前完整群身份下兑换，成功后立即刷新门禁缓存。"""
         if not context.event.is_group:
             await context.finish("续费码只能在群聊中使用哦")
-        group = context.event.target.key()
+        group = context.event.target.target_id
         code = context.arguments.removeprefix("ww续费")
         row = await self.service.get_code(code)
         if row is None or row.status != "active" or row.used_count >= row.max_use:
@@ -77,7 +75,7 @@ class MembershipCommands:
                 code,
                 group,
                 operator_user_id=context.event.user_id,
-                managed_by_bot=context.event.target.bot_key(),
+                managed_by_bot=context.event.bot_id,
             )
         except MembershipError:
             await context.finish("该续费码当前不可用，请联系管理员核对")
@@ -91,7 +89,7 @@ class MembershipCommands:
         """直接查询群会员，不依赖已经放行的门禁缓存。"""
         if not context.event.is_group:
             await context.finish("该指令需在群聊中使用")
-        group = await self.service.get_group(context.event.target.key())
+        group = await self.service.get_group(context.event.target.target_id)
         if group is None:
             await context.finish("未找到本群的会员记录")
         expires = group.expires_at
@@ -130,17 +128,17 @@ class MembershipCommands:
         await context.finish(f"已处理过期{result.expired}个群，退出{result.left}个群")
 
     async def adjust_bots(self, context: HandlerContext) -> None:
-        """根据完整平台会话身份校准已登记群的管理连接。"""
+        """按裸群号校准已登记群的管理 Bot。"""
         records = {row.group_id: row for row in await self.service.list_groups()}
         changed = unchanged = 0
         for bot in self.application.bots:
             groups = await bot.capabilities.require(Capability.GROUP_DIRECTORY).get_groups()
             for group in groups:
-                target = SessionTarget(bot.platform, bot.bot_id, "group", str(group["group_id"]))
-                row = records.get(target.key())
+                group_id = str(group["group_id"])
+                row = records.get(group_id)
                 if row is None:
                     continue
-                manager = target.bot_key()
+                manager = str(bot.bot_id)
                 if row.managed_by_bot == manager:
                     unchanged += 1
                 else:

@@ -187,7 +187,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         self.settings["membership"]["enabled"] = True
         self.membership.check_membership_detail = AsyncMock(return_value=Mock(allowed=False))
         self.assertFalse(await self.service.send("bilibili_live", FIRST, Message.text("消息"), valid=lambda: True))
-        self.membership.check_membership_detail.assert_awaited_once_with(FIRST.key(), None)
+        self.membership.check_membership_detail.assert_awaited_once_with(FIRST.target_id, None)
         self.bot._sender.assert_not_awaited()
         self.auth.check_target.return_value = False
         self.membership.check_membership_detail.reset_mock()

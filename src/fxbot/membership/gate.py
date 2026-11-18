@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from ..core import Event, Message, SessionTarget, current_event_context
+from ..core import Event, Message, current_event_context
 from .guard import MembershipGuard
 from ..config import ConfigManager
 from .contact import renewal_contact_text, format_membership_expiry
@@ -33,8 +33,7 @@ class MembershipGate:
         text = event.message.plain_text().strip()
         if RECOVERY_COMMAND.fullmatch(text):
             return True
-        user = SessionTarget(event.platform, event.bot_id, "private", event.user_id).key()
-        decision = await self.guard.check_membership_detail(event.target.key(), user)
+        decision = await self.guard.check_membership_detail(event.target.target_id, event.user_id)
         if not decision.allowed:
             return False
         if decision.expires_at is not None and any(
