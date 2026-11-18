@@ -25,6 +25,7 @@ from fxbot.plugins.gscore.config import validate_config
 from fxbot.plugins.gscore.models import (
     Message as WireMessage,
     MessageSend,
+    MessageReceive,
     decode_send,
     encode_receive,
     recall_receipt,
@@ -257,7 +258,9 @@ class ReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt.user_id, "")
         self.assertEqual(receipt.content[0].type, "recall_message_id")
         self.assertEqual(receipt.content[0].data, {"echo": "e1", "id": ["a", "b"]})
-        payload = json.loads(encode_receive(receipt))
+        encoded = encode_receive(receipt)
+        self.assertIsInstance(encoded, bytes)
+        payload = json.loads(encoded)
         self.assertEqual(payload["content"][0]["data"], {"echo": "e1", "id": ["a", "b"]})
         none_receipt = recall_receipt(msg, None)
         self.assertIsNone(none_receipt.content[0].data["id"])
@@ -407,6 +410,36 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(service.task)
         self.assertFalse(service.connected)
         await service.close()
+
+    async def test_upstream_frames_are_binary(self) -> None:
+        """gsuid_core 只读 receive_bytes，上行必须是 bytes（二进制帧）。"""
+        frames: list[Any] = []
+
+        class FakeWebSocket:
+            async def send(self, payload: Any) -> None:
+                frames.append(payload)
+
+        service = GscoreService(ServicesStub())
+        service._queue.put_nowait(
+            MessageReceive(
+                bot_id="onebot",
+                bot_self_id=BOT_ID,
+                user_id=USER_ID,
+                content=[WireMessage("text", "hi")],
+            )
+        )
+        task = asyncio.create_task(service._send_loop(FakeWebSocket()))
+        try:
+            for _ in range(100):
+                if frames:
+                    break
+                await asyncio.sleep(0)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(len(frames), 1)
+        self.assertIsInstance(frames[0], bytes)
+        self.assertEqual(json.loads(frames[0])["content"], [{"type": "text", "data": "hi"}])
 
 
 class FakeAdapter(CoreAdapter):

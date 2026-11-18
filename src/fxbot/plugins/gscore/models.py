@@ -88,8 +88,12 @@ def _message_payload(message: Message) -> dict[str, Any]:
     return {"type": message.type, "data": message.data}
 
 
-def encode_receive(message: MessageReceive) -> str:
-    """编码上行事件，保持字段名与 gsuid_core 的 Struct 一致。"""
+def encode_receive(message: MessageReceive) -> bytes:
+    """编码上行事件，保持字段名与 gsuid_core 的 Struct 一致。
+
+    gsuid_core 的 WS 端只调用 receive_bytes()，上行必须是二进制帧；
+    返回 str 会被 websockets 发成 Text 帧，导致服务端 KeyError: 'bytes'。
+    """
     payload = {
         "bot_id": message.bot_id,
         "bot_self_id": message.bot_self_id,
@@ -101,7 +105,8 @@ def encode_receive(message: MessageReceive) -> str:
         "user_pm": message.user_pm,
         "content": [_message_payload(item) for item in message.content],
     }
-    return json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    # 紧凑分隔符与原版 msgspec.json.encode 的输出保持一致
+    return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
 
 
 def recall_receipt(message: MessageSend, recall_id: str | list[str] | None) -> MessageReceive:
