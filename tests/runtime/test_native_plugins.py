@@ -435,9 +435,73 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(args["messages"][0]["data"]), {"user_id", "nickname", "content"})
         self.assertTrue(args["messages"][1]["data"]["content"][0]["data"]["file"].startswith("base64://"))
 
+    async def test_core_logs_original_user_message(self):
+        router = Router()
+        event = replace(
+            self.event,
+            message=Message.text("#测试"),
+            original_message=Message([MessageSegment.text("#测试"), MessageSegment("image", {"file": b"png"})]),
+        )
+        with self.assertLogs("fxbot.core.router", level="INFO") as captured:
+            await router.dispatch(self.bot, event)
+        text = "\n".join(captured.output)
+        self.assertIn("onebot11:100 [message.group.normal]: Message -42", text)
+        self.assertIn("from 200(群名片)@[group:300]", text)
+        self.assertIn("#测试", text)
+        self.assertIn("<3 bytes>", text)
+
+    async def test_core_moves_non_text_segments_behind(self):
+        router = Router()
+        seen = []
+
+        async def capture(context):
+            seen.append(context.event.message)
+            await context.finish()
+
+        router.message("capture", capture)
+        original = Message([MessageSegment.mention("999"), MessageSegment.text("#测试")])
+        event = replace(
+            self.event,
+            message=Message(
+                [
+                    MessageSegment.mention("999"),
+                    MessageSegment.image(b"png"),
+                    MessageSegment.text("  #测试  "),
+                    MessageSegment.text("  "),
+                ]
+            ),
+            original_message=original,
+        )
+        await router.dispatch(self.bot, event)
+        segments = seen[0].segments
+        self.assertEqual([segment.type for segment in segments], ["text", "mention", "image"])
+        self.assertEqual(segments[0].text_value(), "#测试")
+        # 日志和引用用的原始消息保持原顺序
+        self.assertEqual([segment.type for segment in original.segments], ["mention", "text"])
+
+    async def test_route_failure_log_includes_user_message(self):
+        router = Router()
+
+        async def boom(context):
+            raise RuntimeError("boom")
+
+        router.message("boom", boom)
+        event = replace(self.event, message=Message.text("原始消息"), original_message=None)
+        with self.assertLogs("fxbot.core.router", level="INFO") as captured:
+            await router.dispatch(self.bot, event)
+        text = "\n".join(captured.output)
+        self.assertIn("路由执行失败: boom", text)
+        self.assertIn("原始消息", text)
+        self.assertIn("from 200", text)
+
     async def test_music_selection_scopes_actor_and_target(self):
         music = Music(self.app, self.auth)
-        music.selections[music.selection_key(self.event)] = (time.monotonic() + 60, "qq", [Song("1", "歌", "人", "")])
+        music.selections[music.selection_key(self.event)] = (
+            time.monotonic() + 60,
+            "qq",
+            [Song("1", "歌", "人", "")],
+            "歌",
+        )
         self.assertEqual(music.match_select(self.context("#1").event), "0")
         other = replace(self.context("#1").event, target=SessionTarget("onebot11", "100", "group", "301"))
         self.assertIsNone(music.match_select(other))
@@ -445,8 +509,33 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_music_expired_selection_falls_through(self):
         music = Music(self.app, self.auth)
-        music.selections[music.selection_key(self.event)] = (0, "qq", [])
+        music.selections[music.selection_key(self.event)] = (0, "qq", [], "歌")
         self.assertIsNone(music.match_select(self.context("#1").event))
+
+    def test_music_quality_is_downgraded_for_qq_official(self):
+        from fxbot.plugins.entertain import musicshare
+
+        config = {"qq_quality": 4, "netease_quality": 8}
+        with patch.object(musicshare, "cfg_music", return_value=config):
+            self.assertEqual(musicshare._quality_for_api("qq"), "flac")
+            self.assertEqual(musicshare._quality_for_api("qq", qqbot=True), "m4a")
+            self.assertEqual(musicshare._quality_for_api("netease"), "jymaster")
+            self.assertEqual(musicshare._quality_for_api("netease", qqbot=True), "higher")
+
+    async def test_music_play_detects_qq_official_bot(self):
+        from fxbot.plugins.entertain import musicshare
+
+        song = Song("1", "歌", "人", "", auth="auth")
+        seen = []
+
+        async def fake_url_api(platform, song, auth=None, *, qqbot=False):
+            seen.append(qqbot)
+            return "https://example.test/a.mp3"
+
+        with patch.object(musicshare, "_get_song_url_api", fake_url_api):
+            await musicshare._get_song_url_with_pool("200", "netease", song, bot=SimpleNamespace(platform="qq"))
+            await musicshare._get_song_url_with_pool("200", "netease", song, bot=SimpleNamespace(platform="onebot11"))
+        self.assertEqual(seen, [True, False])
 
     def test_music_login_sessions_use_bare_owner(self):
         from fxbot.plugins.entertain import musicshare

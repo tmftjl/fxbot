@@ -72,6 +72,7 @@ class QQClient:
             .provide(Capability.MEMBER_LOOKUP, self)
             .provide(Capability.GROUP_ROLE, self)
             .provide(Capability.TARGET_LOOKUP, self)
+            .provide(Capability.AVATAR, self)
             .provide(Capability.MEMBER_MODERATION, self)
             .provide(Capability.MUTED_MEMBERS, self)
             .provide(QQ_API, self.actions)
@@ -85,6 +86,10 @@ class QQClient:
     def _online(self):
         if self._available is not None and not self._available():
             raise BotOffline("QQ 网关连接已失效")
+
+    def avatar_url(self, user_id: str) -> str:
+        """QQ 官方头像按 AppID + OpenID 拼接，与原版适配器一致。"""
+        return f"https://q.qlogo.cn/qqapp/{self.bot_id}/{identifier(user_id)}/640"
 
     async def _request(self, method, path, **kwargs):
         self._online()

@@ -122,10 +122,13 @@ class ActionCancellationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQResponseBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.api = QQHTTP("app", "secret", SimpleNamespace())
+
     def test_non_json_http_failure_keeps_status_for_gateway_retry_policy(self):
         for status in (401, 403, 429, 500, 503):
             with self.subTest(status=status), self.assertRaises(QQAPIError) as caught:
-                QQHTTP._response(httpx.Response(status, text="<html>upstream unavailable</html>"))
+                self.api._response(httpx.Response(status, text="<html>upstream unavailable</html>"))
             self.assertEqual(caught.exception.status, status)
 
     def test_malformed_success_is_not_treated_as_transient_http_error(self):
@@ -135,7 +138,7 @@ class QQResponseBoundaryTests(unittest.TestCase):
             httpx.Response(200, json=[]),
         ):
             with self.subTest(status=response.status_code), self.assertRaises(QQAPIError) as caught:
-                QQHTTP._response(response)
+                self.api._response(response)
             self.assertEqual(caught.exception.status, response.status_code)
             self.assertIsNone(caught.exception.code)
 

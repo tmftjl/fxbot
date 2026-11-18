@@ -318,6 +318,26 @@ class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await api.close()
 
+    async def test_error_message_is_reported_without_secrets(self):
+        body = {"code": 40093007, "message": f"upload rejected {SECRET}", "trace_id": "trace-1"}
+
+        api = QQHTTP(
+            APP_ID,
+            SECRET,
+            httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(400, json=body))),
+        )
+        api.token = AsyncMock(return_value="fake-token")
+        try:
+            with self.assertRaises(QQAPIError) as caught:
+                await api.request("POST", "/v2/groups/GROUP/files", json={})
+            text = str(caught.exception)
+            self.assertEqual(caught.exception.code, 40093007)
+            self.assertIn("upload rejected", text)
+            self.assertIn("trace-1", text)
+            self.assertNotIn(SECRET, text)
+        finally:
+            await api.close()
+
     async def test_missing_token_or_invalid_expiry_rejected(self):
         for body in (
             {"expires_in": 3600},
@@ -341,6 +361,14 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.api = SimpleNamespace(request=AsyncMock(return_value={"id": "reply-id"}))
         self.bot = QQClient(APP_ID, self.api)
         self.event = parse_event(payload(), bot_id=APP_ID)
+
+    def test_avatar_url_uses_qqapp_openid(self):
+        self.assertIn(Capability.AVATAR, self.bot.capabilities)
+        avatar = self.bot.capabilities.require(Capability.AVATAR)
+        self.assertEqual(
+            avatar.avatar_url("MEMBER_OPENID"),
+            f"https://q.qlogo.cn/qqapp/{APP_ID}/MEMBER_OPENID/640",
+        )
 
     async def test_botclient_protocol_and_unsupported_actions_make_no_request(self):
         self.assertIsInstance(self.bot, BotClient)

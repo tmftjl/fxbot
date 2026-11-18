@@ -18,8 +18,9 @@ from PIL import Image, ImageDraw
 from loguru import logger
 
 from .config import cfg_music
-from ...core.types import Event, Message, BotClient, MessageSegment
+from ...core.types import Event, Message, BotClient, MessageSegment, UnsupportedCapability
 from ...utils.http import get_shared_async_client
+from ...core.errors import ActionFailed
 from ...core.plugin import Service, on_regex, scheduled, on_message
 from ...core.router import HandlerContext
 from ...utils.cache import cache
@@ -157,6 +158,14 @@ def _normalize_platform(alias: str | None) -> Platform:
 def _platform_name_cn(platform: Platform) -> str:
     """返回平台中文名。"""
     return {"qq": "QQ音乐", "netease": "网易云音乐"}[platform]
+
+
+def _event_log_text(event: Event) -> str:
+    """日志中的用户原始信息：用户、会话、消息 ID 和原文。"""
+    return (
+        f"user={event.user_id}({event.user_name}) target={event.target.key()} "
+        f"msg_id={event.message_id or ''} text={event.message.plain_text()!r}"
+    )
 
 
 def _music_api_base() -> str:
@@ -464,8 +473,8 @@ async def _music_api_get(path: str, params: dict[str, Any], allow_error_body: bo
     return data
 
 
-def _quality_for_api(platform: Platform) -> str:
-    """转换本地 music-api 音质参数。"""
+def _quality_for_api(platform: Platform, *, qqbot: bool = False) -> str:
+    """转换本地 music-api 音质参数；QQ 官方 Bot 与原版一致强制降到 1/3 档。"""
     config = cfg_music()
     if platform == "qq":
         qualities = ["m4a", "128", "320", "flac"]
@@ -483,6 +492,8 @@ def _quality_for_api(platform: Platform) -> str:
         ]
         value = config["netease_quality"]
     level = int(value)
+    if qqbot:
+        level //= 3
     level = max(1, min(level, len(qualities)))
     return qualities[level - 1]
 
@@ -558,6 +569,8 @@ async def _get_song_url_api(
     platform: Platform,
     song: Song,
     auth: str | None = None,
+    *,
+    qqbot: bool = False,
 ) -> str | None:
     """通过本地 music-api 获取播放链接。"""
     token = auth or song.auth
@@ -565,7 +578,7 @@ async def _get_song_url_api(
         raise MusicLoginRequired()
     params: dict[str, Any] = {
         "provider": platform,
-        "quality": _quality_for_api(platform),
+        "quality": _quality_for_api(platform, qqbot=qqbot),
         "auth": token,
     }
     if song.search_id is not None:
@@ -610,10 +623,11 @@ async def _get_song_url_with_pool(
     """用登录账号池获取播放链接。"""
     tried: set[str] = set()
     last_play_error: MusicPlayUnavailable | None = None
+    qqbot = bot is not None and bot.platform == "qq"
     if song.auth:
         tried.add(song.auth)
         try:
-            url = await _get_song_url_api(platform, song, auth=song.auth)
+            url = await _get_song_url_api(platform, song, auth=song.auth, qqbot=qqbot)
             if url:
                 return url
         except MusicLoginRequired:
@@ -639,7 +653,7 @@ async def _get_song_url_with_pool(
         tried.add(auth)
         fallback_song = replace(song, search_id=None, auth=auth, auth_owner=owner)
         try:
-            url = await _get_song_url_api(platform, fallback_song, auth=auth)
+            url = await _get_song_url_api(platform, fallback_song, auth=auth, qqbot=qqbot)
             if url:
                 return url
         except MusicLoginRequired:
@@ -908,36 +922,113 @@ class Music(Service):
         try:
             songs = await _search_songs_with_pool(self.owner(context.event), platform, keyword)
         except MusicLoginRequired:
+            logger.warning(
+                "[musicshare] 搜索需要登录 {} platform={} keyword={!r}",
+                _event_log_text(context.event),
+                platform,
+                keyword,
+            )
             await context.finish(_login_hint(platform))
         except httpx.HTTPError:
-            logger.opt(exception=True).warning("[musicshare] 搜索歌曲失败")
+            logger.opt(exception=True).warning(
+                "[musicshare] 搜索歌曲失败 {} platform={} keyword={!r}",
+                _event_log_text(context.event),
+                platform,
+                keyword,
+            )
             await context.finish("搜索失败，请确认 music-api 服务可用")
         if not await self.valid(context, "entertain:search"):
             return
         if not songs:
+            logger.info(
+                "[musicshare] 未找到歌曲 {} platform={} keyword={!r}",
+                _event_log_text(context.event),
+                platform,
+                keyword,
+            )
             await context.finish("未找到相关歌曲")
-        self.selections[self.selection_key(context.event)] = (time.monotonic() + _CACHE_TTL, platform, songs)
+        self.selections[self.selection_key(context.event)] = (
+            time.monotonic() + _CACHE_TTL,
+            platform,
+            songs,
+            keyword,
+        )
+        logger.info(
+            "[musicshare] 搜索结果 {} platform={} keyword={!r} count={}",
+            _event_log_text(context.event),
+            platform,
+            keyword,
+            len(songs),
+        )
         await context.send(Message([MessageSegment.image(_draw_music_list(platform, keyword, songs))]))
 
     async def select(self, context: HandlerContext) -> None:
         item = self.selections.get(self.selection_key(context.event))
         if item is None or item[0] <= time.monotonic():
             return
-        _, platform, songs = item
+        _, platform, songs, keyword = item
         index = int(context.arguments)
         if not 0 <= index < len(songs):
             await context.finish("序号超出搜索结果范围")
+        song = songs[index]
+        logger.info(
+            "[musicshare] 播放请求 {} platform={} keyword={!r} index={} song={} singer={}",
+            _event_log_text(context.event),
+            platform,
+            keyword,
+            index + 1,
+            song.song,
+            song.singer,
+        )
         try:
-            url = await _get_song_url_with_pool(self.owner(context.event), platform, songs[index], bot=context.bot)
+            url = await _get_song_url_with_pool(self.owner(context.event), platform, song, bot=context.bot)
         except MusicLoginRequired:
+            logger.warning(
+                "[musicshare] 播放需要登录 {} platform={} song={}",
+                _event_log_text(context.event),
+                platform,
+                song.song,
+            )
             await context.finish(_login_hint(platform))
-        except MusicPlayUnavailable:
+        except MusicPlayUnavailable as exc:
+            logger.error(
+                "[musicshare] 无法播放音乐: {}, 平台: {}, 歌曲: {} - {}, 错误: {}",
+                _event_log_text(context.event),
+                platform,
+                song.song,
+                song.singer,
+                exc.log_text(),
+            )
             await context.finish("该歌曲暂时无法播放")
         except httpx.HTTPError:
-            logger.opt(exception=True).warning("[musicshare] 获取播放地址失败")
+            logger.opt(exception=True).warning(
+                "[musicshare] 获取播放地址失败 {} platform={} song={}",
+                _event_log_text(context.event),
+                platform,
+                song.song,
+            )
             await context.finish("播放失败，请确认 music-api 服务可用")
-        if url and await self.valid(context, "entertain:select"):
-            await context.send(Message([MessageSegment.voice(url)]))
+        if not url:
+            logger.error(
+                "[musicshare] 无法获取播放链接: {}, 平台: {}, 歌曲: {} - {}",
+                _event_log_text(context.event),
+                platform,
+                song.song,
+                song.singer,
+            )
+            await context.finish("播放失败，未获取到音频地址")
+        if await self.valid(context, "entertain:select"):
+            try:
+                await context.send(Message([MessageSegment.voice(url)]))
+            except (ActionFailed, UnsupportedCapability) as exc:
+                logger.opt(exception=True).error(
+                    "[musicshare] 发送语音失败 {} platform={} song={} 错误: {}",
+                    _event_log_text(context.event),
+                    platform,
+                    song.song,
+                    exc,
+                )
+                await context.finish("语音发送失败，请稍后再试")
 
 
 login_matcher = on_regex(Music.LOGIN, name="music_login", display_name="音乐登录", level="all", priority=4)

@@ -8,7 +8,7 @@ from itertools import groupby
 from dataclasses import field, dataclass
 from collections.abc import Callable, Awaitable
 
-from .types import Event, Message, BotClient
+from .types import Event, Message, BotClient, MessageSegment
 from .context import bind_event, reset_event
 from .matching import Match, MatchResult, event_match, regex_match, command_match, message_match
 from .services import ServiceScope
@@ -18,6 +18,87 @@ from .concurrency import run_concurrently
 logger = logging.getLogger(__name__)
 Guard = Callable[[Event], Awaitable[bool]]
 T = TypeVar("T")
+
+_LOG_TEXT_LIMIT = 200
+_LOG_SEGMENT_LIMIT = 20
+
+
+def _log_value(value: Any) -> Any:
+    """把消息段数据压成可读且不会膨胀日志的形式。"""
+    if isinstance(value, bytes):
+        return f"<{len(value)} bytes>"
+    if isinstance(value, str):
+        if len(value) <= _LOG_TEXT_LIMIT:
+            return value
+        return f"{value[:_LOG_TEXT_LIMIT]}…({len(value)} chars)"
+    if isinstance(value, dict):
+        return {key: _log_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_log_value(item) for item in value]
+    return value
+
+
+def _message_log_text(message: Message) -> str:
+    """记录原始消息段，媒体只记类型和大小。"""
+    segments = message.segments[:_LOG_SEGMENT_LIMIT]
+    parts = [f"{segment.type}({_log_value(segment.data)})" for segment in segments]
+    if len(message.segments) > _LOG_SEGMENT_LIMIT:
+        parts.append(f"…({len(message.segments) - _LOG_SEGMENT_LIMIT} more)")
+    return "[" + ", ".join(parts) + "]"
+
+
+def _event_kind(event: Event) -> str:
+    """还原原版事件名：QQ 用 EventType，OneBot 用 post_type.message_type.sub_type。"""
+    qq_type = event.metadata.get("qq_event_type")
+    if isinstance(qq_type, str) and qq_type:
+        return f"EventType.{qq_type}"
+    parts = [event.event_type]
+    if event.event_type == "message" and event.target.kind not in parts:
+        parts.append(event.target.kind)
+    for key in ("post_type", "message_type", "notice_type", "sub_type"):
+        value = event.metadata.get(key)
+        if isinstance(value, str) and value and value not in parts:
+            parts.append(value)
+    return ".".join(parts)
+
+
+def _event_log_text(event: Event) -> str:
+    """核心日志中的用户原始信息：Bot、事件、消息 ID、用户、会话和原始消息段。"""
+    sender = f"{event.user_id}({event.user_name})" if event.user_name else event.user_id
+    message = event.original_message or event.message
+    return (
+        f"{event.platform}:{event.bot_id} [{_event_kind(event)}]: Message {event.message_id or ''} "
+        f"from {sender}@[{event.target.kind}:{event.target.target_id}]: {_message_log_text(message)}"
+    )
+
+
+def _normalize_message_segments(event: Event) -> None:
+    """文本段前置、非文本段后置，避免 @ 和图片打断命令匹配。"""
+    segments = event.message.segments
+    if not segments or not any(segment.type == "text" for segment in segments):
+        return
+    if not any(segment.type != "text" for segment in segments):
+        return
+    texts: list[MessageSegment] = []
+    others: list[MessageSegment] = []
+    first_non_empty = False
+    for segment in segments:
+        if segment.type != "text":
+            others.append(segment)
+            continue
+        text = segment.text_value()
+        stripped = text.strip()
+        if not stripped:
+            continue
+        if not first_non_empty:
+            first_non_empty = True
+            if stripped != text:
+                texts.append(MessageSegment.text(stripped))
+                continue
+        texts.append(segment)
+    normalized = texts + others
+    if normalized != segments:
+        event.message.segments = normalized
 
 
 class _Finished(Exception):
@@ -155,6 +236,8 @@ class Router:
 
     async def dispatch(self, bot: BotClient, event: Event) -> DispatchResult:
         """分发单条事件，异常闭锁、取消传播，并在全部退出路径恢复上下文。"""
+        logger.info("%s", _event_log_text(event))
+        _normalize_message_segments(event)
         token = bind_event(bot, event)
         handled: list[str] = []
         denied: list[str] = []
@@ -167,7 +250,7 @@ class Router:
                     if await guard(event) is not True:
                         return DispatchResult(blocked=True, rejected=True)
                 except Exception:
-                    logger.exception("事件准入检查失败")
+                    logger.exception("事件准入检查失败: %s", _event_log_text(event))
                     return DispatchResult(failed=("preprocessor",), blocked=True, rejected=True)
             for group in groups:
                 results = await run_concurrently(self._dispatch_route(route, bot, event) for route in group)
@@ -207,5 +290,5 @@ class Router:
                 pass
             return DispatchResult(handled=handled, blocked=route.block)
         except Exception:
-            logger.exception("路由执行失败: %s", route.name)
+            logger.exception("路由执行失败: %s %s", route.name, _event_log_text(event))
             return DispatchResult(handled=handled, failed=(route.name,), blocked=True)

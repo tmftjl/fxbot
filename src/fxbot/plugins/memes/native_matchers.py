@@ -137,6 +137,7 @@ async def meme_trigger_rule(ctx: HandlerContext) -> bool:
     event = ctx.event
     if any(matcher(event) is not None for matcher in _PRIORITY3_COMMANDS):
         return False
+    # 核心已把 @ 和图片统一后置，这里只跳过引用段。
     segments = event.message.segments
     index = 0
     while index < len(segments) and segments[index].type == "reply":

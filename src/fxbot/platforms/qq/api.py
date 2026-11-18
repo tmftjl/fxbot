@@ -19,9 +19,14 @@ UPLOAD_READ_TIMEOUT = 30.0
 
 
 class QQAPIError(ActionFailed):
-    def __init__(self, status: int, code: int | None = None) -> None:
+    def __init__(self, status: int, code: int | None = None, message: str = "", trace_id: str = "") -> None:
         self.status, self.code = status, code
-        super().__init__(f"QQ 官方接口请求失败（HTTP {status}，code={code}）")
+        detail = f"QQ 官方接口请求失败（HTTP {status}，code={code}）"
+        if message:
+            detail += f"：{message}"
+        if trace_id:
+            detail += f"（trace_id={trace_id}）"
+        super().__init__(detail)
 
 
 class QQHTTP:
@@ -63,15 +68,32 @@ class QQHTTP:
             self._expires_at = time.monotonic() + ttl - min(30, ttl / 10)
             return token
 
-    @staticmethod
-    def _response(response: httpx.Response) -> dict:
+    def _redact(self, value: str) -> str:
+        """错误详情可能回显请求内容，先抹掉本进程持有的凭证。"""
+        for secret in (self._secret, self._token):
+            if secret:
+                value = value.replace(secret, "***")
+        return value[:300]
+
+    def _error_details(self, error: object) -> tuple[int | None, str, str]:
+        if not isinstance(error, dict):
+            return None, "", ""
+        code = error.get("code")
+        message = error.get("message") or error.get("msg")
+        trace_id = error.get("trace_id") or error.get("traceId")
+        return (
+            code if type(code) is int else None,
+            self._redact(message) if isinstance(message, str) else "",
+            self._redact(trace_id) if isinstance(trace_id, str) else "",
+        )
+
+    def _response(self, response: httpx.Response) -> dict:
         if not 200 <= response.status_code < 300:
             try:
                 error = response.json()
             except (json_module.JSONDecodeError, UnicodeDecodeError):
                 error = {}
-            code = error.get("code") if isinstance(error, dict) else None
-            raise QQAPIError(response.status_code, code if type(code) is int else None)
+            raise QQAPIError(response.status_code, *self._error_details(error))
         if not response.content:
             return {}
         try:
@@ -81,8 +103,7 @@ class QQHTTP:
         if not isinstance(data, dict):
             raise QQAPIError(response.status_code)
         if data.get("code", 0) != 0:
-            code = data.get("code")
-            raise QQAPIError(response.status_code, code if type(code) is int else None)
+            raise QQAPIError(response.status_code, *self._error_details(data))
         return data
 
     def _upload_timeout(self) -> httpx.Timeout:
