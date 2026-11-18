@@ -60,7 +60,7 @@ RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/99-retries
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tzdata libatomic1 \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tzdata libatomic1 ffmpeg \
     && git config --system --add safe.directory /repo
 
 # pip 不读 UV_DEFAULT_INDEX，换源要显式传 --index-url，否则第一步仍会访问官方 PyPI。
