@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import asyncio
 import hashlib
 
@@ -39,25 +38,36 @@ async def upload(actions, route, target_id, file_type, file_name, content, srv_s
     if type(block_size) is not int or block_size <= 0:
         raise ValueError("QQ 上传分块大小无效")
     parts = prepared["parts"]
-    if not isinstance(parts, list) or len(parts) != math.ceil(len(content) / block_size):
-        raise ValueError("QQ 上传分片数量与文件大小不一致")
+    if not isinstance(parts, list) or not parts:
+        raise ValueError("QQ 上传分片列表无效")
+    normalized: list[tuple[int, str]] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            raise ValueError("QQ 上传分片记录无效")
+        index = part.get("index")
+        if isinstance(index, str) and index.isascii() and index.isdecimal():
+            index = int(index)
+        if type(index) is not int:
+            raise ValueError("QQ 上传分片索引无效")
+        url = part.get("presigned_url")
+        if not isinstance(url, str) or not url:
+            raise ValueError("QQ 上传分片地址无效")
+        normalized.append((index, url))
+
     config = prepared["upload_config"]
+    if not isinstance(config, dict):
+        raise ValueError("QQ 上传配置无效")
     concurrency = config["concurrency"]
+    if isinstance(concurrency, str) and concurrency.isascii() and concurrency.isdecimal():
+        concurrency = int(concurrency)
     if type(concurrency) is not int or not 1 <= concurrency <= 32:
         raise ValueError("QQ 上传并发数必须为 1 到 32")
-    for name in ("retry_timeout", "retry_delay"):
-        if type(config[name]) is not int or not 0 <= config[name] <= 3600:
-            raise ValueError("QQ 上传重试设置无效")
-    for index, part in enumerate(parts):
-        if type(part["index"]) is not int or part["index"] != index:
-            raise ValueError("QQ 上传分片索引必须从零连续递增")
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def send_part(index, part):
+    async def send_part(position: int, part_index: int, presigned_url: str) -> None:
         async with semaphore:
-            block = content[index * block_size : (index + 1) * block_size]
-            await actions.put_upload_part(presigned_url=part["presigned_url"], data=block)
-            deadline = asyncio.get_running_loop().time() + config["retry_timeout"]
+            block = content[position * block_size : (position + 1) * block_size]
+            await actions.put_upload_part(presigned_url=presigned_url, data=block)
             for attempt in range(3):
                 try:
                     await actions._request(
@@ -65,22 +75,20 @@ async def upload(actions, route, target_id, file_type, file_name, content, srv_s
                         path + "/upload_part_finish",
                         json={
                             "upload_id": upload_id,
-                            "part_index": index,
+                            "part_index": part_index,
                             "block_size": len(block),
                             "md5": hashlib.md5(block).hexdigest(),
                         },
                     )
                 except QQAPIError as error:
-                    # 平台明确返回分片转存失败时，重报同一分片完成；不重发业务消息。
-                    if (
-                        error.code != 40093001
-                        or attempt == 2
-                        or asyncio.get_running_loop().time() + config["retry_delay"] >= deadline
-                    ):
+                    # 与原版一致：仅分片转存错误最多重报 3 次，固定间隔 5 秒。
+                    if error.code != 40093001 or attempt == 2:
                         raise
-                    await asyncio.sleep(config["retry_delay"])
+                    await asyncio.sleep(5)
                 else:
                     break
 
-    await run_concurrently(send_part(index, part) for index, part in enumerate(parts))
+    await run_concurrently(
+        send_part(position, part_index, url) for position, (part_index, url) in enumerate(normalized)
+    )
     return await actions._request("POST", path + "/files", json={"upload_id": upload_id, "srv_send_msg": srv_send_msg})

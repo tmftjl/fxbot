@@ -7,7 +7,7 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -493,7 +493,10 @@ class QQUploadTests(unittest.IsolatedAsyncioTestCase):
                 put_upload_part=AsyncMock(),
             )
             bot = QQClient(APP_ID, http)
-            with self.assertRaises(QQAPIError):
+            with (
+                patch("fxbot.platforms.qq.uploads.asyncio.sleep", AsyncMock()),
+                self.assertRaises(QQAPIError),
+            ):
                 await bot.actions.post_group_upload("GROUP", 4, "x", b"a")
             self.assertEqual(http.request.await_count, attempts + 1)
             http.put_upload_part.assert_awaited_once()
@@ -540,6 +543,33 @@ class QQUploadTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(json.loads(requests[-1].content), {"upload_id": "up", "srv_send_msg": False})
             finally:
                 await api.close()
+
+    async def test_parts_accept_server_indices_and_separate_position_slicing(self):
+        requests = []
+
+        def request(method, path, **kwargs):
+            requests.append((path, kwargs.get("json")))
+            if path.endswith("upload_prepare"):
+                return {
+                    "upload_id": "up",
+                    "block_size": 2,
+                    "parts": [
+                        {"index": "1", "presigned_url": "https://upload.test/1"},
+                        {"index": "2", "presigned_url": "https://upload.test/2"},
+                    ],
+                    "upload_config": {"concurrency": 1, "retry_timeout": 1, "retry_delay": 0},
+                }
+            if path.endswith("/files"):
+                return {"file_info": "finished"}
+            return {}
+
+        api = SimpleNamespace(request=AsyncMock(side_effect=request), put_upload_part=AsyncMock())
+        bot = QQClient(APP_ID, api)
+        result = await bot.actions.post_group_upload("GROUP", 4, "x", b"abcd")
+        self.assertEqual(result, {"file_info": "finished"})
+        self.assertEqual(api.put_upload_part.await_count, 2)
+        finishes = [body for path, body in requests if path.endswith("upload_part_finish")]
+        self.assertEqual([body["part_index"] for body in finishes], [1, 2])
 
     async def test_failure_cancels_and_joins_other_parts_without_merge(self):
         active = asyncio.Event()
