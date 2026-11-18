@@ -236,7 +236,7 @@ class Router:
 
     async def dispatch(self, bot: BotClient, event: Event) -> DispatchResult:
         """分发单条事件，异常闭锁、取消传播，并在全部退出路径恢复上下文。"""
-        logger.success("{}", _event_log_text(event))
+        logger.info("{}", _event_log_text(event))
         _normalize_message_segments(event)
         token = bind_event(bot, event)
         handled: list[str] = []
@@ -284,6 +284,7 @@ class Router:
             if route.rule is not None and await route.rule(context) is not True:
                 return DispatchResult()
             handled = (route.name,)
+            logger.success("事件将由 {} 处理", route.name)
             try:
                 await route.handler(context)
             except _Finished:

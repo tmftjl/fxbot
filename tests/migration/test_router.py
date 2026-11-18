@@ -35,6 +35,54 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
         self.bot = SimpleNamespace(platform="test", bot_id="bot", send=AsyncMock())
         self.router = Router()
 
+    async def test_unmatched_message_is_info_without_trigger_success(self) -> None:
+        self.router.command("ping", "/ping", AsyncMock())
+        with capture_loguru("INFO") as received, capture_loguru("SUCCESS") as triggered:
+            result = await self.router.dispatch(self.bot, event("普通消息"))
+        self.assertEqual(result.handled, ())
+        self.assertEqual(len(received), 1)
+        self.assertIn("普通消息", received[0])
+        self.assertEqual(triggered, [])
+
+    async def test_trigger_success_is_recorded_before_handler_runs(self) -> None:
+        with capture_loguru("INFO") as received, capture_loguru("SUCCESS") as triggered:
+
+            async def handler(context):
+                self.assertEqual(len(triggered), 1)
+                self.assertIn("事件将由 entertain:music_select 处理", triggered[0])
+
+            self.router.command("entertain:music_select", "/ping", handler)
+            result = await self.router.dispatch(self.bot, event())
+        self.assertEqual(result.handled, ("entertain:music_select",))
+        self.assertEqual(len(received), 2)
+        self.assertIn("/ping", received[0])
+
+    async def test_rejected_event_or_route_does_not_log_trigger_success(self) -> None:
+        for stage in ("preprocessor", "permission", "rule"):
+            with self.subTest(stage=stage):
+                router = Router()
+                handler = AsyncMock()
+                options = {}
+                rejected = AsyncMock(return_value=False)
+                if stage == "preprocessor":
+                    router.add_preprocessor(rejected)
+                else:
+                    options[stage] = rejected
+                router.command("rejected", "/ping", handler, **options)
+                with capture_loguru("SUCCESS") as logs:
+                    await router.dispatch(self.bot, event())
+                self.assertEqual(logs, [])
+                handler.assert_not_awaited()
+
+    async def test_handler_failure_keeps_trigger_log_and_reports_error(self) -> None:
+        self.router.command("broken", "/ping", AsyncMock(side_effect=ValueError("执行失败")))
+        with capture_loguru("SUCCESS") as logs:
+            result = await self.router.dispatch(self.bot, event())
+        self.assertEqual(result.failed, ("broken",))
+        self.assertEqual(len(logs), 2)
+        self.assertIn("事件将由 broken 处理", logs[0])
+        self.assertIn("路由执行失败", logs[1])
+
     async def test_command_word_arguments_and_non_message_filter(self) -> None:
         handler = AsyncMock()
         self.router.command("ping", "/ping", handler)
