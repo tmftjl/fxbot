@@ -154,7 +154,7 @@ def _transform_info(info: dict[str, Any], member_info: dict[str, Any]) -> list[s
 
 def _qq_level_to_icon(level: int) -> str:
     """转换 QQ 等级为图标文本。"""
-    icons = ["皇冠", "太阳", "月亮", "星星"]
+    icons = ["👑", "☀", "🌙", "⭐"]
     levels = [64, 16, 4, 1]
     result = ""
     original = level
