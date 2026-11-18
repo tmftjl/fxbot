@@ -13,7 +13,15 @@ from pathlib import Path
 from dataclasses import replace
 from unittest.mock import Mock, AsyncMock, patch
 
-from fxbot.core import Router, Message, SessionTarget, HandlerContext, MessageSegment, UnsupportedCapability
+from fxbot.core import (
+    Router,
+    Message,
+    ReplyTarget,
+    SessionTarget,
+    HandlerContext,
+    MessageSegment,
+    UnsupportedCapability,
+)
 from fxbot.core.errors import ActionFailed
 from tests.log_capture import capture_loguru
 from fxbot.core.matching import MatchResult
@@ -208,6 +216,42 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         result = await self.app.router.dispatch(self.bot, event)
         self.assertIn("group_admin:mute_member", result.handled)
         self.assertEqual(self.mutations()[0][1]["duration"], 600)
+        sent = [params for action, params in self.calls if action == "send_group_msg"]
+        self.assertEqual(sent[-1]["message"][0]["data"]["text"], "禁言 400成功")
+
+    async def test_recall_success_deletes_command_without_reply(self):
+        self.auth.guard = lambda feature: AsyncMock(return_value=True)
+        from fxbot.core.plugins import LoadedPlugin, PluginContext, PluginRuntime, PluginMetadata, collect_matchers
+        from fxbot.core.scheduler import Scheduler
+        from fxbot.plugins.group_admin import commands
+
+        await self.app.stop()
+        self.app = Application()
+        self.addAsyncCleanup(self.app.stop)
+        context = PluginContext(self.app, Scheduler(self.app), self.auth, AsyncMock(), self.auth.configuration)
+        definition = LoadedPlugin("group_admin", PluginMetadata("群管理"), collect_matchers((commands,)), (), ())
+        PluginRuntime(context, definition).install()
+        await self.app.start()
+        self.app.register(self.bot, close=AsyncMock())
+        self.bot.get_reply = AsyncMock(
+            return_value=SimpleNamespace(
+                message_id="12345",
+                sender_id="400",
+                user_name="目标",
+                message=Message.text("原消息"),
+            )
+        )
+        event = replace(
+            self.event,
+            message=Message.text("#撤回"),
+            original_message=None,
+            reply=ReplyTarget("12345", "400", "目标"),
+        )
+        result = await self.app.router.dispatch(self.bot, event)
+        self.assertIn("group_admin:recall_msg", result.handled)
+        deletes = [params["message_id"] for action, params in self.calls if action == "delete_msg"]
+        self.assertEqual(deletes, [12345, -42])
+        self.assertFalse(any(action == "send_group_msg" for action, _ in self.calls))
 
     async def test_verification_fullwidth_success(self):
         verifier = self.verification()
@@ -951,7 +995,12 @@ class NativePluginWebSocketTests(unittest.TestCase):
                                 {"type": "at", "data": {"qq": "400"}},
                                 {"type": "text", "data": {"text": " 60秒"}},
                             ],
-                            ["get_group_member_info"] * 3 + ["set_group_ban", "send_group_msg"],
+                            [
+                                *(["get_group_member_info"] * 3),
+                                "set_group_ban",
+                                "get_group_member_info",
+                                "send_group_msg",
+                            ],
                         ),
                         ([{"type": "text", "data": {"text": "#赞我"}}], ["send_like", "send_group_msg"]),
                         (

@@ -73,7 +73,7 @@ async def _handle_cos_upload(context: HandlerContext) -> None:
         source for source in dict.fromkeys(sources) if isinstance(source, str) and not source.startswith("base64://")
     ]
     if not image_urls:
-        await context.finish("❌ 未找到图片\n请发送带图消息或回复包含图片的消息")
+        await context.finish("没有找到图片。\n发一张图片，或者回复一条带图片的消息再试。")
 
     success_count = 0
     fail_count = 0
@@ -85,9 +85,9 @@ async def _handle_cos_upload(context: HandlerContext) -> None:
         else:
             fail_count += 1
 
-    lines = ["📸 COS图片上传完成", f"成功: {success_count} 张"]
+    lines = ["图片已上传到 COS", f"成功 {success_count} 张"]
     if fail_count:
-        lines.append(f"失败: {fail_count} 张")
+        lines.append(f"失败 {fail_count} 张")
     await context.finish("\n".join(lines))
 
 
@@ -95,12 +95,12 @@ async def _handle_cos_upload(context: HandlerContext) -> None:
 async def _handle_cos_list(context: HandlerContext) -> None:
     """查看 COS 图片库统计。"""
     if not DATA_DIR.exists():
-        await context.finish("暂无COS图片")
+        await context.finish("COS 图库还是空的。")
     date_dirs = sorted([path for path in DATA_DIR.iterdir() if path.is_dir()], reverse=True)
     if not date_dirs:
-        await context.finish("暂无COS图片")
+        await context.finish("COS 图库还是空的。")
 
-    lines = ["📸 COS图片库"]
+    lines = ["COS 图库"]
     total = 0
     for date_path in date_dirs[:10]:
         count = len([path for path in date_path.iterdir() if path.is_file()])
@@ -109,6 +109,6 @@ async def _handle_cos_list(context: HandlerContext) -> None:
             label = datetime.strptime(date_path.name, "%Y%m%d").replace(tzinfo=SHANGHAI_TZ).strftime("%Y-%m-%d")
         except Exception:
             label = date_path.name
-        lines.append(f"{label}: {count} 张")
-    lines.append(f"总计: {total} 张图片")
+        lines.append(f"{label}：{count} 张")
+    lines.append(f"共 {total} 张图片")
     await context.finish("\n".join(lines))

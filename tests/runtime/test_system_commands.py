@@ -186,7 +186,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system._PENDING_ARGV[:3], [sys.executable, "-m", "fxbot"])
         data = json.loads(self.flag.read_text(encoding="utf-8"))
         self.assertEqual(data["target"], "onebot11:100:group:300")
-        self.assertEqual(data["message"], "✅ FxBot 重启成功")
+        self.assertEqual(data["message"], "FxBot 重启完成")
 
     async def test_shutdown_does_not_schedule_reexec(self) -> None:
         context = self.context()
@@ -211,7 +211,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
                     "target": "onebot11:100:group:300",
                     "platform": "onebot11",
                     "bot_id": "100",
-                    "message": "✅ FxBot 重启成功",
+                    "message": "FxBot 重启完成",
                     "created_at": time.time(),
                 },
                 ensure_ascii=False,
@@ -222,7 +222,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         application = SimpleNamespace(bots=(bot,))
         await system._notify_after_restart(application)
         bot.send.assert_awaited_once_with(
-            SessionTarget("onebot11", "100", "group", "300"), Message.text("✅ FxBot 重启成功")
+            SessionTarget("onebot11", "100", "group", "300"), Message.text("FxBot 重启完成")
         )
         self.assertFalse(self.flag.exists())
 
@@ -233,7 +233,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
                     "target": "onebot11:100:group:300",
                     "platform": "onebot11",
                     "bot_id": "100",
-                    "message": "✅ FxBot 重启成功",
+                    "message": "FxBot 重启完成",
                     "created_at": time.time() - system._FLAG_TTL_SECONDS - 1,
                 },
                 ensure_ascii=False,
@@ -302,7 +302,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
             exit_process.assert_not_called()
             await system._update(self.context())
             self.assertEqual(sync.await_count, 2)
-            self.assertIn("✅", report.await_args.args[1][0])
+            self.assertIn("没有新提交", report.await_args.args[1][0])
             self.assertIsNotNone(system._PENDING_ARGV)
             self.assertTrue(self.flag.exists())
             exit_process.assert_called_once()
@@ -379,7 +379,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
             patch.object(system, "_set_pending_restart") as pending,
         ):
             await system._update(context)
-        self.assertIn("无更新", report.await_args.args[1][0])
+        self.assertIn("没有新提交", report.await_args.args[1][0])
         exit_process.assert_called_once()
         pending.assert_called_once()
 

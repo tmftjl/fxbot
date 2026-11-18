@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import asyncio
+
+from loguru import logger
 
 from ...core import Capability, HandlerContext, UnsupportedCapability
 from .service import GroupAdminService
@@ -34,6 +37,73 @@ def parse_duration(text: str, default: int = 600) -> int:
 def targets(context: HandlerContext, argument: str) -> list[str]:
     mentions = (context.event.original_message or context.event.message).mentions()
     return list(dict.fromkeys(mentions or re.findall(r"(?<!\d)\d{5,}(?!\d)", argument)))
+
+
+def _result_line(action: str, user: str, name: str, result) -> str:
+    """把群管结果写成“操作 昵称(账号)成功/失败：原因”。"""
+    verb = _ACTION_VERBS.get(action, "操作")
+    if user:
+        label = user if not name or name == user else f"{name}({user})"
+        who = f" {label}"
+    else:
+        who = ""
+    if result.success:
+        return f"{verb}{who}成功"
+    return f"{verb}{who}失败：{result.message}"
+
+
+async def _display_names(bot, event, users: list[str]) -> dict[str, str]:
+    """优先使用消息或引用里的昵称，缺失时查询成员信息。"""
+    names: dict[str, str] = {}
+    for segment in (event.original_message or event.message).segments:
+        if segment.type != "mention":
+            continue
+        user = segment.data.get("user_id")
+        name = segment.data.get("name")
+        if user is not None and isinstance(name, str) and name:
+            names.setdefault(str(user), name)
+    if event.reply is not None and event.reply.user_id:
+        names.setdefault(str(event.reply.user_id), event.reply.user_name or "")
+    if event.user_id and event.user_name:
+        names.setdefault(str(event.user_id), event.user_name)
+    unique = [user for user in dict.fromkeys(users) if user]
+    if not unique:
+        return names
+    if Capability.MEMBER_LOOKUP not in bot.capabilities:
+        return names
+    lookup = bot.capabilities.require(Capability.MEMBER_LOOKUP)
+
+    async def resolve(user: str) -> tuple[str, str]:
+        if names.get(user):
+            return user, names[user]
+        try:
+            return user, await lookup.member_name(event.target.target_id, user)
+        except (ActionFailed, UnsupportedCapability, TimeoutError, OSError, ValueError):
+            return user, ""
+
+    for user, name in await asyncio.gather(*(resolve(user) for user in unique)):
+        if name:
+            names[user] = name
+    return names
+
+
+_ACTION_VERBS = {
+    "mute_member": "禁言",
+    "self_mute": "禁言",
+    "unmute_member": "解禁",
+    "ban_kick_member": "拉黑踢出",
+    "kick_member": "踢出",
+    "set_title": "设置头衔",
+    "remove_title": "删除头衔",
+    "apply_title": "申请头衔",
+    "set_admin": "设置管理员",
+    "unset_admin": "取消管理员",
+    "recall_msg": "撤回消息",
+    "set_essence": "设置精华",
+    "unset_essence": "取消精华",
+    "mute_all_on": "全员禁言",
+    "mute_all_off": "解除全员禁言",
+}
 
 
 _DEFINITIONS = (
@@ -94,7 +164,7 @@ class GroupCommands:
             for member in members:
                 result = await self.service.execute(bot, event, "unmute_member", user_id=member["user_id"])
                 success += int(result.success)
-            await context.finish(f"解除全部禁言：成功 {success} 人，失败 {len(members) - success} 人")
+            await context.finish(f"解除全员禁言 成功 {success} 人，失败 {len(members) - success} 人")
         if action in {"self_mute", "apply_title", "remove_title"} and not users:
             users = [event.user_id]
         if action in {"mute_all_on", "mute_all_off"}:
@@ -135,9 +205,20 @@ class GroupCommands:
             )
             for user in users
         ]
+        if action == "recall_msg":
+            result = results[0]
+            if not result.success:
+                await context.finish(result.message)
+            if event.message_id and Capability.RECALL in bot.capabilities:
+                try:
+                    await bot.capabilities.require(Capability.RECALL).delete_message(event.message_id)
+                except (ActionFailed, UnsupportedCapability, TimeoutError, OSError, ValueError):
+                    logger.opt(exception=True).warning("[group_admin] 撤回 #撤回 命令消息失败")
+            await context.finish()
+        names = await _display_names(bot, event, users)
         await context.finish(
             "\n".join(
-                f"{'✅' if result.success else '❌'} {user}: {result.message}"
+                _result_line(action, user, names.get(user, ""), result)
                 for user, result in zip(users, results, strict=True)
             )
         )

@@ -287,10 +287,10 @@ async def _send_report(context: HandlerContext, lines: list[str]) -> None:
 async def _restart(context: HandlerContext) -> None:
     logger.warning("超级用户触发 Bot 重启: {}", context.event.user_id)
     try:
-        await context.send("收到重启指令，正在重启 FxBot...")
+        await context.send("FxBot 正在重启。")
     except Exception:
         logger.opt(exception=True).warning("发送重启提示失败")
-    _save_restart_target(context.event, "✅ FxBot 重启成功")
+    _save_restart_target(context.event, "FxBot 重启完成")
     _set_pending_restart()
     await asyncio.sleep(0.5)
     _request_exit()
@@ -299,7 +299,7 @@ async def _restart(context: HandlerContext) -> None:
 async def _shutdown(context: HandlerContext) -> None:
     logger.warning("超级用户触发 Bot 关闭: {}", context.event.user_id)
     try:
-        await context.send("收到关机指令，FxBot 即将关闭...")
+        await context.send("FxBot 正在关闭。")
     except Exception:
         logger.opt(exception=True).warning("发送关闭提示失败")
     await asyncio.sleep(0.5)
@@ -317,12 +317,12 @@ async def _update(context: HandlerContext) -> None:
             "然后重建一次镜像；之后即可在容器内更新。"
         )
         return
-    await context.send("正在尝试更新 FxBot，请稍等片刻。")
+    await context.send("正在更新 FxBot，稍等。")
     restart_ready = False
 
     def prepare_restart() -> None:
         nonlocal restart_ready
-        _save_restart_target(context.event, "✅ FxBot 更新重启成功")
+        _save_restart_target(context.event, "FxBot 更新完成，已重启")
         _set_pending_restart()
         restart_ready = True
 
@@ -335,9 +335,9 @@ async def _update(context: HandlerContext) -> None:
         ok, output, logs = await _git_pull(on_pull_success)
         if not ok:
             logger.error("git pull 失败: {}", _truncate(output))
-            await _send_report(context, ["❌ FxBot 更新失败！", "git pull 返回错误，完整信息已记录到后台日志。"])
+            await _send_report(context, ["FxBot 更新失败。", "git pull 返回错误，完整信息已记录到后台日志。"])
             return
-        status = "本次无更新内容" if _already_up_to_date(output) else "更新完成"
+        status = "没有新提交" if _already_up_to_date(output) else "更新完成"
         if docker:
             # Git 已是最新也要执行：上次依赖同步可能失败或被取消。
             synced, detail = await _sync_docker_dependencies()
@@ -347,8 +347,8 @@ async def _update(context: HandlerContext) -> None:
                     _send_report(
                         context,
                         [
-                            "❌ FxBot 依赖同步失败，本次未重启！",
-                            "仓库代码已拉取，但依赖未就绪；处理后台日志中的错误后，可再次发送 #更新 重试。",
+                            "FxBot 依赖同步失败，本次没有重启。",
+                            "仓库代码已拉取，但依赖还没就绪。处理后台日志里的错误后，再发一次 #更新 即可。",
                             *logs,
                         ],
                     ),
@@ -357,9 +357,7 @@ async def _update(context: HandlerContext) -> None:
                 return
             prepare_restart()
         try:
-            await asyncio.wait_for(
-                _send_report(context, [f"✅ FxBot {status}！", *logs]), timeout=_REPORT_TIMEOUT_SECONDS
-            )
+            await asyncio.wait_for(_send_report(context, [f"FxBot {status}。", *logs]), timeout=_REPORT_TIMEOUT_SECONDS)
         except Exception:
             logger.opt(exception=True).warning("更新成功通知未完成，仍执行重启")
     finally:
