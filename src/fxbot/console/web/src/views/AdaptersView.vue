@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import PageHeader from '@/components/PageHeader.vue'
+import { copyText } from '@/utils/clipboard'
 import { adapterApi, type AdapterStatus, type QQBotPayload, type RuntimeConfigPayload } from '@/api'
 
 const DEFAULT_INTENTS = 251658240
@@ -85,7 +86,7 @@ const restartNeeded = computed(
     !!config.value && (config.value.host !== initialHost.value || config.value.port !== initialPort.value),
 )
 const onebotEndpoint = computed(() =>
-  config.value ? `ws://${config.value.host}:${config.value.port}/onebot/v11/ws` : '',
+  config.value ? `ws://127.0.0.1:${config.value.port}/onebot/v11/ws` : '',
 )
 
 function emptyDraft(): BotDraft {
@@ -348,7 +349,7 @@ const removeBot = async (appId: string) => {
 const copyEndpoint = async () => {
   if (!onebotEndpoint.value) return
   try {
-    await navigator.clipboard.writeText(onebotEndpoint.value)
+    await copyText(onebotEndpoint.value)
     ElMessage.success('已复制 OneBot 连接地址')
   } catch (error) {
     console.error('复制失败', error)
@@ -447,7 +448,8 @@ onMounted(() => {
             </div>
             <div class="field-help">
               V12 使用 <code>/onebot/v12/{platform}/{bot_id}/ws</code>；连接时需要在请求头携带
-              <code>Authorization: Bearer &lt;令牌&gt;</code>。
+              <code>Authorization: Bearer &lt;令牌&gt;</code>。这里固定显示本机地址
+              <code>127.0.0.1</code>；远程连接请换成服务器实际 IP。
             </div>
           </el-form-item>
 
