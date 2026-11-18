@@ -131,6 +131,21 @@ class QQCodecTests(unittest.TestCase):
         self.assertEqual(event.original_message.mentions(), ["BOT_USER"])
         self.assertEqual(event.metadata["guild_id"], "GUILD_ID")
 
+    def test_group_mention_of_bot_uses_is_you_without_legacy_id_match(self):
+        source = payload("GROUP_MESSAGE_CREATE", content="<@BOT_OPENID> hi")
+        source["d"]["mentions"] = [
+            {
+                "scope": "single",
+                "id": "BOT_OPENID",
+                "is_you": True,
+                "member_openid": "BOT_OPENID",
+                "username": "bot",
+            }
+        ]
+        event = parse_event(source, bot_id=APP_ID, bot_user_id="BOT_USER")
+        self.assertTrue(event.to_me)
+        self.assertEqual(event.message.plain_text(), "hi")
+
     def test_original_message_is_independent_and_escaped_mentions_stay_text(self):
         source = payload(content="&lt;@USER&gt; &amp; 测试")
         original = deepcopy(source)
@@ -151,6 +166,13 @@ class QQCodecTests(unittest.TestCase):
         self.assertEqual(event.message.segments[-1].type, "image")
         self.assertEqual(event.message.segments[-1].data["file"], "https://example.com/image.png")
         self.assertEqual(event.reply.message_id, "ref=/id")
+
+    def test_channel_attachment_without_content_type_is_an_image(self):
+        source = payload("MESSAGE_CREATE")
+        source["d"]["attachments"] = [{"url": "example.com/channel.png"}]
+        event = parse_event(source, bot_id=APP_ID)
+        self.assertEqual(event.message.segments[-1].type, "image")
+        self.assertEqual(event.message.segments[-1].data["file"], "https://example.com/channel.png")
 
     def test_invalid_timestamp_role_or_identity_does_not_pass(self):
         for field, value in (("timestamp", "2026-11-13T10:00:00"), ("group_openid", "../x")):

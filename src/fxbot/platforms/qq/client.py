@@ -17,6 +17,7 @@ from fxbot.core.errors import BotOffline, ActionFailed
 from .api import QQHTTP
 from .codec import api_path, opaque_id, identifier
 from ...core import Event, Message, Capability, Capabilities, QuotedMessage, SessionTarget, UnsupportedCapability
+from .recent import recent_reply, remember_sent, cached_message as cached_item_message
 from .actions import QQ_API, QQActions
 from ...core.context import current_event_context
 
@@ -293,7 +294,17 @@ class QQClient:
         self._sent[message_id] = (route, target_id)
         if len(self._sent) > 4096:
             self._sent.popitem(last=False)
-        return {"message_id": message_id, **({"ext_info": result["ext_info"]} if "ext_info" in result else {})}
+        ext_info = result.get("ext_info")
+        if route == "v2/groups" and isinstance(ext_info, dict):
+            ref_idx = ext_info.get("ref_idx")
+            remember_sent(
+                self,
+                target_id,
+                message,
+                message_id,
+                ref_idx if isinstance(ref_idx, str) and ref_idx else None,
+            )
+        return {"message_id": message_id, **({"ext_info": ext_info} if ext_info is not None else {})}
 
     async def resolve_media(self, segment) -> str | bytes:
         if segment.type not in {"image", "voice", "audio", "video", "file"}:
@@ -307,14 +318,40 @@ class QQClient:
         if event.reply is None:
             return None
         raw = event.metadata.get("qq_reply")
-        if raw is not None:
+        if event.target.kind == "channel" or event.target.target_id.startswith("dms/"):
             from .codec import parse_message
 
-            author = raw.get("author") or {}
-            key = "member_openid" if event.is_group else "user_openid"
-            sender = identifier(author[key]) if author.get(key) else None
-            return QuotedMessage(event.reply.message_id, sender, author.get("username") or "", parse_message(raw))
-        return QuotedMessage(event.reply.message_id, event.reply.user_id, event.reply.user_name)
+            channel_id = event.metadata.get("channel_id")
+            if not isinstance(channel_id, str) or not channel_id:
+                raise ValueError("QQ 引用缺少频道身份")
+            data = await self._request(
+                "GET", api_path("channels", identifier(channel_id), "messages", opaque_id(event.reply.message_id))
+            )
+            if isinstance(data, dict) and isinstance(data.get("message"), dict):
+                data = data["message"]
+            if not isinstance(data, dict):
+                raise ActionFailed("QQ 引用消息响应格式无效")
+            author = data.get("author") if isinstance(data.get("author"), dict) else {}
+            sender = identifier(author.get("id")) if author.get("id") else None
+            name = author.get("username") if isinstance(author.get("username"), str) else ""
+            return QuotedMessage(event.reply.message_id, sender, name, parse_message(data, guild=True))
+        from .codec import parse_message
+
+        message = parse_message(raw) if isinstance(raw, dict) else Message([])
+        author = raw.get("author") if isinstance(raw, dict) and isinstance(raw.get("author"), dict) else {}
+        key = "member_openid" if event.is_group else "user_openid"
+        sender = identifier(author[key]) if author.get(key) else None
+        name = author.get("username") if isinstance(author.get("username"), str) else ""
+        cached = recent_reply(self, event)
+        if cached is not None:
+            cached_message = cached_item_message(cached)
+            if not any(part.type == "text" and part.text_value().strip() for part in message.segments):
+                message.segments[:0] = [part for part in cached_message.segments if part.type == "text"]
+            if not any(part.type == "image" for part in message.segments):
+                message.segments.extend(part for part in cached_message.segments if part.type == "image")
+            sender = sender or cached.get("sender_id") or None
+            name = name or str(cached.get("sender_name") or "")
+        return QuotedMessage(event.reply.message_id, sender, name, message)
 
     async def delete_message(self, message_id: str):
         location = self._sent.get(message_id)

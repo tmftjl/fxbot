@@ -418,6 +418,52 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
                 await self.actions.get_group_info(group_id=value)
         self.http.request.assert_not_awaited()
 
+    async def test_channel_reply_fetches_quoted_message_like_original_adapter(self):
+        source = payload("MESSAGE_CREATE", content="hi")
+        source["d"]["message_reference"] = {"message_id": "QUOTED_MSG"}
+        event = parse_event(source, bot_id=APP_ID)
+        self.http.request.return_value = {
+            "id": "QUOTED_MSG",
+            "channel_id": "CHANNEL_ID",
+            "guild_id": "GUILD_ID",
+            "content": "quoted content",
+            "author": {"id": "QUOTED_AUTHOR", "username": "原作者"},
+            "attachments": [{"url": "example.com/quoted.png"}],
+        }
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(self.http.request.await_args.args, ("GET", "/channels/CHANNEL_ID/messages/QUOTED_MSG"))
+        self.assertEqual(quoted.message_id, "QUOTED_MSG")
+        self.assertEqual(quoted.sender_id, "QUOTED_AUTHOR")
+        self.assertEqual(quoted.sender_name, "原作者")
+        self.assertEqual(quoted.message.plain_text(), "quoted content")
+        self.assertEqual(quoted.message.segments[-1].type, "image")
+        self.assertEqual(quoted.message.segments[-1].data["file"], "https://example.com/quoted.png")
+
+    async def test_direct_reply_wrapped_message_is_fetched_by_channel(self):
+        source = payload("DIRECT_MESSAGE_CREATE", content="hi")
+        source["d"]["message_reference"] = {"message_id": "QUOTED_MSG"}
+        event = parse_event(source, bot_id=APP_ID)
+        self.http.request.return_value = {
+            "message": {"id": "QUOTED_MSG", "content": "quoted", "author": {"id": "AUTHOR", "username": "name"}}
+        }
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(self.http.request.await_args.args, ("GET", "/channels/CHANNEL_ID/messages/QUOTED_MSG"))
+        self.assertEqual(quoted.message.plain_text(), "quoted")
+
+    async def test_group_reply_without_author_still_exposes_quoted_text(self):
+        source = payload("GROUP_MESSAGE_CREATE", content="<@quoted-user> answer")
+        source["d"].update(
+            message_type=103,
+            message_scene={"ext": ["ref_msg_idx=7"]},
+            mentions=[{"scope": "single", "id": "quoted-user", "is_you": False, "member_openid": "QUOTED"}],
+            msg_elements=[{"msg_idx": 7, "content": "quoted text"}],
+        )
+        event = parse_event(source, bot_id=APP_ID)
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(quoted.message.plain_text(), "quoted text")
+        self.assertIsNone(quoted.sender_id)
+        self.http.request.assert_not_awaited()
+
     async def test_reply_selects_matching_reference_not_first_element(self):
         source = payload("GROUP_MESSAGE_CREATE", content="<@quoted-user> answer")
         source["d"].update(

@@ -155,8 +155,10 @@ def media_url(value) -> str:
     return value
 
 
-def parse_message(data: dict) -> Message:
-    content = data.get("content", "")
+def parse_message(data: dict, *, guild: bool = False) -> Message:
+    content = data.get("content")
+    if content is None:
+        content = ""
     if not isinstance(content, str):
         raise ValueError("QQ 消息文本必须为字符串")
     segments = []
@@ -183,7 +185,15 @@ def parse_message(data: dict) -> Message:
     if not isinstance(attachments, list):
         raise ValueError("QQ attachments 必须为数组")
     for item in attachments:
-        if not isinstance(item, dict) or not isinstance(item.get("content_type"), str):
+        if not isinstance(item, dict):
+            raise ValueError("QQ 媒体信息格式无效")
+        if item.get("url") is None:
+            continue
+        url = media_url(item.get("url"))
+        if guild:
+            segments.append(MessageSegment("image", {"file": url, "url": url, "name": ""}))
+            continue
+        if not isinstance(item.get("content_type"), str):
             raise ValueError("QQ 媒体信息格式无效")
         mime = item["content_type"]
         kind = (
@@ -195,9 +205,6 @@ def parse_message(data: dict) -> Message:
             if mime.startswith("video/")
             else "file"
         )
-        if item.get("url") is None:
-            continue
-        url = media_url(item.get("url"))
         segments.append(MessageSegment(kind, {"file": url, "url": url, "name": item.get("filename", "")}))
     return Message(segments)
 
@@ -236,7 +243,8 @@ def parse_event(payload: dict, *, bot_id: str, bot_user_id: str = "") -> Event:
     occurred_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     if occurred_at.tzinfo is None:
         raise ValueError("QQ 消息时间必须带时区")
-    original = parse_message(data)
+    guild_message = target.kind == "channel" or event_type == "DIRECT_MESSAGE_CREATE"
+    original = parse_message(data, guild=guild_message)
     message = Message([MessageSegment(part.type, dict(part.data)) for part in original.segments])
     to_me = event_type in {
         "C2C_MESSAGE_CREATE",
@@ -258,6 +266,12 @@ def parse_event(payload: dict, *, bot_id: str, bot_user_id: str = "") -> Event:
         mentions = []
     if not isinstance(mentions, list):
         raise ValueError("QQ mentions 必须是数组")
+    if target.kind == "group" and any(
+        mention.get("scope") == "single" and mention.get("is_you") is True
+        for mention in mentions
+        if isinstance(mention, dict)
+    ):
+        to_me = True
     if target.kind == "group":
         identities = {}
         for mention in mentions:
@@ -308,7 +322,7 @@ def parse_event(payload: dict, *, bot_id: str, bot_user_id: str = "") -> Event:
     if data.get("message_type") == 103:
         scene = data.get("message_scene") or {}
         elements = data.get("msg_elements") or []
-        ext = scene.get("ext", [])
+        ext = scene.get("ext") or []
         if not isinstance(ext, list) or not isinstance(elements, list):
             raise ValueError("QQ 引用消息结构无效")
         reference_index = next(
@@ -319,8 +333,20 @@ def parse_event(payload: dict, *, bot_id: str, bot_user_id: str = "") -> Event:
             ),
             None,
         )
+        if reference_index is not None and reply is None:
+            # QQ 可能只给引用索引，不回传 msg_elements；缓存仍能补出原文。
+            reply = ReplyTarget(opaque_id(reference_index))
         quoted = (
-            next((element for element in elements if element.get("msg_idx") == reference_index), None)
+            next(
+                (
+                    element
+                    for element in elements
+                    if isinstance(element, dict)
+                    and element.get("msg_idx") is not None
+                    and str(element.get("msg_idx")) == str(reference_index)
+                ),
+                None,
+            )
             if reference_index
             else None
         )

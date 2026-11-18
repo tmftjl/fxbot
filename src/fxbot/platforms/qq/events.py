@@ -11,6 +11,7 @@ from fxbot.core.errors import BotOffline, ActionFailed
 
 from .codec import identifier, parse_event
 from ...core import UnsupportedCapability
+from .recent import remember_event
 
 
 class QQEventStream:
@@ -56,6 +57,7 @@ class QQEventStream:
             except (ActionFailed, httpx.HTTPError, ValueError):
                 logger.exception("QQ 频道 Bot 身份查询失败，本次事件未分发")
                 return
+        remember_event(self.client, event)
         await self.application.router.dispatch(self.client, event)
 
     def disconnect(self):
