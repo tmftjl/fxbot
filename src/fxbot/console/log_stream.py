@@ -9,7 +9,7 @@ import threading
 import traceback
 from typing import TYPE_CHECKING, Any
 from asyncio import Queue, get_running_loop
-from datetime import datetime, timezone
+from datetime import datetime
 from collections import deque
 
 from loguru import logger
@@ -78,20 +78,29 @@ def _sink(message: Message) -> None:
         traceback.print_exc(file=sys.stderr)
 
 
-class _StandardSink(logging.Handler):
-    """采集核心和 ASGI 服务的标准日志，不影响其他处理器。"""
+class _LoguruForwarder(logging.Handler):
+    """把标准库日志转交给 loguru，core 保持零第三方依赖。"""
 
     def emit(self, record: logging.LogRecord) -> None:
-        """日志入口必须独立报告自身的处理异常。"""
+        """保留原始模块与异常，转发失败交给 logging 自身的错误处理。"""
         try:
-            _append(
-                datetime.fromtimestamp(record.created, timezone.utc), record.levelname, record.name, self.format(record)
-            )
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame, depth = logging.currentframe(), 0
+        while frame is not None:
+            module = frame.f_globals.get("__name__", "")
+            if module != __name__ and frame.f_code.co_filename != logging.__file__:
+                break
+            frame = frame.f_back
+            depth += 1
+        try:
+            logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
         except Exception:
             self.handleError(record)
 
 
-_standard_sink = _StandardSink(level=logging.INFO)
+_loguru_forwarder = _LoguruForwarder(level=logging.INFO)
 
 
 def boot_id() -> str:
@@ -136,7 +145,7 @@ def start() -> None:
         backtrace=False,
         diagnose=False,
     )
-    logging.getLogger().addHandler(_standard_sink)
+    logging.getLogger().addHandler(_loguru_forwarder)
 
 
 def stop() -> None:
@@ -145,7 +154,7 @@ def stop() -> None:
     if _sink_id is not None:
         logger.remove(_sink_id)
         _sink_id = None
-    logging.getLogger().removeHandler(_standard_sink)
+    logging.getLogger().removeHandler(_loguru_forwarder)
     with _lock:
         _subscribers.clear()
         _loop = None

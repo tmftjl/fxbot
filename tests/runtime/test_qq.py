@@ -295,7 +295,7 @@ class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await api.close()
 
-    async def test_upload_requests_drop_write_timeout(self):
+    async def test_upload_requests_match_original_unbounded_write_timeout(self):
         fake = SimpleNamespace(
             timeout=httpx.Timeout(15.0),
             request=AsyncMock(return_value=httpx.Response(200, json={})),
@@ -432,6 +432,29 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(upload.kwargs["upload"], True)
         self.assertNotIn("upload", send.kwargs)
 
+    async def test_slow_media_upload_does_not_block_other_targets(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def request(method, path, **kwargs):
+            if path.endswith("/files"):
+                started.set()
+                await release.wait()
+                return {"file_info": "media-info"}
+            return {"id": f"id-{path}"}
+
+        bot = QQClient(APP_ID, SimpleNamespace(request=request))
+        first = asyncio.create_task(
+            bot.send(SessionTarget("qq", APP_ID, "group", "GROUP_A"), Message([MessageSegment.image(b"PNG")]))
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        second = await asyncio.wait_for(
+            bot.send(SessionTarget("qq", APP_ID, "group", "GROUP_B"), Message.text("hi")), timeout=1
+        )
+        self.assertTrue(second["message_id"].endswith("/messages"))
+        release.set()
+        await first
+
     async def test_timeout_does_not_reuse_sequence_or_retry(self):
         self.api.request.side_effect = [TimeoutError, {"id": "second"}]
         token = bind_event(self.bot, self.event)
@@ -507,23 +530,25 @@ class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.app = Application()
         await self.app.start()
-        self.connection = QQWebhookConnection(self.app, APP_ID, QQBotSettings(SECRET), settings(queue_size=1))
+        self.connection = QQWebhookConnection(self.app, APP_ID, QQBotSettings(SECRET), settings())
         self.addAsyncCleanup(self.connection.close)
         self.addAsyncCleanup(self.app.stop)
 
-    async def test_queue_capacity_duplicate_and_close_ownership(self):
+    async def drain(self):
+        tasks = tuple(self.connection.events._tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_duplicate_and_close_ownership(self):
         from fastapi import HTTPException
 
         self.connection.receive(payload())
         self.connection.receive(payload())
-        self.assertEqual(self.connection.events.queue.qsize(), 1)
-        with self.assertRaises(HTTPException) as caught:
-            self.connection.receive(payload(message_id="second"))
-        self.assertEqual(caught.exception.status_code, 503)
-        self.assertEqual(len(self.connection.events.seen), 1)
+        self.assertEqual(len(self.connection.events._tasks), 2)
+        await self.drain()
         await self.connection.close()
         self.assertFalse(self.app.bots)
-        self.assertTrue(self.connection.events.worker.done())
+        self.assertTrue(self.connection.events.closed)
         self.assertTrue(self.connection.api._http.is_closed)
         with self.assertRaises(HTTPException):
             self.connection.receive(payload(message_id="third"))
@@ -537,29 +562,42 @@ class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
         self.app.router.message("capture", handler)
         self.connection.api.request = AsyncMock(return_value={"id": "BOT_USER"})
         self.connection.receive(payload("AT_MESSAGE_CREATE", content="<@BOT_USER> /ping"))
-        await self.connection.events.queue.join()
+        await self.drain()
         self.assertEqual(seen[0].message.plain_text(), "/ping")
         self.connection.api.request.assert_awaited_once_with("GET", "/users/@me")
 
     async def test_other_group_with_same_message_id_is_not_deduplicated(self):
         self.connection.receive(payload())
-        await self.connection.events.queue.join()
+        await self.drain()
         other = payload()
         other["d"]["group_openid"] = "OTHER_GROUP"
         self.connection.receive(other)
-        self.assertEqual(len(self.connection.events.seen), 2)
-        await self.connection.events.queue.join()
+        self.assertEqual(len(self.connection.events._tasks), 1)
+        await self.drain()
 
-    async def test_queue_full_event_can_be_resubmitted(self):
-        from fastapi import HTTPException
+    async def test_all_events_run_without_queue_limit(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        self.addCleanup(release.set)
+        active, peak = 0, 0
 
-        self.connection.receive(payload())
-        with self.assertRaises(HTTPException):
-            self.connection.receive(payload(message_id="second"))
-        await self.connection.events.queue.join()
-        self.connection.receive(payload(message_id="second"))
-        await self.connection.events.queue.join()
-        self.assertEqual(len(self.connection.events.seen), 2)
+        async def capture(ctx):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            if active == 50:
+                entered.set()
+            try:
+                await release.wait()
+            finally:
+                active -= 1
+
+        self.app.router.message("capture", capture)
+        for index in range(50):
+            self.connection.receive(payload(message_id=f"m{index}"))
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertEqual(peak, 50)
+        release.set()
+        await self.drain()
 
     async def test_webhook_later_event_runs_while_first_is_waiting(self):
         entered, later, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -579,7 +617,7 @@ class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(later.wait(), 1)
         self.assertFalse(release.is_set())
         release.set()
-        await asyncio.wait_for(self.connection.events.queue.join(), 1)
+        await self.drain()
 
     async def test_close_cancels_inflight_handler_and_releases_http(self):
         entered = asyncio.Event()
@@ -605,7 +643,7 @@ class QQEntryTests(unittest.TestCase):
     def test_signed_notice_missing_payload_returns_400_without_registration(self):
         result = self.post({"op": 0, "t": "GROUP_MEMBER_ADD", "id": "missing-data"})
         self.assertEqual(result.status_code, 400)
-        self.assertIsNone(self.connection.events.worker)
+        self.assertFalse(self.connection.events.started)
         self.assertEqual(self.sent, [])
 
     def setUp(self):
@@ -635,6 +673,14 @@ class QQEntryTests(unittest.TestCase):
         raw, headers = signed(data, **kwargs)
         return self.client.post("/qq/webhook", content=raw, headers=headers)
 
+    def drain_events(self):
+        async def wait():
+            tasks = tuple(self.connection.events._tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.client.portal.call(wait)
+
     def test_integer_member_join_timestamp_enters_router_and_passive_reply(self):
         async def joined(context):
             self.assertEqual(context.event.user_id, "MEMBER")
@@ -653,7 +699,7 @@ class QQEntryTests(unittest.TestCase):
             },
         }
         self.assertEqual(self.post(frame).status_code, 200)
-        self.client.portal.call(self.connection.events.queue.join)
+        self.drain_events()
         body = json.loads(self.sent[-1].content)
         self.assertEqual(body["event_id"], "member-join-event")
         self.assertNotIn("msg_id", body)
@@ -680,7 +726,7 @@ class QQEntryTests(unittest.TestCase):
             },
         }
         self.assertEqual(self.post(frame).status_code, 200)
-        self.client.portal.call(self.connection.events.queue.join)
+        self.drain_events()
         body = json.loads(self.sent[-1].content)
         self.assertEqual(body["event_id"], "interaction-envelope")
         self.assertNotIn("msg_seq", body)
@@ -690,7 +736,7 @@ class QQEntryTests(unittest.TestCase):
         response = self.post(payload())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"op": 12, "d": 0})
-        self.client.portal.call(self.connection.events.queue.join)
+        self.drain_events()
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0].url.path, "/v2/groups/GROUP_OPENID/messages")
         self.assertEqual(
@@ -704,8 +750,8 @@ class QQEntryTests(unittest.TestCase):
         )
         self.assertEqual(self.sent[0].headers["Authorization"], "QQBot fake-access")
         self.assertEqual(self.post(payload()).status_code, 200)
-        self.client.portal.call(self.connection.events.queue.join)
-        self.assertEqual(len(self.sent), 1)
+        self.drain_events()
+        self.assertEqual(len(self.sent), 2)
         self.assertEqual(self.app.state.runtime.bots, (self.connection.client,))
 
     def test_c2c_and_channel_and_dms_ping_use_distinct_official_paths(self):
@@ -716,7 +762,7 @@ class QQEntryTests(unittest.TestCase):
         )
         for kind, content, path in cases:
             self.assertEqual(self.post(payload(kind, message_id=kind, content=content)).status_code, 200)
-            self.client.portal.call(self.connection.events.queue.join)
+            self.drain_events()
             self.assertEqual(self.sent[-1].url.path, path)
             self.assertEqual(json.loads(self.sent[-1].content)["content"], "pong")
 
@@ -767,12 +813,12 @@ class QQEntryTests(unittest.TestCase):
         invalid = payload()
         del invalid["d"]["author"]["member_openid"]
         self.assertEqual(self.post(invalid).status_code, 400)
-        self.assertFalse(self.connection.events.seen)
+        self.assertFalse(self.connection.events._tasks)
         self.assertFalse(self.app.state.runtime.bots)
 
     def test_unsupported_like_is_explicit_without_network_write(self):
         self.assertEqual(self.post(payload(content="#赞我")).status_code, 200)
-        self.client.portal.call(self.connection.events.queue.join)
+        self.drain_events()
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(json.loads(self.sent[0].content)["content"], "当前平台不支持点赞")
 
@@ -795,5 +841,5 @@ class QQEntryTests(unittest.TestCase):
         bot = OneBot11Client(APP_ID, AsyncMock())
         self.client.portal.call(lambda: self.app.state.runtime.register(bot, close=AsyncMock()))
         self.assertEqual(self.post(payload()).status_code, 200)
-        self.client.portal.call(self.connection.events.queue.join)
+        self.drain_events()
         self.assertEqual({item.platform for item in self.app.state.runtime.bots}, {"qq", "onebot11"})

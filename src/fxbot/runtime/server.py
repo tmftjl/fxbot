@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hmac
 import asyncio
-import logging
 from contextlib import asynccontextmanager
 
+from loguru import logger
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
@@ -36,8 +36,6 @@ from ..console.server import mount_console
 from ..platforms.onebot11.protocol import OneBot11Protocol
 from ..platforms.onebot12.protocol import OneBot12Protocol
 
-logger = logging.getLogger(__name__)
-
 
 def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
     """创建独立实例，不加载旧应用、数据库或业务插件。"""
@@ -63,7 +61,7 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
     @app.exception_handler(Exception)
     async def server_error(request: Request, error: Exception) -> JSONResponse:
         """HTTP 边界集中记录未知故障，响应不携带内部异常。"""
-        logger.error("HTTP 请求失败", exc_info=(type(error), error, error.__traceback__))
+        logger.opt(exception=(type(error), error, error.__traceback__)).error("HTTP 请求失败")
         return JSONResponse(status_code=500, content={"detail": "服务暂时不可用"})
 
     @app.get("/health")
@@ -132,8 +130,8 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
                 connection.receive(await websocket.receive_json())
         except WebSocketDisconnect:
             disconnected = True
-        except (ValueError, asyncio.QueueFull):
-            logger.warning("OneBot 连接协议无效或事件队列过载")
+        except ValueError:
+            logger.warning("OneBot 连接协议无效")
             close_code = 1008
         finally:
             await connection.close(close_code)

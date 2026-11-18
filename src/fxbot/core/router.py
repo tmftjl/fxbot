@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Unpack, TypeVar, NoReturn, TypedDict
 from itertools import groupby
 from dataclasses import field, dataclass
 from collections.abc import Callable, Awaitable
+
+from loguru import logger
 
 from .types import Event, Message, BotClient, MessageSegment
 from .context import bind_event, reset_event
@@ -15,7 +16,6 @@ from .services import ServiceScope
 from .contracts import ApplicationServices
 from .concurrency import run_concurrently
 
-logger = logging.getLogger(__name__)
 Guard = Callable[[Event], Awaitable[bool]]
 T = TypeVar("T")
 
@@ -236,7 +236,7 @@ class Router:
 
     async def dispatch(self, bot: BotClient, event: Event) -> DispatchResult:
         """分发单条事件，异常闭锁、取消传播，并在全部退出路径恢复上下文。"""
-        logger.info("%s", _event_log_text(event))
+        logger.success("{}", _event_log_text(event))
         _normalize_message_segments(event)
         token = bind_event(bot, event)
         handled: list[str] = []
@@ -250,7 +250,7 @@ class Router:
                     if await guard(event) is not True:
                         return DispatchResult(blocked=True, rejected=True)
                 except Exception:
-                    logger.exception("事件准入检查失败: %s", _event_log_text(event))
+                    logger.exception("事件准入检查失败: {}", _event_log_text(event))
                     return DispatchResult(failed=("preprocessor",), blocked=True, rejected=True)
             for group in groups:
                 results = await run_concurrently(self._dispatch_route(route, bot, event) for route in group)
@@ -290,5 +290,5 @@ class Router:
                 pass
             return DispatchResult(handled=handled, blocked=route.block)
         except Exception:
-            logger.exception("路由执行失败: %s %s", route.name, _event_log_text(event))
+            logger.exception("路由执行失败: {} {}", route.name, _event_log_text(event))
             return DispatchResult(handled=handled, failed=(route.name,), blocked=True)

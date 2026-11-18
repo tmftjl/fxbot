@@ -21,8 +21,6 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8683
     action_timeout: float = 15.0
-    queue_size: int = 128
-    event_concurrency: int = 8
     max_pending: int = 128
     close_timeout: float = 5.0
     qq_bots: Mapping[str, QQBotSettings] = field(default_factory=dict, repr=False)
@@ -40,9 +38,12 @@ class Settings:
         """从内存对象构造设置，控制台保存和文件读取共用同一套校验。"""
         if not isinstance(raw, dict):
             raise ValueError("独立运行时配置必须是对象")
-        if raw.keys() - {item.name for item in fields(cls)}:
-            raise ValueError("独立运行时配置包含未知字段")
         values = dict(raw)
+        # 旧版本的有界事件队列配置已失效；静默丢弃，避免已有配置无法启动。
+        for legacy in ("queue_size", "event_concurrency"):
+            values.pop(legacy, None)
+        if values.keys() - {item.name for item in fields(cls)}:
+            raise ValueError("独立运行时配置包含未知字段")
         if "qq_bots" in values:
             if not isinstance(values["qq_bots"], dict):
                 raise ValueError("qq_bots 必须是 AppID 到凭证的对象")
@@ -56,8 +57,6 @@ class Settings:
             "host": self.host,
             "port": self.port,
             "action_timeout": self.action_timeout,
-            "queue_size": self.queue_size,
-            "event_concurrency": self.event_concurrency,
             "max_pending": self.max_pending,
             "close_timeout": self.close_timeout,
             "qq_bots": {app_id: bot.to_payload() for app_id, bot in self.qq_bots.items()},
@@ -85,7 +84,7 @@ class Settings:
         """校验有限监听和容量参数。"""
         if not isinstance(self.host, str) or not self.host:
             raise ValueError("监听地址不能为空")
-        for value in (self.port, self.queue_size, self.event_concurrency, self.max_pending):
+        for value in (self.port, self.max_pending):
             if type(value) is not int or value <= 0:
                 raise ValueError("端口和容量必须为正整数")
         if self.port > 65535:

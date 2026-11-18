@@ -21,6 +21,7 @@ from fxbot.core import (
     on_command,
     on_message,
 )
+from tests.log_capture import capture_loguru
 from fxbot.core.matcher import Matcher, MatcherOptions
 from fxbot.core.plugins import LoadedPlugin, PluginContext, PluginRuntime, PluginMetadata
 from fxbot.core.matching import command_match
@@ -225,7 +226,7 @@ class MatcherTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await router.dispatch(self.bot, event())
             else:
-                with self.assertLogs("fxbot.core.router", level="ERROR"):
+                with capture_loguru("ERROR"):
                     self.assertEqual((await router.dispatch(self.bot, event())).failed, ("ping",))
             with self.assertRaises(RuntimeError):
                 await matcher.send("outside")

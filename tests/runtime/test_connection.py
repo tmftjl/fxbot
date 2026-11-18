@@ -37,9 +37,8 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         """等待一次出站动作，测试失败时不会无限挂起。"""
         return await asyncio.wait_for(self.sent.get(), 1)
 
-    async def test_connection_close_joins_an_already_cancelled_consumers_cleanup(self) -> None:
+    async def test_disconnect_does_not_interrupt_already_cancelled_event_cleanup(self) -> None:
         entered, cleaning, release, cleaned, interrupted = (asyncio.Event() for _ in range(5))
-        stopping_consumer = asyncio.Event()
 
         async def handler(context) -> None:
             entered.set()
@@ -54,27 +53,19 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                     raise
                 cleaned.set()
 
-        original_stop = self.connection._stop_consumer
-
-        async def stop_consumer() -> None:
-            stopping_consumer.set()
-            await original_stop()
-
-        self.connection._stop_consumer = stop_consumer
         self.application.router.message("cleanup", handler)
         self.connection.receive(payload())
         closing = None
         try:
             await asyncio.wait_for(entered.wait(), 1)
-            self.application.cancel(self.connection._worker)
+            for task in tuple(self.connection._tasks):
+                self.application.cancel(task)
             await asyncio.wait_for(cleaning.wait(), 1)
             closing = asyncio.create_task(self.connection.close())
-            await asyncio.wait_for(stopping_consumer.wait(), 1)
-            await asyncio.sleep(0)
-            self.assertFalse(interrupted.is_set())
-            self.assertFalse(closing.done())
-            release.set()
             await asyncio.wait_for(closing, 1)
+            self.assertFalse(interrupted.is_set())
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*self.connection._tasks, return_exceptions=True), 1)
             self.assertTrue(cleaned.is_set())
         finally:
             release.set()
@@ -184,7 +175,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_application_shutdown_closes_transport(self) -> None:
         await self.application.stop()
         self.close_transport.assert_awaited_once_with(1001)
-        self.assertTrue(self.connection._worker.done())
+        self.assertFalse(self.connection._started)
         with self.assertRaises(BotOffline):
             await self.connection.client.call("after_shutdown")
 
@@ -222,13 +213,14 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         await first
         self.assertTrue(self.sent.empty())
 
-    async def test_queue_overload_never_blocks_action_responses(self) -> None:
-        self.connection._queue = asyncio.Queue(maxsize=1)
-        self.connection.receive(payload())
-        with self.assertRaises(asyncio.QueueFull):
+    async def test_many_events_never_block_action_responses(self) -> None:
+        for _ in range(200):
             self.connection.receive(payload())
+        action = asyncio.create_task(self.connection.client.call("get_login_info"))
+        packet = await asyncio.wait_for(self.next_action(), 1)
+        self.connection.receive({"echo": packet["echo"], "status": "ok", "retcode": 0, "data": {"user_id": 100}})
+        self.assertEqual(await asyncio.wait_for(action, 1), {"user_id": 100})
         await self.connection.close()
-        await self.connection._queue.join()
 
     async def test_transport_failure_does_not_retry(self) -> None:
         await self.connection.close()
@@ -266,7 +258,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.TimeoutError):
             await self.connection.close()
         self.assertEqual(self.application.bots, ())
-        self.assertTrue(self.connection._worker.done())
+        self.assertFalse(self.connection._started)
 
 
 class SettingsTests(unittest.TestCase):

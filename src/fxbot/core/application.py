@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from enum import Enum, auto
 from typing import Any
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from collections.abc import Callable, Awaitable, Coroutine
 
+from loguru import logger
+
 from .types import Message, BotClient, SessionTarget
 from .router import Router
 
-logger = logging.getLogger(__name__)
 Hook = Callable[[], Awaitable[None]]
 
 
@@ -167,7 +167,7 @@ class Application:
         self._tasks.discard(task)
         self._cancellation_requests.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
-            logger.error("后台任务失败: %s", task.get_name(), exc_info=(type(error), error, error.__traceback__))
+            logger.opt(exception=(type(error), error, error.__traceback__)).error("后台任务失败: {}", task.get_name())
 
     def cancel(self, task: asyncio.Task) -> bool:
         """受管任务只请求取消一次，等待中的异步清理不能被重复取消打断。"""

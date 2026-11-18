@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from fxbot.core import Router, current_event
+from tests.log_capture import capture_loguru
 from fxbot.core.concurrency import run_concurrently
 from tests.migration.test_router import event
 
@@ -73,7 +74,7 @@ class ConcurrentRouterTests(unittest.IsolatedAsyncioTestCase):
         self.router.message("broken", AsyncMock(side_effect=ValueError("bad")), block=False)
         self.router.message("sibling", succeeded, block=False)
         self.router.message("lower", lower, priority=99)
-        with self.assertLogs("fxbot.core.router", level="ERROR"):
+        with capture_loguru("ERROR"):
             result = await self.router.dispatch(self.bot, event())
         self.assertEqual(result.handled, ("broken", "sibling"))
         self.assertEqual(result.failed, ("broken",))

@@ -208,8 +208,6 @@ export interface RuntimeConfigPayload {
   host: string
   port: number
   action_timeout: number
-  queue_size: number
-  event_concurrency: number
   max_pending: number
   close_timeout: number
   qq_bots: Record<string, QQBotPayload>

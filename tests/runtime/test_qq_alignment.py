@@ -56,6 +56,12 @@ def notice(kind, event_id="event-1", **changes):
     return {"op": 0, "t": kind, "id": event_id, "d": data}
 
 
+async def _drain(stream):
+    tasks = tuple(stream._tasks)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class QQNoticeTests(unittest.IsolatedAsyncioTestCase):
     def test_all_nonchannel_notice_types_are_preserved(self):
         for kind, event_type in NOTICE_TYPES.items():
@@ -76,12 +82,12 @@ class QQNoticeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             parse_event(notice("INTERACTION_CREATE", application_id="other"), bot_id=APP_ID)
 
-    async def test_notice_dedup_uses_event_id_not_absent_message_id(self):
+    async def test_notices_are_dispatched_without_extra_deduplication(self):
         app = Application()
         await app.start()
         self.addAsyncCleanup(app.stop)
         bot = QQClient(APP_ID, SimpleNamespace(request=AsyncMock()))
-        events = QQEventStream(app, bot, bot_user_id="", capacity=5, concurrency=2)
+        events = QQEventStream(app, bot, bot_user_id="")
         events.start(events.close)
         self.addAsyncCleanup(events.close)
         seen = []
@@ -93,33 +99,35 @@ class QQNoticeTests(unittest.IsolatedAsyncioTestCase):
         events.receive(notice("GROUP_MEMBER_ADD", "one"))
         events.receive(notice("GROUP_MEMBER_ADD", "two"))
         events.receive(notice("GROUP_MEMBER_ADD", "one"))
-        await events.queue.join()
-        self.assertEqual(seen, ["one", "two"])
+        await _drain(events)
+        self.assertEqual(seen, ["one", "two", "one"])
 
-    async def test_replayed_inflight_event_commits_only_after_original_finishes(self):
+    async def test_each_received_event_runs_even_when_another_is_inflight(self):
         app = Application()
         await app.start()
         self.addAsyncCleanup(app.stop)
         bot = QQClient(APP_ID, SimpleNamespace(request=AsyncMock()))
-        events = QQEventStream(app, bot, bot_user_id="", capacity=3, concurrency=1)
+        events = QQEventStream(app, bot, bot_user_id="")
         events.start(events.close)
         self.addAsyncCleanup(events.close)
         entered, release = asyncio.Event(), asyncio.Event()
         completed = []
 
         async def handle(ctx):
-            entered.set()
+            completed.append("started")
+            if len(completed) == 2:
+                entered.set()
             await release.wait()
 
         app.router.event("slow", "member_joined", handle)
         frame = notice("GROUP_MEMBER_ADD")
-        events.receive(frame, processed=lambda: completed.append("original"))
-        await entered.wait()
-        events.receive(frame, processed=lambda: completed.append("replay"))
-        self.assertEqual(completed, [])
+        events.receive(frame)
+        events.receive(frame)
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertEqual(completed, ["started", "started"])
         release.set()
-        await events.queue.join()
-        self.assertEqual(completed, ["original", "replay"])
+        await _drain(events)
+        self.assertEqual(completed, ["started", "started"])
 
 
 class QQAPITests(unittest.IsolatedAsyncioTestCase):
@@ -646,8 +654,7 @@ class QQShardTests(unittest.IsolatedAsyncioTestCase):
         old._online()
         await owner._children[1]._disconnect()
         self.assertFalse(app.bots)
-        with self.assertRaises(ConnectionError):
-            old._online()
+        old._online()  # 原版 HTTP 客户端不依赖 WebSocket 是否在线。
         await owner.close()
         self.assertFalse(app.bots)
         self.assertTrue(owner.api._http.is_closed)

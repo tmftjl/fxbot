@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 from fxbot.core import Event, Message, SessionTarget, current_event
 from fxbot.core.router import Router
+from tests.log_capture import capture_loguru
 from fxbot.core.matching import MatchResult
 
 
@@ -143,11 +144,11 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
             router.add("broken", handler, match=match, **options)
             if stage == "preprocessor":
                 router.add_preprocessor(failure)
-            with self.subTest(stage=stage), self.assertLogs("fxbot.core.router", level="ERROR") as logs:
+            with self.subTest(stage=stage), capture_loguru("ERROR") as logs:
                 result = await router.dispatch(self.bot, event())
             self.assertTrue(result.blocked)
             self.assertTrue(result.failed)
-            self.assertIn("secret internal path", "\n".join(logs.output))
+            self.assertIn("secret internal path", "\n".join(logs))
             self.bot.send.assert_not_awaited()
             with self.assertRaises(RuntimeError):
                 current_event()
@@ -171,7 +172,7 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
         fallback = AsyncMock()
         self.router.message("send", handler, block=False)
         self.router.message("fallback", fallback, priority=99)
-        with self.assertLogs("fxbot.core.router", level="ERROR"):
+        with capture_loguru("ERROR"):
             result = await self.router.dispatch(self.bot, event())
         self.assertEqual(result.failed, ("send",))
         fallback.assert_not_awaited()

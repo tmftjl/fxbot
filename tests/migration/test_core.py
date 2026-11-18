@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 import asyncio
 import unittest
-import subprocess
 from types import SimpleNamespace
-from pathlib import Path
 
 from fxbot.core import (
     Event,
@@ -59,23 +56,6 @@ class CoreTypeTests(unittest.TestCase):
             SessionTarget("test", "bot", "unknown", "user")
         with self.assertRaises(ValueError):
             Event(None, None, "message", "other", "bot", "user", "", SessionTarget("test", "bot", "private", "user"))
-
-    def test_import_in_interpreter_without_site_packages(self) -> None:
-        root = Path(__file__).resolve().parents[2] / "src"
-        script = (
-            "import sys, importlib.util; "
-            "sys.path.insert(0, sys.argv[1]); "
-            "from fxbot import core; "
-            "assert core.Message.text('hello').plain_text() == 'hello'; "
-        )
-        result = subprocess.run(
-            [sys.executable, "-I", "-S", "-c", script, str(root)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_event_exposes_only_core_fields(self) -> None:
         event = Event(

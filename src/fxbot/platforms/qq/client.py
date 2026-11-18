@@ -79,7 +79,6 @@ class QQClient:
         )
         self._sequence = sequences if sequences is not None else OrderedDict()
         self._sent: OrderedDict[str, tuple[str, str]] = OrderedDict()
-        self._send_lock = asyncio.Lock()
         self._moderation_lock = asyncio.Lock()
         self._available = available
 
@@ -197,109 +196,104 @@ class QQClient:
         text = "".join(content)
         if not text and not media and not advanced:
             raise ValueError("QQ 不能发送空消息")
-        async with self._send_lock:
-            self._online()
-            payload: dict[str, Any] = {"content": text, **advanced}
-            event = self._current_event(target)
-            reply_id = event.message_id if event is not None else None
-            if (
-                reply_id is None
-                and event is not None
-                and event.event_id
-                and event.metadata.get("qq_event_type") in _EVENT_REPLY_TYPES
-            ):
-                payload["event_id"] = event.event_id
-            passive_id = passive if passive is not None else reply_id
-            if passive_id is not None:
-                payload["msg_id"] = passive_id
-                if passive is not None and route.startswith("v2/"):
-                    # 与 gscore 原版一致：群/C2C 后台发送把同一 ID 同时作为事件 ID。
-                    payload["event_id"] = passive_id
-                if route.startswith("v2/"):
-                    key = (target.key(), passive_id)
-                    now = time.monotonic()
-                    while self._sequence and next(iter(self._sequence.values()))[1] <= now:
-                        self._sequence.popitem(last=False)
-                    sequence = self._sequence.get(key, (0, now))[0] + 1
-                    self._sequence[key] = (sequence, now + 300)
-                    self._sequence.move_to_end(key)
-                    if len(self._sequence) > 4096:
-                        self._sequence.popitem(last=False)
-                    payload["msg_seq"] = sequence
-            if reference is not None:
-                if event is not None and reference == event.message_id:
-                    ext = event.metadata.get("qq_data", {}).get("message_scene", {}).get("ext", [])
-                    reference = next(
-                        (value.removeprefix("msg_idx=") for value in ext if value.startswith("msg_idx=")), reference
-                    )
-                payload["message_reference"] = {"message_id": reference}
-            path = api_path(*route.split("/"), target_id, "messages")
-            files = None
+        self._online()
+        payload: dict[str, Any] = {"content": text, **advanced}
+        event = self._current_event(target)
+        reply_id = event.message_id if event is not None else None
+        if (
+            reply_id is None
+            and event is not None
+            and event.event_id
+            and event.metadata.get("qq_event_type") in _EVENT_REPLY_TYPES
+        ):
+            payload["event_id"] = event.event_id
+        passive_id = passive if passive is not None else reply_id
+        if passive_id is not None:
+            payload["msg_id"] = passive_id
+            if passive is not None and route.startswith("v2/"):
+                # 与 gscore 原版一致：群/C2C 后台发送把同一 ID 同时作为事件 ID。
+                payload["event_id"] = passive_id
             if route.startswith("v2/"):
-                payload["msg_type"] = (
-                    4
-                    if "embed" in advanced
-                    else 3
-                    if "ark" in advanced
-                    else 2
-                    if any(name in advanced for name in ("markdown", "keyboard", "prompt_keyboard", "action_button"))
-                    else 7
-                    if media or "media" in advanced
-                    else 0
+                key = (target.key(), passive_id)
+                now = time.monotonic()
+                while self._sequence and next(iter(self._sequence.values()))[1] <= now:
+                    self._sequence.popitem(last=False)
+                sequence = self._sequence.get(key, (0, now))[0] + 1
+                self._sequence[key] = (sequence, now + 300)
+                self._sequence.move_to_end(key)
+                if len(self._sequence) > 4096:
+                    self._sequence.popitem(last=False)
+                payload["msg_seq"] = sequence
+        if reference is not None:
+            if event is not None and reference == event.message_id:
+                ext = event.metadata.get("qq_data", {}).get("message_scene", {}).get("ext", [])
+                reference = next(
+                    (value.removeprefix("msg_idx=") for value in ext if value.startswith("msg_idx=")), reference
                 )
-                payload["timestamp"] = int(time.time())
-                if media:
-                    kind, source, file_name = media[0]
-                    file_type = _FILE_TYPES[kind]
-                    upload: dict[str, Any] = {
-                        "file_type": file_type,
-                        "srv_send_msg": False,
-                    }
-                    if isinstance(source, bytes) and len(source) > 10 * 1024 * 1024:
-                        if route == "v2/groups":
-                            uploaded = await self.actions.post_group_upload(
-                                target_id, file_type, file_name, source, False
-                            )
-                        else:
-                            uploaded = await self.actions.post_c2c_upload(
-                                target_id, file_type, file_name, source, False
-                            )
-                    else:
-                        upload["file_data" if isinstance(source, bytes) else "url"] = (
-                            base64.b64encode(source).decode("ascii") if isinstance(source, bytes) else source
-                        )
-                        uploaded = await self._request(
-                            "POST",
-                            api_path(*route.split("/"), target_id, "files"),
-                            json=upload,
-                            upload=True,
-                        )
-                    if not isinstance(uploaded.get("file_info"), str) or not uploaded["file_info"]:
-                        raise ValueError("QQ 媒体上传未返回 file_info")
-                    payload["media"] = {"file_info": uploaded["file_info"]}
-            elif media:
-                source = media[0][1]
-                if isinstance(source, bytes):
-                    files = {"file_image": ("image.png", source, "application/octet-stream")}
-                else:
-                    payload["image"] = source
-            if files is None:
-                result = await self._request("POST", path, json=payload)
-            else:
-                import json
-
-                fields = {
-                    key: json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
-                    for key, value in payload.items()
+            payload["message_reference"] = {"message_id": reference}
+        path = api_path(*route.split("/"), target_id, "messages")
+        files = None
+        if route.startswith("v2/"):
+            payload["msg_type"] = (
+                4
+                if "embed" in advanced
+                else 3
+                if "ark" in advanced
+                else 2
+                if any(name in advanced for name in ("markdown", "keyboard", "prompt_keyboard", "action_button"))
+                else 7
+                if media or "media" in advanced
+                else 0
+            )
+            payload["timestamp"] = int(time.time())
+            if media:
+                kind, source, file_name = media[0]
+                file_type = _FILE_TYPES[kind]
+                upload: dict[str, Any] = {
+                    "file_type": file_type,
+                    "srv_send_msg": False,
                 }
-                result = await self._request("POST", path, data=fields, files=files, upload=True)
-            message_id = result.get("id")
-            if not isinstance(message_id, str) or not message_id:
-                raise ValueError("QQ 发送成功但缺少消息 ID，未重试")
-            self._sent[message_id] = (route, target_id)
-            if len(self._sent) > 4096:
-                self._sent.popitem(last=False)
-            return {"message_id": message_id, **({"ext_info": result["ext_info"]} if "ext_info" in result else {})}
+                if isinstance(source, bytes) and len(source) > 10 * 1024 * 1024:
+                    if route == "v2/groups":
+                        uploaded = await self.actions.post_group_upload(target_id, file_type, file_name, source, False)
+                    else:
+                        uploaded = await self.actions.post_c2c_upload(target_id, file_type, file_name, source, False)
+                else:
+                    upload["file_data" if isinstance(source, bytes) else "url"] = (
+                        base64.b64encode(source).decode("ascii") if isinstance(source, bytes) else source
+                    )
+                    uploaded = await self._request(
+                        "POST",
+                        api_path(*route.split("/"), target_id, "files"),
+                        json=upload,
+                        upload=True,
+                    )
+                if not isinstance(uploaded.get("file_info"), str) or not uploaded["file_info"]:
+                    raise ValueError("QQ 媒体上传未返回 file_info")
+                payload["media"] = {"file_info": uploaded["file_info"]}
+        elif media:
+            source = media[0][1]
+            if isinstance(source, bytes):
+                files = {"file_image": ("image.png", source, "application/octet-stream")}
+            else:
+                payload["image"] = source
+        if files is None:
+            result = await self._request("POST", path, json=payload)
+        else:
+            import json
+
+            fields = {
+                key: json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
+                for key, value in payload.items()
+            }
+            result = await self._request("POST", path, data=fields, files=files, upload=True)
+        message_id = result.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("QQ 发送成功但缺少消息 ID，未重试")
+        self._sent[message_id] = (route, target_id)
+        if len(self._sent) > 4096:
+            self._sent.popitem(last=False)
+        return {"message_id": message_id, **({"ext_info": result["ext_info"]} if "ext_info" in result else {})}
 
     async def resolve_media(self, segment) -> str | bytes:
         if segment.type not in {"image", "voice", "audio", "video", "file"}:

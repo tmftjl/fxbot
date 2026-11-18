@@ -14,7 +14,7 @@ from fxbot.core.errors import BotOffline, ActionFailed
 
 API_BASE = "https://api.bot.qq.com"
 AUTH_URL = "https://api.bot.qq.com/app/getAppAccessToken"
-# 与 NoneBot 默认 HTTP 超时一致：上传不设写超时，只限制等待响应的时间。
+# 与原版 HTTP 驱动一致：上传不设写超时，只限制等待响应的时间。
 UPLOAD_READ_TIMEOUT = 30.0
 
 
@@ -107,7 +107,7 @@ class QQHTTP:
         return data
 
     def _upload_timeout(self) -> httpx.Timeout:
-        """上传沿用连接/等待响应的超时，但不限制请求体写入时间。"""
+        """上传保留连接和读超时，不额外限制请求体写入时间。"""
         base = self._http.timeout
         return httpx.Timeout(base.connect, read=UPLOAD_READ_TIMEOUT, write=None, pool=base.pool)
 

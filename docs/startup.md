@@ -66,8 +66,6 @@ uv run playwright install chromium
 | `token` | `""` | OneBot V11/V12 的 Bearer 令牌。空串或缺省表示不鉴权；不鉴权时不要监听公网 |
 | `host` / `port` | `127.0.0.1` / `8683` | HTTP 与 WebSocket 监听地址；CLI `--host` / `--port` 可覆盖 |
 | `action_timeout` | `15.0` | 单次平台动作、鉴权与关闭等待的秒数，必须为有限正数 |
-| `queue_size` | `128` | 每个连接的事件等待队列容量 |
-| `event_concurrency` | `8` | 每个连接同时处理的事件数 |
 | `max_pending` | `128` | 每连接未完成动作请求上限 |
 | `close_timeout` | `5.0` | 连接关闭与任务回收等待秒数 |
 | `qq_bots` | `{}` | QQ 官方 AppID 到凭证配置，见下文“QQ 官方 Bot” |
@@ -164,9 +162,6 @@ python -m build --no-isolation --outdir dist
 ```powershell
 # 全量测试
 .venv/Scripts/python.exe -m unittest discover -s tests -t .
-
-# 无第三方包的标准库隔离测试
-.venv/Scripts/python.exe -I -S -X utf8 -m unittest discover -s tests/migration -t .
 
 # 静态检查
 .venv/Scripts/python.exe -m ruff check src tests

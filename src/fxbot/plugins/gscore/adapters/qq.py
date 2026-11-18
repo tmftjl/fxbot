@@ -88,7 +88,6 @@ class QQAdapter(CoreAdapter):
         self, bot: BotClient, target: SessionTarget, msg: MessageSend, frame: list[WireMessage]
     ) -> CoreMessage | None:
         restricted = target.kind == "channel" or (target.kind == "private" and target.target_id.startswith("dms/"))
-        c2c = target.kind == "private" and not restricted
         segments: list[MessageSegment] = []
         if msg.msg_id:
             # 与 gscore 原版一致：被动消息 ID 显式透传给 QQClient，不依赖事件上下文。
@@ -100,8 +99,9 @@ class QQAdapter(CoreAdapter):
                 if text:
                     segments.append(MessageSegment.text(text))
             elif kind == "at":
-                if c2c:
-                    logger.debug("[gscore] QQ C2C 不支持提及段，已跳过")
+                # 原版 group_send 不传 at_list，只有频道 guild_send 保留提及。
+                if target.kind != "channel":
+                    logger.debug("[gscore] QQ 群/C2C/频道私信忽略下行提及段，与原版一致")
                     continue
                 user_id = data.get("user_id") if isinstance(data, dict) else data
                 if user_id is not None and str(user_id):

@@ -1,22 +1,20 @@
-"""全双工协议连接的事件队列和传输资源所有权。"""
+"""全双工协议连接的事件分发和传输资源所有权。"""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any, Protocol
 from contextlib import AsyncExitStack
 from collections.abc import Callable, Awaitable
 
+from loguru import logger
+
 from fxbot.core import Event, BotClient, UnsupportedCapability
 from fxbot.core.errors import BotOffline
 from fxbot.core.application import Application, ApplicationState
-from fxbot.core.concurrency import run_concurrently
 
 from .actions import ActionBroker
 from .settings import Settings
-
-logger = logging.getLogger(__name__)
 
 
 class WireProtocol(Protocol):
@@ -38,7 +36,7 @@ class WireProtocol(Protocol):
 
 
 class ProtocolConnection:
-    """组合动作请求代理与有界并发事件消费者，关闭操作只有一个所有者。"""
+    """组合动作请求代理与逐事件任务，关闭操作只有一个所有者。"""
 
     def __init__(
         self,
@@ -61,28 +59,20 @@ class ProtocolConnection:
 
         self.actions = ActionBroker(send_action, timeout=settings.action_timeout, capacity=settings.max_pending)
         self.client = protocol.create_client(bot_id, self.call)
-        self._queue: asyncio.Queue = asyncio.Queue(maxsize=settings.queue_size)
-        self._worker: asyncio.Task | None = None
+        self._tasks: set[asyncio.Task] = set()
+        self._started = False
         self._closing: asyncio.Task | None = None
 
     def start(self) -> None:
-        """登记连接并启动事件消费者。"""
-        if self._worker is not None or self._closing is not None:
+        """登记连接；每个事件在接收时独立启动任务。"""
+        if self._started or self._closing is not None:
             raise RuntimeError("连接不能重复启动")
         self.application.register(self.client, close=self.close)
-        self._worker = self.application.spawn(
-            run_concurrently(self._consume() for _ in range(self._settings.event_concurrency)),
-            name=f"{self.client.platform}:{self.client.bot_id}",
-        )
+        self._started = True
 
     async def call(self, action: str, params: dict[str, Any]) -> Any:
         """仅允许运行中的已登记连接提交动作。"""
-        if (
-            self._worker is None
-            or self._worker.done()
-            or self._closing is not None
-            or self.application.state is not ApplicationState.RUNNING
-        ):
+        if not self._started or self._closing is not None or self.application.state is not ApplicationState.RUNNING:
             raise BotOffline("Bot 离线")
         return await self.actions.call(action, params)
 
@@ -96,19 +86,16 @@ class ProtocolConnection:
         try:
             event = self.protocol.parse_event(payload, self.client.bot_id)
         except UnsupportedCapability:
-            logger.debug("忽略尚未支持的平台事件: %s", self.protocol.platform)
+            logger.debug("忽略尚未支持的平台事件: {}", self.protocol.platform)
             return
-        if event is not None:
-            self._queue.put_nowait(event)
-
-    async def _consume(self) -> None:
-        """每个消费者只处理一条在途事件，动作响应不占业务执行槽位。"""
-        while True:
-            event = await self._queue.get()
-            try:
-                await self.application.router.dispatch(self.client, event)
-            finally:
-                self._queue.task_done()
+        if event is None or self._closing is not None:
+            return
+        task = self.application.spawn(
+            self.application.router.dispatch(self.client, event),
+            name=f"{self.client.platform}:{self.client.bot_id}:event",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def close(self, code: int = 1001) -> None:
         """并发关闭共享一次资源回收，取消等待者不影响关闭本身。"""
@@ -121,21 +108,12 @@ class ProtocolConnection:
         """网络关闭有确定超时，失败交给调用边界报告。"""
         await asyncio.wait_for(self._close_transport(code), timeout=self._settings.close_timeout)
 
-    async def _stop_consumer(self) -> None:
-        """停止消费者并丢弃尚未处理的队列内容。"""
-        if self._worker is not None:
-            self.application.cancel(self._worker)
-            await asyncio.gather(self._worker, return_exceptions=True)
-        while not self._queue.empty():
-            self._queue.get_nowait()
-            self._queue.task_done()
-
     async def _close(self, code: int) -> None:
-        """依次关闭动作、消费者及物理连接，最后注销身份。"""
+        """只关闭本次传输；事件任务留给应用整体关闭时回收。"""
         try:
+            self._started = False
             async with AsyncExitStack() as cleanup:
                 cleanup.push_async_callback(self._close_socket, code)
-                cleanup.push_async_callback(self._stop_consumer)
                 cleanup.push_async_callback(self.actions.aclose)
         finally:
             self.application.unregister(self.client)

@@ -1,11 +1,9 @@
-"""实际协议入口的事件并发、容量和关闭边界，不连接外部服务。"""
+"""实际协议入口的逐事件任务、并发与关闭边界，不连接外部服务。"""
 
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 from fxbot.core.application import Application
@@ -21,7 +19,7 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         await self.app.start()
         self.addAsyncCleanup(self.app.stop)
         self.sent = asyncio.Queue()
-        self.settings = Settings("test", event_concurrency=2, queue_size=3)
+        self.settings = Settings("test")
         self.connection = ProtocolConnection(
             self.app, OneBot11Protocol(), "100", self.settings, self.sent.put, AsyncMock()
         )
@@ -29,6 +27,11 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
     def receive(self, message_id):
         self.connection.receive({**payload(), "message_id": message_id})
+
+    async def drain(self, timeout: float = 1) -> None:
+        tasks = tuple(self.connection._tasks)
+        if tasks:
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout)
 
     async def test_later_message_finishes_while_first_waits(self):
         slow, fast, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -48,9 +51,9 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(fast.wait(), 1)
         self.assertFalse(release.is_set())
         release.set()
-        await asyncio.wait_for(self.connection._queue.join(), 1)
+        await self.drain()
 
-    async def test_concurrency_and_queue_are_bounded_without_blocking_action_responses(self):
+    async def test_all_events_start_without_queue_or_concurrency_limit(self):
         entered, release = asyncio.Event(), asyncio.Event()
         self.addCleanup(release.set)
         active, peak = 0, 0
@@ -59,7 +62,7 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
-            if active == 2:
+            if active == 10:
                 entered.set()
             try:
                 await release.wait()
@@ -67,31 +70,39 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 active -= 1
 
         self.app.router.message("capture", handler)
-        self.receive(1)
-        self.receive(2)
-        await asyncio.wait_for(entered.wait(), 1)
-        for message_id in (3, 4, 5):
+        for message_id in range(1, 11):
             self.receive(message_id)
-        self.assertEqual(self.connection._queue.qsize(), 3)
-        with self.assertRaises(asyncio.QueueFull):
-            self.receive(6)
+        await asyncio.wait_for(entered.wait(), 1)
+        self.assertEqual(peak, 10)
+        release.set()
+        await self.drain()
+
+    async def test_events_do_not_block_action_responses(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        self.addCleanup(release.set)
+
+        async def handler(ctx):
+            entered.set()
+            await release.wait()
+
+        self.app.router.message("capture", handler)
+        self.receive(1)
+        await asyncio.wait_for(entered.wait(), 1)
         action = asyncio.create_task(self.connection.client.call("get_login_info"))
         packet = await asyncio.wait_for(self.sent.get(), 1)
         self.connection.receive({"echo": packet["echo"], "status": "ok", "retcode": 0, "data": {"user_id": 100}})
         self.assertEqual(await asyncio.wait_for(action, 1), {"user_id": 100})
-        self.assertEqual(active, 2)
         release.set()
-        await asyncio.wait_for(self.connection._queue.join(), 1)
-        self.assertEqual(peak, 2)
+        await self.drain()
 
-    async def test_close_joins_all_inflight_cleanup_and_discards_unstarted_events(self):
+    async def test_disconnect_preserves_tasks_until_application_shutdown(self):
         entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         self.addCleanup(release.set)
         started, cleaned = [], []
 
         async def handler(ctx):
             started.append(ctx.event.message_id)
-            if len(started) == 2:
+            if len(started) == 3:
                 entered.set()
             try:
                 await asyncio.Event().wait()
@@ -101,18 +112,21 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 cleaned.append(ctx.event.message_id)
 
         self.app.router.message("capture", handler)
-        self.receive(1)
-        self.receive(2)
+        for message_id in (1, 2, 3):
+            self.receive(message_id)
         await asyncio.wait_for(entered.wait(), 1)
-        self.receive(3)
         closing = asyncio.create_task(self.connection.close())
-        await asyncio.wait_for(cleaning.wait(), 1)
-        self.assertFalse(closing.done())
-        release.set()
         await asyncio.wait_for(closing, 1)
-        await asyncio.wait_for(self.connection._queue.join(), 1)
-        self.assertEqual(set(started), {"1", "2"})
-        self.assertEqual(set(cleaned), {"1", "2"})
+        self.assertFalse(cleaning.is_set())
+        self.assertFalse(self.app.bots)
+        stopping = asyncio.create_task(self.app.stop())
+        await asyncio.wait_for(cleaning.wait(), 1)
+        self.assertFalse(stopping.done())
+        release.set()
+        await asyncio.wait_for(stopping, 1)
+        self.assertEqual(set(started), {"1", "2", "3"})
+        self.assertEqual(set(cleaned), {"1", "2", "3"})
+        self.assertFalse(self.connection._tasks)
         self.assertFalse(self.app.bots)
 
     async def test_reconnect_can_replace_retiring_identity_and_shutdown_still_owns_old_cleanup(self):
@@ -132,29 +146,17 @@ class EventConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(entered.wait(), 1)
         old = self.connection
         closing = asyncio.create_task(old.close())
-        await asyncio.wait_for(cleaning.wait(), 1)
+        await asyncio.wait_for(closing, 1)
+        self.assertFalse(cleaning.is_set())
         replacement = ProtocolConnection(self.app, OneBot11Protocol(), "100", self.settings, self.sent.put, AsyncMock())
         replacement.start()
         self.assertIs(self.app.get_bot("onebot11", "100"), replacement.client)
         self.assertFalse(self.app.is_registered(old.client))
         stopping = asyncio.create_task(self.app.stop())
+        await asyncio.wait_for(cleaning.wait(), 1)
         await asyncio.sleep(0)
         self.assertFalse(stopping.done())
         release.set()
         await asyncio.wait_for(asyncio.gather(closing, stopping), 1)
         self.assertFalse(self.app._retiring_connections)
-        self.assertTrue(replacement._worker.done())
-
-
-class ConcurrencySettingsTests(unittest.TestCase):
-    def test_default_and_invalid_concurrency(self):
-        self.assertEqual(Settings("test").event_concurrency, 8)
-        for value in (True, 0, -1, 1.5, "8", None):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                Settings("test", event_concurrency=value)
-
-    def test_concurrency_is_read_from_project_config(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.json"
-            path.write_text('{"token":"test","event_concurrency":3}', encoding="utf-8")
-            self.assertEqual(Settings.load(path).event_concurrency, 3)
+        self.assertFalse(replacement._tasks)

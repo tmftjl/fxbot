@@ -15,6 +15,7 @@ from unittest.mock import Mock, AsyncMock, patch
 
 from fxbot.core import Router, Message, SessionTarget, HandlerContext, MessageSegment, UnsupportedCapability
 from fxbot.core.errors import ActionFailed
+from tests.log_capture import capture_loguru
 from fxbot.core.matching import MatchResult
 from fxbot.utils.json_file import write_json
 from fxbot.core.application import Application
@@ -442,9 +443,9 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             message=Message.text("#测试"),
             original_message=Message([MessageSegment.text("#测试"), MessageSegment("image", {"file": b"png"})]),
         )
-        with self.assertLogs("fxbot.core.router", level="INFO") as captured:
+        with capture_loguru("INFO") as captured:
             await router.dispatch(self.bot, event)
-        text = "\n".join(captured.output)
+        text = "\n".join(captured)
         self.assertIn("onebot11:100 [message.group.normal]: Message -42", text)
         self.assertIn("from 200(群名片)@[group:300]", text)
         self.assertIn("#测试", text)
@@ -487,9 +488,9 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
 
         router.message("boom", boom)
         event = replace(self.event, message=Message.text("原始消息"), original_message=None)
-        with self.assertLogs("fxbot.core.router", level="INFO") as captured:
+        with capture_loguru("INFO") as captured:
             await router.dispatch(self.bot, event)
-        text = "\n".join(captured.output)
+        text = "\n".join(captured)
         self.assertIn("路由执行失败: boom", text)
         self.assertIn("原始消息", text)
         self.assertIn("from 200", text)

@@ -20,6 +20,7 @@ from fxbot.core import (
     SessionTarget,
     MessageSegment,
 )
+from fxbot.platforms.qq.client import QQClient
 from fxbot.plugins.gscore.client import GscoreService, ConnectionSettings, build_ws_url
 from fxbot.plugins.gscore.config import validate_config
 from fxbot.plugins.gscore.models import (
@@ -239,14 +240,72 @@ class DownlinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target, SessionTarget("qq", "appid", "group", "group-openid"))
         self.assertEqual(
             [segment.type for segment in message.segments],
-            ["qq:passive", "text", "qq:markdown", "qq:markdown", "qq:keyboard", "mention"],
+            ["qq:passive", "text", "qq:markdown", "qq:markdown", "qq:keyboard"],
         )
         self.assertEqual(message.segments[0].data, {"msg_id": "passive-id"})
         self.assertEqual(message.segments[2].data, {"content": "# hi"})
         self.assertEqual(message.segments[3].data["custom_template_id"], "t1")
         self.assertEqual(message.segments[3].data["params"], [{"key": "title", "values": ["标题"]}])
         self.assertEqual(message.segments[4].data, {"id": "kb1"})
-        self.assertEqual(message.segments[5].data, {"user_id": "member-1", "name": ""})
+
+    async def test_qq_login_reply_omits_mentions_in_group_and_c2c(self) -> None:
+        text = "[鸣潮]【神上园凛】特征码【105044421】登录成功!"
+        for target_type, route in (("group", "groups"), ("direct", "users")):
+            with self.subTest(target_type=target_type):
+                api = SimpleNamespace(request=AsyncMock(return_value={"id": "login-result"}))
+                bot = QQClient("appid", api)
+                msg = MessageSend(
+                    bot_id="qqgroup",
+                    bot_self_id="appid",
+                    target_type=target_type,
+                    target_id="target-openid",
+                    msg_id="login-message",
+                    content=[
+                        WireMessage("at", "7A8EE78D6817E942ED69510F61E6515B"),
+                        WireMessage("text", text),
+                    ],
+                )
+                result = await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+                self.assertEqual(result.recall_id, "login-result")
+                api.request.assert_awaited_once()
+                request = api.request.await_args
+                self.assertEqual(request.args[:2], ("POST", f"/v2/{route}/target-openid/messages"))
+                self.assertEqual(request.kwargs["json"]["content"], text)
+                self.assertEqual(request.kwargs["json"]["msg_id"], "login-message")
+
+    async def test_qq_channel_keeps_mentions(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "channel-result"})
+        msg = MessageSend(
+            bot_id="qqguild",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="channel-id",
+            content=[WireMessage("at", {"user_id": "member-id"}), WireMessage("text", "登录成功")],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        target, message = bot.send.await_args.args
+        self.assertEqual(target.kind, "channel")
+        self.assertEqual(message.mentions(), ["member-id"])
+        self.assertEqual(message.plain_text(), "登录成功")
+
+    async def test_qq_direct_channel_message_omits_mentions(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "dms-result"})
+        msg = MessageSend(
+            bot_id="qqguild",
+            bot_self_id="appid",
+            target_type="direct",
+            target_id="user-id",
+            content=[
+                WireMessage("group", "guild-id"),
+                WireMessage("at", "member-id"),
+                WireMessage("text", "登录成功"),
+            ],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        target, message = bot.send.await_args.args
+        self.assertEqual(target.target_id, "dms/guild-id/user-id")
+        self.assertFalse(message.mentions())
+        self.assertEqual(message.plain_text(), "登录成功")
 
 
 class ReceiptTests(unittest.IsolatedAsyncioTestCase):

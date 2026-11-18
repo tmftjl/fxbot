@@ -1,9 +1,8 @@
-"""QQ 官方已验签事件的有界队列、去重和应用资源所有权。"""
+"""QQ 官方已验签事件的分发与应用资源所有权。"""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from contextlib import AsyncExitStack
 
 import httpx
@@ -15,12 +14,11 @@ from .api import QQHTTP
 from .codec import parse_event
 from ...core import UnsupportedCapability
 from .client import QQClient
-from .events import QQEventStream, QQEventOverflow
+from .events import QQEventStream
 from .signing import QQSigner
 from ...core.application import ApplicationState, DuplicateBotError
 
 MAX_BODY_BYTES = 1024 * 1024
-logger = logging.getLogger(__name__)
 
 
 class QQWebhookConnection:
@@ -39,13 +37,7 @@ class QQWebhookConnection:
         self.client: QQClient = QQClient(
             app_id, self.api, available=lambda: not self._closed and application.is_registered(self.client)
         )
-        self.events = QQEventStream(
-            application,
-            self.client,
-            bot_user_id=config.bot_user_id,
-            capacity=settings.queue_size,
-            concurrency=settings.event_concurrency,
-        )
+        self.events = QQEventStream(application, self.client, bot_user_id=config.bot_user_id)
         self._close_task = None
 
     def receive(self, payload: dict) -> None:
@@ -55,17 +47,15 @@ class QQWebhookConnection:
             parse_event(payload, bot_id=self.app_id, bot_user_id=self.config.bot_user_id)
         except UnsupportedCapability:
             return
-        if self.events.worker is None:
+        if not self.events.started:
             try:
                 self.events.start(self.close)
             except DuplicateBotError:
                 raise HTTPException(409, "QQ Bot 已由另一连接占用") from None
         try:
             self.events.receive(payload)
-        except QQEventOverflow:
-            raise HTTPException(503, "QQ 事件队列已满，请稍后重投") from None
         except BotOffline:
-            raise HTTPException(503, "QQ 事件消费者已停止") from None
+            raise HTTPException(503, "QQ 事件流已停止") from None
 
     async def close(self):
         if self._close_task is None:
@@ -75,7 +65,6 @@ class QQWebhookConnection:
 
     async def _close(self):
         async with AsyncExitStack() as cleanup:
-            cleanup.callback(self.events.seen.clear)
             cleanup.callback(self.client._sequence.clear)
             cleanup.callback(self.client._sent.clear)
             cleanup.push_async_callback(self.api.close)

@@ -5,24 +5,22 @@ from __future__ import annotations
 import sys
 import json
 import asyncio
-import logging
 from contextlib import AsyncExitStack
 from collections import OrderedDict
 from dataclasses import replace
 from urllib.parse import urlsplit
 
 import httpx
+from loguru import logger
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.asyncio.client import connect
 
 from .api import QQHTTP, QQAPIError
 from .codec import opaque_id, identifier
 from .client import QQClient
-from .events import QQEventStream, QQEventOverflow
+from .events import QQEventStream
 from ...core.application import ApplicationState
 from ...core.concurrency import run_concurrently
-
-logger = logging.getLogger(__name__)
 
 
 class GatewayProtocolError(ValueError):
@@ -71,12 +69,10 @@ class QQGateway:
         self._close_task = None
         self._stopped = False
         self._stream = None
+        self._event_stream = None
         self._socket = None
         self._session_id = ""
         self._received = None
-        self._committed = None
-        self._pending = OrderedDict()
-        self._seen = OrderedDict()
         self._reply_sequences = OrderedDict()
         self._bot_user_id = config.bot_user_id
         self._ready_this_attempt = False
@@ -85,7 +81,6 @@ class QQGateway:
         self._last_identify = 0.0
         self._shard = None
         self._shard_count = 1
-        self._generation = 0
         self._owner = owner if owner is not None else self
         self._children: tuple[QQGateway, ...] = ()
         self._online_shards = set()
@@ -97,11 +92,8 @@ class QQGateway:
         self._runner = self.application.spawn(self.run(), name=f"qq:{self.app_id}:gateway")
 
     def _reset_session(self):
-        self._generation += 1
         self._session_id = ""
         self._received = None
-        self._committed = None
-        self._pending.clear()
 
     async def _pause(self, seconds):
         await asyncio.sleep(seconds)
@@ -143,7 +135,7 @@ class QQGateway:
             delay = self._budget_reset_at - now
             if delay <= 0:
                 raise GatewayProtocolError("QQ 会话启动额度为零且未提供有效重置时间")
-            logger.warning("QQ Identify 额度已用尽，等待 %.1f 秒后重新获取", delay)
+            logger.warning("QQ Identify 额度已用尽，等待 {:.1f} 秒后重新获取", delay)
             await self._pause(delay)
             raise GatewayReconnect("QQ 会话额度重置后重新获取网关")
         delay = 5 - (now - self._last_identify) if self._last_identify else 0
@@ -167,60 +159,23 @@ class QQGateway:
             self._stream = self._owner._stream
             self._ready_this_attempt = True
             return
-        stream = None
-        client = QQClient(
-            self.app_id,
-            self.api,
-            sequences=self._reply_sequences,
-            available=lambda: (
-                not self._stopped
-                and (not self._children or bool(self._online_shards))
-                and stream is not None
-                and not stream.closed
-                and self.application.is_registered(stream.client)
-            ),
-        )
-        stream = QQEventStream(
-            self.application,
-            client,
-            bot_user_id=self._bot_user_id,
-            capacity=self.settings.queue_size,
-            concurrency=self.settings.event_concurrency,
-            seen=self._seen,
-        )
+        if self._event_stream is None:
+            client = QQClient(
+                self.app_id, self.api, sequences=self._reply_sequences, available=lambda: not self._stopped
+            )
+            self._event_stream = QQEventStream(self.application, client, bot_user_id=self._bot_user_id)
+        stream = self._event_stream
+        stream.bot_user_id = self._bot_user_id
         stream.start(self.close)
         self._stream = stream
         self._ready_this_attempt = True
 
-    def _processed(self, seq):
-        if seq in self._pending:
-            self._pending[seq] = True
-        while self._pending and next(iter(self._pending.values())):
-            value, _ = self._pending.popitem(last=False)
-            self._committed = value
-
     def _dispatch(self, frame):
         if self._stream is None:
             raise GatewayProtocolError("QQ 分发事件前必须完成鉴权")
-        seq = sequence(frame)
-        if self._committed is not None and seq <= self._committed:
-            return
-        if self._received is not None and seq < self._received:
-            raise GatewayProtocolError("QQ Dispatch 序列号倒退")
-        if seq in self._pending:
-            return
-        if len(self._pending) >= self.settings.queue_size + self.settings.event_concurrency:
-            raise GatewayReconnect("QQ 待处理事件达到容量")
-        self._pending[seq] = False
-        generation = self._generation
-        try:
-            self._stream.receive(
-                frame, processed=lambda: self._processed(seq) if generation == self._generation else None
-            )
-        except QQEventOverflow:
-            self._pending.pop(seq, None)
-            raise GatewayReconnect("QQ 事件队列已满") from None
-        self._received = seq
+        # 与原版 Bot.on_dispatch 一致：收到时更新 Resume/心跳序号，不等待业务完成。
+        self._received = sequence(frame)
+        self._stream.receive(frame)
 
     async def _receive_before(self, socket, deadline):
         """给已经缓冲的帧一次读取机会，超时或取消时回收接收任务。"""
@@ -236,7 +191,6 @@ class QQGateway:
             await asyncio.gather(receiver, return_exceptions=True)
 
     async def session(self, socket):
-        self._received = self._committed
         hello = decode_frame(await asyncio.wait_for(socket.recv(), self.settings.action_timeout))
         data = hello.get("d")
         interval = data.get("heartbeat_interval") if isinstance(data, dict) else None
@@ -252,7 +206,7 @@ class QQGateway:
                     "d": {
                         "token": f"QQBot {token}",
                         "session_id": self._session_id,
-                        "seq": self._committed,
+                        "seq": self._received,
                     },
                 },
             )
@@ -281,8 +235,8 @@ class QQGateway:
         awaiting_ack = False
         authenticated = False
         while True:
-            if self._stream is not None and self._stream.worker.done():
-                raise GatewayProtocolError("QQ 网关事件消费者已停止")
+            if self._stream is not None and self._stream.closed:
+                raise GatewayProtocolError("QQ 网关事件流已停止")
             deadline = heartbeat_at if authenticated else authenticate_until
             try:
                 frame = decode_frame(await self._receive_before(socket, deadline))
@@ -311,6 +265,7 @@ class QQGateway:
                 if authenticated and heartbeat_at is None:
                     heartbeat_at = loop.time() + interval / 1000
             elif op == 0:
+                self._received = sequence(frame)
                 kind = frame.get("t")
                 if kind == "READY":
                     if resuming or authenticated:
@@ -324,7 +279,6 @@ class QQGateway:
                         raise GatewayProtocolError("QQ READY 用户身份与配置不一致")
                     self._session_id = session_id
                     self._bot_user_id = bot_user_id
-                    self._received = self._committed = sequence(frame)
                     self._activate()
                     authenticated = True
                     heartbeat_at = loop.time() + interval / 1000
@@ -332,13 +286,6 @@ class QQGateway:
                     # 官方会先回放遗漏 Dispatch，最后才发送 RESUMED。
                     self._activate()
                     if kind == "RESUMED":
-                        seq = sequence(frame)
-                        if self._received is not None and seq < self._received:
-                            raise GatewayProtocolError("QQ RESUMED 序列号倒退")
-                        if seq not in self._pending and (self._committed is None or seq > self._committed):
-                            self._pending[seq] = True
-                        self._processed(None)
-                        self._received = seq
                         authenticated = True
                         resuming = False
                         heartbeat_at = loop.time() + interval / 1000
@@ -360,11 +307,9 @@ class QQGateway:
             owner._online_shards.discard(self)
             if not owner._online_shards and owner._stream is not None:
                 shared, owner._stream = owner._stream, None
-                await shared.close()
+                shared.disconnect()
         elif stream is not None:
-            await stream.close()
-        self._pending.clear()
-        self._received = self._committed
+            stream.disconnect()
 
     async def run(self):
         failures = 0
@@ -396,7 +341,7 @@ class QQGateway:
                         open_timeout=self.settings.action_timeout,
                         close_timeout=self.settings.close_timeout,
                         max_size=1024 * 1024,
-                        max_queue=self.settings.queue_size,
+                        max_queue=128,
                     ) as socket:
                         self._socket = socket
                         try:
@@ -407,7 +352,7 @@ class QQGateway:
                                 cleanup.push_async_callback(socket.close, code=1000 if self._stopped else 1001)
                                 cleanup.push_async_callback(self._disconnect)
                 except GatewayReconnect as error:
-                    logger.info("QQ 网关重新连接: %s", error)
+                    logger.info("QQ 网关重新连接: {}", error)
                 except ConnectionClosed as error:
                     code = error.rcvd.code if error.rcvd is not None else None
                     if code in {4001, 4002, 4010, 4011, 4012, 4013, 4014, 4914, 4915}:
@@ -416,11 +361,11 @@ class QQGateway:
                         self._reset_session()
                     elif code is not None and code >= 4000 and code not in {4008, 4009}:
                         raise GatewayProtocolError(f"未识别的 QQ 网关关闭码 {code}") from None
-                    logger.info("QQ 网关断开（code=%s）", code)
+                    logger.info("QQ 网关断开（code={}）", code)
                 except QQAPIError as error:
                     if error.status not in {429, 500, 502, 503, 504}:
                         raise
-                    logger.warning("QQ 网关发现/鉴权暂不可用（HTTP %s）", error.status)
+                    logger.warning("QQ 网关发现/鉴权暂不可用（HTTP {}）", error.status)
                 except (OSError, asyncio.TimeoutError, httpx.TransportError, InvalidHandshake):
                     logger.warning("QQ 网关网络连接未完成")
                 finally:
@@ -430,10 +375,11 @@ class QQGateway:
         finally:
             self._stopped = True
             async with AsyncExitStack() as cleanup:
-                cleanup.callback(self._seen.clear)
                 cleanup.callback(self._reply_sequences.clear)
                 if self._owner is self:
                     cleanup.push_async_callback(self.api.close)
+                    if self._event_stream is not None:
+                        cleanup.push_async_callback(self._event_stream.close)
                 cleanup.push_async_callback(self._disconnect)
 
     async def close(self):
@@ -448,4 +394,6 @@ class QQGateway:
             await asyncio.gather(self._runner, return_exceptions=True)
         await self._disconnect()
         if self._owner is self:
+            if self._event_stream is not None:
+                await self._event_stream.close()
             await self.api.close()
