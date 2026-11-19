@@ -20,6 +20,7 @@ from ...core import Event, Message, Capability, Capabilities, QuotedMessage, Ses
 from .models import Message as GuildMessage
 from .recent import recent_reply, remember_sent, cached_message as cached_item_message
 from .actions import QQ_API, QQActions
+from .message import markdown
 from ...core.context import current_event_context
 
 _FILE_TYPES: dict[str, Literal[1, 2, 3, 4]] = {"image": 1, "video": 2, "audio": 3, "voice": 3, "file": 4}
@@ -145,6 +146,9 @@ class QQClient:
         else:
             route, target_id = self._target(target)
         message = self.message_transform(target, message)
+        if route == "v2/groups" and event is not None and self._is_member_add_mention(event, message):
+            # QQ 群文本消息不支持 @；与原版一致，入群欢迎改用 markdown 的 at-user 语法。
+            return await self._send_member_add_mention(target, event, message)
         content, advanced = [], {}
         media = {}
         reference = passive = None
@@ -265,6 +269,25 @@ class QQClient:
         if route == "v2/groups" and isinstance(ext_info, dict) and message_id:
             remember_sent(self, target_id, message, message_id, ext_info.get("ref_idx"))
         return {"message_id": message_id, **({"ext_info": ext_info} if ext_info is not None else {})}
+
+    @staticmethod
+    def _is_member_add_mention(event: Event, message: Message) -> bool:
+        """首段 @ 的正好是新成员时，才按入群欢迎处理。"""
+        if event.metadata.get("qq_event_type") != "GROUP_MEMBER_ADD":
+            return False
+        if not message.segments or message.segments[0].type != "mention":
+            return False
+        return str(message.segments[0].data.get("user_id") or "") == str(event.user_id)
+
+    async def _send_member_add_mention(self, target: SessionTarget, event: Event, message: Message) -> dict:
+        """QQ 群文本不支持 @：提及与文字走 markdown，图片按原版逐条发送。"""
+        mention = f'<qqbot-at-user id="{event.user_id}" />'
+        text = "".join(part.text_value() for part in message.segments[1:] if part.type == "text").strip()
+        result = await self.send(target, Message([markdown(f"{mention} {text or '欢迎欢迎'}")]))
+        for part in message.segments[1:]:
+            if part.type == "image":
+                result = await self.send(target, Message([part]))
+        return result
 
     async def resolve_media(self, segment) -> str | bytes:
         if segment.type not in {"image", "voice", "audio", "video", "file"}:

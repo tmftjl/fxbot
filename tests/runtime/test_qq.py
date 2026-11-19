@@ -562,6 +562,39 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.send(SessionTarget("qq", APP_ID, "channel", "CHANNEL"), Message.text("<@USER> & test"))
         self.assertEqual(self.api.request.await_args.kwargs["json"]["content"], "&lt;@USER&gt; &amp; test")
 
+    async def test_member_add_mention_uses_markdown_and_images_are_separate(self):
+        frame = payload("GROUP_MEMBER_ADD")
+        frame["d"]["member_openid"] = "MEMBER_OPENID"
+        event = parse_event(frame, bot_id=APP_ID)
+        self.api.request.side_effect = [{"id": "welcome"}, {"file_info": "media"}, {"id": "image"}]
+        token = bind_event(self.bot, event)
+        try:
+            await self.bot.send(
+                event.target,
+                Message(
+                    [
+                        MessageSegment.mention("MEMBER_OPENID"),
+                        MessageSegment.text(" 欢迎"),
+                        MessageSegment.image(b"PNG"),
+                    ]
+                ),
+            )
+        finally:
+            reset_event(token)
+        welcome, upload, image = self.api.request.await_args_list
+        self.assertEqual(welcome.args, ("POST", "/v2/groups/GROUP_OPENID/messages"))
+        self.assertEqual(welcome.kwargs["json"]["msg_type"], 2)
+        self.assertIsNone(welcome.kwargs["json"].get("content"))
+        self.assertEqual(
+            welcome.kwargs["json"]["markdown"],
+            {"content": '<qqbot-at-user id="MEMBER_OPENID" /> 欢迎'},
+        )
+        self.assertEqual(welcome.kwargs["json"]["event_id"], "GROUP_MEMBER_ADD:test")
+        self.assertNotIn("msg_id", welcome.kwargs["json"])
+        self.assertEqual(upload.args[1], "/v2/groups/GROUP_OPENID/files")
+        self.assertEqual(image.kwargs["json"]["msg_type"], 7)
+        self.assertEqual(image.kwargs["json"]["event_id"], "GROUP_MEMBER_ADD:test")
+
 
 class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_channel_quote_is_loaded_before_dispatch_and_not_fetched_twice(self):
