@@ -24,6 +24,7 @@ from fxbot.core import (
     SessionTarget,
     MessageSegment,
 )
+from fxbot.platforms.onebot11 import OneBot11Client
 from fxbot.platforms.qq.client import QQClient
 from fxbot.plugins.gscore.client import GscoreService, ConnectionSettings, build_ws_url
 from fxbot.plugins.gscore.config import validate_config
@@ -303,6 +304,58 @@ class DownlinkTests(unittest.IsolatedAsyncioTestCase):
         message = bot.send.await_args.args[1]
         self.assertEqual(message.plain_text(), "\n".join(str(index) for index in range(10)))
         self.assertTrue(any(segment.type == "qq:passive" for segment in message.segments))
+
+    async def test_onebot_node_uses_native_forward_message(self) -> None:
+        sender = AsyncMock(return_value={"message_id": "forward-result"})
+        bot = OneBot11Client("100", sender)
+        msg = MessageSend(
+            bot_id="onebot",
+            bot_self_id="100",
+            target_type="group",
+            target_id=GROUP_ID,
+            content=[
+                WireMessage(
+                    "node",
+                    [
+                        {"type": "text", "data": "第一段"},
+                        {"type": "text", "data": "第二段"},
+                    ],
+                )
+            ],
+        )
+        result = await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertEqual(result.recall_id, "forward-result")
+        sender.assert_awaited_once()
+        action, params = sender.await_args.args
+        self.assertEqual(action, "send_group_forward_msg")
+        self.assertEqual(len(params["messages"]), 2)
+        self.assertEqual(params["messages"][0]["data"]["content"][0]["data"]["text"], "第一段")
+        self.assertEqual(params["messages"][1]["data"]["content"][0]["data"]["text"], "第二段")
+
+    async def test_onebot_node_is_sent_before_normal_text(self) -> None:
+        sender = AsyncMock(return_value={"message_id": "message-result"})
+        bot = OneBot11Client("100", sender)
+        msg = MessageSend(
+            bot_id="onebot",
+            bot_self_id="100",
+            target_type="group",
+            target_id=GROUP_ID,
+            content=[
+                WireMessage("text", "前面"),
+                WireMessage("node", [{"type": "text", "data": "转发内容"}]),
+                WireMessage("text", "后面"),
+            ],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertEqual(sender.await_count, 2)
+        self.assertEqual(sender.await_args_list[0].args[0], "send_group_forward_msg")
+        self.assertEqual(sender.await_args_list[1].args[0], "send_group_msg")
+        texts = [
+            segment["data"]["text"]
+            for segment in sender.await_args_list[1].args[1]["message"]
+            if segment["type"] == "text"
+        ]
+        self.assertEqual(texts, ["前面", "后面"])
 
     async def test_qqgroup_alternating_text_images_pair_into_passive_messages(self) -> None:
         bot = BotStub("qq", "appid", {"message_id": "node-result"})
