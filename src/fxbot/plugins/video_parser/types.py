@@ -18,6 +18,8 @@ class VideoResult:
     source_url: str | None = None
     text: str | None = None
     audio_url: str | None = None
+    video_backup_urls: list[str] = field(default_factory=list)
+    audio_backup_urls: list[str] = field(default_factory=list)
     headers: dict[str, str] = field(default_factory=dict)
 
     @property

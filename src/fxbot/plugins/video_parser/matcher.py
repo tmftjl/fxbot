@@ -90,6 +90,7 @@ class VideoParser:
                 except (ActionFailed, TimeoutError, OSError):
                     logger.opt(exception=True).debug("解析已交付，处理中提示撤回失败")
         except (ParseError, DownloadError) as exc:
+            logger.opt(exception=True).warning("视频解析失败: {}", exc)
             await context.send(f"解析失败：{exc}")
         except httpx.HTTPError:
             logger.opt(exception=True).warning("视频平台请求失败")

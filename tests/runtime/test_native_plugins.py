@@ -849,7 +849,7 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.send.await_count, 3)
         self.assertEqual(bot.send.await_args_list[-1].args[1].segments[0].type, "image")
 
-    async def test_download_failure_does_not_retry_or_keep_partial_file(self):
+    async def test_download_failure_without_backup_does_not_keep_partial_file(self):
         import httpx
 
         from fxbot.plugins.video_parser import downloader
@@ -867,6 +867,47 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
                 await downloader.download_file("https://example.com/a.mp4", directory=self.root)
         self.assertEqual(attempts, 1)
         self.assertEqual(list(self.root.iterdir()), [])
+
+    async def test_download_file_uses_backup_after_primary_failure(self):
+        import httpx
+
+        from fxbot.plugins.video_parser import downloader
+
+        attempts = []
+
+        async def download(url, *, file_path, headers):
+            attempts.append(url)
+            if len(attempts) == 1:
+                file_path.write_bytes(b"partial")
+                raise httpx.RemoteProtocolError("peer closed connection")
+            file_path.write_bytes(b"complete")
+            return file_path
+
+        with patch.object(downloader, "_download_file_httpx", side_effect=download):
+            path = await downloader.download_file(
+                "https://example.com/primary.mp4",
+                backup_urls=["https://example.com/backup.mp4"],
+                directory=self.root,
+            )
+        self.assertEqual(
+            attempts,
+            ["https://example.com/primary.mp4", "https://example.com/backup.mp4"],
+        )
+        self.assertEqual(path.read_bytes(), b"complete")
+
+    def test_bilibili_stream_collects_backup_urls_without_duplicates(self):
+        from types import SimpleNamespace
+
+        from fxbot.plugins.video_parser.parsers import bilibili
+
+        stream = SimpleNamespace(
+            url="https://example.com/primary",
+            backup_url=["https://example.com/backup", "https://example.com/primary"],
+        )
+        self.assertEqual(
+            bilibili._stream_urls(stream),
+            ["https://example.com/primary", "https://example.com/backup"],
+        )
 
     async def test_image_batch_waits_for_other_download_before_failure_cleanup(self):
         from fxbot.plugins.video_parser import downloader

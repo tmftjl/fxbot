@@ -138,7 +138,9 @@ async def _parse_video(*, bvid: str | None = None, avid: int | None = None, page
         raise ParseError("B 站下载接口未返回 dash/durl 流")
     try:
         detector = VideoDownloadURLDataDetecter(download_data)
-        video_url, audio_url = _select_download_urls(detector, VideoStreamDownloadURL, AudioStreamDownloadURL)
+        video_url, audio_url, video_backups, audio_backups = _select_download_urls(
+            detector, VideoStreamDownloadURL, AudioStreamDownloadURL
+        )
     except ParseError:
         raise
     except Exception as exc:
@@ -161,6 +163,8 @@ async def _parse_video(*, bvid: str | None = None, avid: int | None = None, page
         title=title,
         video_url=video_url,
         audio_url=audio_url,
+        video_backup_urls=video_backups,
+        audio_backup_urls=audio_backups,
         cover_url=cover,
         duration=duration,
         source_url=source,
@@ -171,8 +175,8 @@ async def _parse_video(*, bvid: str | None = None, avid: int | None = None, page
 
 def _select_download_urls(
     detector: Any, video_stream_type: type[Any], audio_stream_type: type[Any]
-) -> tuple[str, str | None]:
-    """从 bilibili_api 解析结果中选择可下载流。"""
+) -> tuple[str, str | None, list[str], list[str]]:
+    """从 bilibili_api 解析结果中选择可下载流及备用地址。"""
     from bilibili_api.video import VideoCodecs
 
     # 某些 bilibili-api-python 版本的默认 VideoCodecs.UNKNOWN.value
@@ -182,7 +186,7 @@ def _select_download_urls(
         no_dolby_video=True,
         no_hdr=True,
     )
-    video_streams = [stream for stream in streams if isinstance(stream, video_stream_type) and _stream_url(stream)]
+    video_streams = [stream for stream in streams if isinstance(stream, video_stream_type) and _stream_urls(stream)]
     if video_streams:
         preferred_video_streams = [
             stream
@@ -190,26 +194,37 @@ def _select_download_urls(
             if 0 < _enum_int(getattr(stream, "video_quality", None)) <= BILI_MAX_VIDEO_QUALITY
         ]
         video_stream = max(preferred_video_streams or video_streams, key=_video_stream_rank)
-        video_url = _stream_url(video_stream)
-        if not video_url:
+        video_urls = _stream_urls(video_stream)
+        if not video_urls:
             raise ParseError("B 站没有可下载的视频流")
-        audio_streams = [stream for stream in streams if isinstance(stream, audio_stream_type) and _stream_url(stream)]
+        audio_streams = [
+            stream for stream in streams if isinstance(stream, audio_stream_type) and _stream_urls(stream)
+        ]
         audio_stream = max(audio_streams, key=_audio_stream_rank) if audio_streams else None
-        return video_url, _stream_url(audio_stream) if audio_stream is not None else None
+        audio_urls = _stream_urls(audio_stream) if audio_stream is not None else []
+        return video_urls[0], audio_urls[0] if audio_urls else None, video_urls[1:], audio_urls[1:]
 
-    merged_streams = [stream for stream in streams if _stream_url(stream)]
+    merged_streams = [stream for stream in streams if _stream_urls(stream)]
     if merged_streams:
         merged_stream = max(merged_streams, key=_merged_stream_rank)
-        merged_url = _stream_url(merged_stream)
-        if merged_url:
-            return merged_url, None
+        merged_urls = _stream_urls(merged_stream)
+        if merged_urls:
+            return merged_urls[0], None, merged_urls[1:], []
     raise ParseError("B 站没有可下载的视频流")
 
 
-def _stream_url(stream: Any) -> str | None:
-    """读取 bilibili_api 流对象的 URL。"""
-    url = getattr(stream, "url", None)
-    return str(url) if url else None
+def _stream_urls(stream: Any) -> list[str]:
+    """读取 bilibili_api 流对象的主地址和备用地址。"""
+    values: list[str] = []
+    primary = getattr(stream, "url", None)
+    if primary:
+        values.append(str(primary))
+    backups = getattr(stream, "backup_url", None)
+    if isinstance(backups, str):
+        values.append(backups)
+    elif isinstance(backups, (list, tuple)):
+        values.extend(str(value) for value in backups if value)
+    return list(dict.fromkeys(value for value in values if value))
 
 
 def _video_stream_rank(stream: Any) -> tuple[int, int]:

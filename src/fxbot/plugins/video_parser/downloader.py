@@ -11,6 +11,7 @@ from contextlib import AsyncExitStack
 from urllib.parse import urlsplit
 
 import httpx
+from loguru import logger
 
 from .types import VideoResult
 from .config import cfg_general, cfg_network
@@ -73,8 +74,9 @@ async def download_file(
     suffix: str = ".mp4",
     headers: dict[str, str] | None = None,
     directory: Path | None = None,
+    backup_urls: list[str] | None = None,
 ) -> Path:
-    """下载远程文件到缓存目录。"""
+    """下载远程文件，主地址失败时依次尝试备用地址。"""
     directory = directory or CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     file_path = _cache_path(url, _suffix_from_url(url, suffix), directory=directory)
@@ -82,14 +84,24 @@ async def download_file(
         return file_path
 
     headers = headers or {}
-    try:
-        return await _download_file_httpx(url, file_path=file_path, headers=headers)
-    except (DownloadError, httpx.HTTPError, ValueError) as exc:
-        file_path.unlink(missing_ok=True)
-        raise DownloadError("媒体下载失败") from exc
-    except BaseException:
-        file_path.unlink(missing_ok=True)
-        raise
+    candidates = list(dict.fromkeys([url, *(backup_urls or [])]))
+    last_error: BaseException | None = None
+    for index, candidate in enumerate(candidates):
+        try:
+            return await _download_file_httpx(candidate, file_path=file_path, headers=headers)
+        except (DownloadError, httpx.HTTPError, ValueError, OSError) as exc:
+            last_error = exc
+            file_path.unlink(missing_ok=True)
+            logger.opt(exception=True).warning(
+                "[video_parser] 媒体地址下载失败，尝试下一个地址: host={} ({}/{})",
+                urlsplit(candidate).netloc,
+                index + 1,
+                len(candidates),
+            )
+        except BaseException:
+            file_path.unlink(missing_ok=True)
+            raise
+    raise DownloadError("媒体下载失败") from last_error
 
 
 async def _download_file_httpx(url: str, *, file_path: Path, headers: dict[str, str]) -> Path:
@@ -186,11 +198,29 @@ async def download_video(result: VideoResult, *, directory: Path | None = None) 
         raise DownloadError(f"视频时长超出配置限制：上限 {max_duration:g} 秒，当前 {result.duration:g} 秒")
 
     if not result.audio_url:
-        return await download_file(result.video_url, suffix=".mp4", headers=result.headers, directory=directory)
+        return await download_file(
+            result.video_url,
+            suffix=".mp4",
+            headers=result.headers,
+            directory=directory,
+            backup_urls=result.video_backup_urls,
+        )
 
     downloads = await asyncio.gather(
-        download_file(result.video_url, suffix=".m4s", headers=result.headers, directory=directory),
-        download_file(result.audio_url, suffix=".m4a", headers=result.headers, directory=directory),
+        download_file(
+            result.video_url,
+            suffix=".m4s",
+            headers=result.headers,
+            directory=directory,
+            backup_urls=result.video_backup_urls,
+        ),
+        download_file(
+            result.audio_url,
+            suffix=".m4a",
+            headers=result.headers,
+            directory=directory,
+            backup_urls=result.audio_backup_urls,
+        ),
         return_exceptions=True,
     )
     for result_or_error in downloads:
