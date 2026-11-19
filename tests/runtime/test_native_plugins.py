@@ -36,7 +36,7 @@ from fxbot.plugins.entertain.welcome import Welcome
 from fxbot.plugins.video_parser.types import VideoResult
 from fxbot.plugins.group_admin.service import GroupAdminService
 from fxbot.plugins.video_parser.config import validate_config as validate_video
-from fxbot.plugins.video_parser.sender import send_image_result, send_video_result
+from fxbot.plugins.video_parser.sender import _summary, send_image_result, send_video_result
 from fxbot.plugins.entertain.musicshare import Song, Music
 from fxbot.plugins.group_admin.banwords import Banwords
 from fxbot.plugins.group_admin.commands import GroupCommands, parse_duration
@@ -812,6 +812,21 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         ):
             await plugin.parse(self.context("https://b23.tv/test"))
         download.assert_not_awaited()
+
+    def test_video_summary_includes_author_and_publish_time(self):
+        from datetime import datetime, timezone
+
+        result = VideoResult(
+            "抖音",
+            "标题",
+            duration=12,
+            author_name="作者",
+            published_at=datetime(2026, 11, 19, 10, 20, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            _summary(result),
+            "抖音 | 标题\n作者：作者\n发布时间：2026-11-19 18:20\n时长：12 秒",
+        )
 
     async def test_video_sender_uses_explicit_transport_setting(self):
         path = self.root / "video.mp4"

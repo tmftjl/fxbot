@@ -7,11 +7,16 @@ from pathlib import Path
 from .types import VideoResult
 from ...core import Message, HandlerContext, MessageSegment
 from .config import cfg_general
+from ...utils.tz import as_shanghai
 from ...core.capabilities import Capability
 
 
 def _summary(result: VideoResult) -> str:
     lines = [f"{result.platform} | {result.display_title}"]
+    if result.author_name:
+        lines.append(f"作者：{result.author_name}")
+    if result.published_at:
+        lines.append(f"发布时间：{as_shanghai(result.published_at):%Y-%m-%d %H:%M}")
     if result.duration:
         lines.append(f"时长：{int(result.duration)} 秒")
     return "\n".join(lines)
