@@ -35,6 +35,7 @@ from .message_adapter import (
     adapt_message_event,
     message_occurred_at,
     read_quote_snapshot,
+    cached_message_event,
     memory_image_sources,
     session_id_for_event,
     image_sources_for_event,
@@ -150,7 +151,10 @@ async def _ai_fallback_rule(bot: BotClient, event: Event) -> bool:
     session_id = session_id_for_event(bot, event)
     if not can_reply(cfg, session_id=session_id) or _message_filtered(cfg, event):
         return False
-    if not _match_context(cfg, bot, event):
+    gate = event.metadata.get("_chat_gate")
+    if gate is not None and not gate.allow:
+        return False
+    if not _match_context(cfg, bot, event) and not (gate is not None and gate.force is True):
         return False
     text = message_text(event)
     if not text and not _has_image(event) and not _has_voice(event):
@@ -236,14 +240,21 @@ async def _handle_context(bot: BotClient, event: Event, application: Application
     has_image = _has_image(event)
     text = message_text(event)
     user_id = event.user_id or ""
-    if not text and not has_image and _has_voice(event):
-        # 纯语音先转写再入历史，转写失败时留占位
-        text = await transcribe_event(bot, event)
-    images = await image_sources_for_event(bot, event) if has_image else []
-    # 上下文消息只做廉价提取：昵称取消息段里现成的，不额外查成员接口
-    mentions = await collect_mentions(
-        bot, event, (event.target.target_id if event.is_group else None), resolve_names=False
-    )
+    prepared = cached_message_event(bot, event, trigger_kind="proactive")
+    if prepared is not None:
+        text, mentions = prepared.text, prepared.mentions
+        images = prepared.images if has_image else []
+        memory_images = list(zip(prepared.metadata["raw_image_paths"], prepared.metadata["raw_images"]))
+        snapshot = prepared.metadata["quote_snapshot"]
+    else:
+        if not text and not has_image and _has_voice(event):
+            text = await transcribe_event(bot, event)
+        images = await image_sources_for_event(bot, event) if has_image else []
+        mentions = await collect_mentions(
+            bot, event, (event.target.target_id if event.is_group else None), resolve_names=False
+        )
+        memory_images = await memory_image_sources(bot, event)
+        snapshot = await read_quote_snapshot(bot, event)
     await chat_service.record_group_message(
         identity.session_id,
         user_id,
@@ -258,23 +269,32 @@ async def _handle_context(bot: BotClient, event: Event, application: Application
         event_id=identity.event_id,
         message_id=identity.message_id,
         reply_to_message_id=identity.reply_to_message_id,
-        memory_images=await memory_image_sources(bot, event),
+        memory_images=memory_images,
         has_at_bot=mention_flags(bot, event)[0],
         occurred_at=message_occurred_at(event),
         sender_role=event.metadata.get("sender_role"),
-        quote_snapshot=await read_quote_snapshot(bot, event),
+        quote_snapshot=snapshot,
+        learn=event.metadata.get("_chat_learn", True),
     )
     if not can_reply(_chat_cfg(), session_id=identity.session_id):
         return
-    if focus_mode_manager.enabled() or focus_mode_manager.attached(identity.session_id):
+    gate = event.metadata.get("_chat_gate")
+    if gate is not None and not gate.allow:
+        return
+    if (gate is None or gate.force is None) and (
+        focus_mode_manager.enabled() or focus_mode_manager.attached(identity.session_id)
+    ):
         focus_request = await adapt_message_event(bot, event, trigger_kind="mention")
         # 这条消息刚由 record_group_message 写入历史，Focus 回复时不能再写一遍
         focus_request.metadata["history_recorded"] = True
+        focus_request.metadata["learn"] = event.metadata.get("_chat_learn", True)
         await _focus_or_detach(bot, event, focus_request, application, authorizer, is_at=not focus_request.is_group)
         if focus_mode_manager.is_enabled_for_request(focus_request):
             return
     if event.is_group:
         request = await adapt_message_event(bot, event, trigger_kind="proactive")
+        request.metadata["_chat_gate"] = event.metadata.get("_chat_gate")
+        request.metadata["learn"] = event.metadata.get("_chat_learn", True)
         request.accepted_epoch = chat_service.session_store.epoch(identity.session_id)
         request.activity_seq = chat_service.session_store.activity(identity.session_id)
         request.metadata.update({"history_recorded": True, "history_appended": True})
@@ -306,6 +326,13 @@ async def _focus_or_detach(
     bot: BotClient, event: Event, request: ChatRequest, application: Application, authorizer: Authorizer, *, is_at: bool
 ) -> bool:
     """Focus 接管时登记并返回 True；已不满足配置时让该聊天退回普通对话。"""
+    from .scheduling import chat_scheduling
+
+    if chat_scheduling.owner(request.session_id) is not None:
+        return True
+    gate = event.metadata.get("_chat_gate")
+    if gate is not None and (not gate.allow or gate.force is not None):
+        return False
     if focus_mode_manager.is_enabled_for_request(request):
         await _register_focus(bot, event, request, application, authorizer, is_at=is_at)
         return True
@@ -339,6 +366,8 @@ async def _handle_ai_fallback(
         request = await adapt_message_event(bot, event, trigger_kind=trigger_kind, include_quote=False)
     else:
         request = await adapt_message_event(bot, event, trigger_kind=trigger_kind)
+    request.metadata["_chat_gate"] = event.metadata.get("_chat_gate")
+    request.metadata["learn"] = event.metadata.get("_chat_learn", True)
     if await _focus_or_detach(
         bot, event, request, application, authorizer, is_at=trigger_kind in {"mention", "persona", "private"}
     ):
@@ -375,6 +404,7 @@ async def _handle_ai_fallback(
         has_at_bot=mention_flags(bot, event)[0],
         sender_role=request.metadata.get("sender_role"),
         quote_snapshot=request.metadata.get("quote_snapshot"),
+        learn=event.metadata.get("_chat_learn", True),
     )
     request.metadata.update({"history_recorded": True, "history_appended": True})
     has_at_bot, at_other = mention_flags(bot, event)
@@ -384,6 +414,66 @@ async def _handle_ai_fallback(
 
 def install(application: Application, authorizer: Authorizer) -> None:
     """显式安装群上下文和 AI 兜底路由，保留防抖与 Focus 调度。"""
+
+    async def observe_rule(context: HandlerContext) -> bool:
+        from .scheduling import chat_scheduling
+
+        cfg, bot, event = _chat_cfg(), context.bot, context.event
+        if not (has_chat_hooks("message", "gate") or chat_scheduling.owners):
+            return False
+        if not cfg["enabled"] or _message_filtered(cfg, event):
+            return False
+        if not await authorizer.check("chat", event):
+            return False
+        if event.is_group:
+            if not _allowed_group_id(cfg, event):
+                return False
+        else:
+            if not cfg["private_enabled"]:
+                return False
+            allowed = _id_allowlist(cfg, "private_allowlist")
+            if allowed and event.user_id not in allowed:
+                return False
+        return await _ingress_allowed(bot, event, path="message")
+
+    async def observe(context: HandlerContext) -> None:
+        from .context import ChatContext
+        from .scheduling import chat_scheduling
+
+        bot, event = context.bot, context.event
+        request = await adapt_message_event(
+            bot,
+            event,
+            trigger_kind="private" if not event.is_group else "mention" if event.to_me else "proactive",
+            include_quote=not direct_reply_mode(session_id_for_event(bot, event)),
+        )
+        await chat_service.ensure_hydrated(request.session_id, is_group=request.is_group)
+        request.accepted_epoch = chat_service.session_store.epoch(request.session_id)
+        chat = ChatContext(
+            chat_service,
+            request,
+            ToolRuntime(
+                bot=bot,
+                event=event,
+                sender=FocusSender(bot, event.target),
+                application=application,
+                authorizer=authorizer,
+            ),
+        )
+        chat.phase = "message"
+        await chat.observe()
+        event.metadata["_chat_gate"] = chat.gate
+        event.metadata["_chat_learn"] = chat.learn
+        owner = chat_scheduling.owner(chat.session_id)
+        if owner is not None:
+            accepted = chat_service.session_store.mark_seen(chat.session_id, chat.request.dedupe_key)
+            if accepted:
+                chat.request.activity_seq = chat_service.session_store.activity(chat.session_id)
+            if accepted and chat.gate.allow and not chat.is_stopped():
+                await chat_scheduling.deliver(chat)
+            context.stop_event()
+        elif chat.is_stopped():
+            context.stop_event()
 
     async def context_rule(context: HandlerContext) -> bool:
         return await authorizer.check("chat", context.event) and await _context_rule(context.bot, context.event)
@@ -398,7 +488,9 @@ def install(application: Application, authorizer: Authorizer) -> None:
         await _handle_ai_fallback(context.bot, context.event, context, application, authorizer)
 
     collect = on_message(name="context", display_name="记录群聊上下文", rule=context_rule, priority=98, block=False)
+    observer = on_message(name="observe", display_name="聊天消息扩展", rule=observe_rule, priority=97, block=False)
     answer = on_message(name="reply", display_name="AI回复", rule=reply_rule, priority=99)
     collect.handle()(context)
+    observer.handle()(observe)
     answer.handle()(reply)
-    bind_matchers(application, "chat", (collect.snapshot(), answer.snapshot()))
+    bind_matchers(application, "chat", (observer.snapshot(), collect.snapshot(), answer.snapshot()))

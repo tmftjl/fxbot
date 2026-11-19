@@ -218,6 +218,8 @@ class ChatRepository:
         generation: int | None = None,
     ) -> None:
         """更新图片描述等晚到内容；已撤回的行不再覆盖。"""
+        if generation is not None and generation != await self._lock_generation(session, tenant):
+            return
         if turn_key is not None and not await self._current_turn(
             session, tenant, turn_key=turn_key, generation=generation
         ):

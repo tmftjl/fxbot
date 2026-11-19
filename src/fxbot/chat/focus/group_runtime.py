@@ -18,11 +18,12 @@ from loguru import logger
 
 from .tools import WAIT_TOOL, FocusToolRouter, _failure
 from ...core import Event, Message, BotClient, Capability, SessionTarget
-from ..hooks import ChatHookError, ChatHookContext, guard, notify, hook_context, prompt_notes, system_prompt_sections
+from ..hooks import ChatHookError, ChatHookContext, guard, notify, hook_context
 from ..tools import ToolRuntime
 from ..types import ChatRequest, speaker_label
 from .context import FocusEntry, FocusCheckpointStore, closed_entry, restore_entries
 from ...config import get_manager as get_config_manager
+from ..context import ChatExpired
 from ..service import chat_service, _memory_block, _learning_reference
 from ..personas import DEFAULT_PERSONA, effective_persona_name
 from ...utils.tz import now
@@ -505,6 +506,8 @@ class FocusGroupRuntime:
                     await self._idle_or_turn()
                 except asyncio.CancelledError:
                     raise
+                except ChatExpired:
+                    self._failures = 0
                 except Exception:
                     self._failures += 1
                     delay = min(2.0**self._failures, MAX_FAILURE_BACKOFF)
@@ -584,7 +587,16 @@ class FocusGroupRuntime:
             tenant = self._routing_session()
             turn_id = f"focus-{uuid4().hex}"
             generation = self._generation
-            response, provider, model = await self._chat(self._build_messages(references), definitions)
+            try:
+                response, provider, model = await self._chat(self._build_messages(references), definitions)
+            except ChatExpired:
+                if self._closed:
+                    return
+                if generation != self._generation or self._invalidated:
+                    self._invalidated = False
+                    self._planner_snapshot = None
+                    continue
+                raise
             if self._closed or not can_reply():
                 return
             if self._invalidated or generation != self._generation:
@@ -662,6 +674,25 @@ class FocusGroupRuntime:
                 await notify("request_rejected", hook_context(member.request, phase="focus_planner"))
                 return LLMResponse(content=""), "", ""
         token = bind_turn(self.scope_id, uuid4().hex, related_sessions=tuple(self.members))
+        from ..context import ChatContext, current_chat
+
+        member = self.members.get(self._routing_session())
+        context_token = None
+        if member is not None:
+            generation = self._generation
+            epochs = {key: chat_service.session_store.epoch(key) for key in self.members}
+            context = ChatContext(
+                chat_service,
+                member.request,
+                member.runtime,
+                is_valid=lambda: (
+                    not self._closed
+                    and generation == self._generation
+                    and all(chat_service.is_current(key, epoch) for key, epoch in epochs.items())
+                ),
+            )
+            context.phase = "focus_planner"
+            context_token = current_chat.set(context)
         try:
             async with fallback_provider("planner", self._routing_session()) as provider:
                 response = await asyncio.wait_for(
@@ -671,6 +702,8 @@ class FocusGroupRuntime:
                 return response, provider.provider_id, str(provider.get_model() or "")
         finally:
             unbind_turn(token)
+            if context_token is not None:
+                current_chat.reset(context_token)
 
     def _build_messages(self, references: list[str]) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": self._system_prompt()}]
@@ -697,7 +730,6 @@ class FocusGroupRuntime:
             focus_planner_prompt(
                 chat.get("behavior") or {},
                 name=str(chat.get("persona") or DEFAULT_PERSONA),
-                system_sections=system_prompt_sections(ChatHookContext(self.scope_id, phase="focus_planner")),
             ),
             "",
             "参与共享的聊天：",
@@ -728,9 +760,7 @@ class FocusGroupRuntime:
                     if request.group_id and Capability.GROUP_ROLE in member.bot.capabilities
                     else None
                 )
-                _, persona_text = build_persona_text(
-                    request, chat_cfg, behavior, hook_phase="focus_planner", include_system_sections=False
-                )
+                _, persona_text = build_persona_text(request, chat_cfg, behavior)
                 memory = await _memory_block(request, recall_query(request, []))
                 history = chat_service.session_store.get(session_id)
                 learning = await _learning_reference(request, history)
@@ -739,8 +769,7 @@ class FocusGroupRuntime:
             except Exception:
                 logger.opt(exception=True).debug(f"[ChatFocus] 参考信息构建失败: {session_id}")
                 continue
-            notes = prompt_notes(hook_context(request, phase="focus_planner"))
-            body = "\n".join(part for part in (persona_text, memory, learning, *notes) if part)
+            body = "\n".join(part for part in (persona_text, memory, learning) if part)
             if body:
                 references.append(
                     f'<focus_reference session_id="{escape(session_id, quote=True)}">\n{body}\n</focus_reference>'

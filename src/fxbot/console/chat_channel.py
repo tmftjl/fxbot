@@ -6,19 +6,23 @@ import json
 import asyncio
 from uuid import UUID, uuid4
 from typing import Any
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 from collections.abc import AsyncIterator
 
 from loguru import logger
 
+from ..config import get_manager as get_config_manager
 from ..chat.hooks import ChatHookContext, guard, notify
 from ..chat.tools import ToolRuntime
 from ..chat.types import ChatRequest, speaker_label
+from ..chat.context import ChatContext
 from ..chat.service import ChatService, chat_service
 from ..chat.bindings import PERSONA, PROVIDER, get_binding, set_binding
 from ..chat.personas import load_personas, effective_persona_name
 from ..chat.providers import provider_manager
-from ..chat.extensions import ChatExtension, SessionPolicy, SystemPromptSection
+from ..chat.extensions import ChatExtension, SessionPolicy
+from ..chat.scheduling import chat_scheduling
+from ..core.application import Application
 from ..chat.work_schedule import can_reply
 
 PREFIX = "webui:console:private:"
@@ -67,18 +71,22 @@ def _policy(tenant: str) -> SessionPolicy | None:
     return None
 
 
-def _prompt(context: ChatHookContext) -> SystemPromptSection | None:
+def _prompt(context, request) -> None:
     """声明真实渠道能力，不把网页身份伪装成 QQ 用户或机器人账号。"""
     if context.session_id.startswith(PREFIX):
-        return SystemPromptSection(
+        notice = (
             "当前在 WebUI 独立私聊会话中与控制台用户交谈。仅支持文字收发；"
             "没有连接真实平台机器人，不支持发送附件、语音、表情或执行群管理操作。"
         )
-    return None
+        present = any(
+            message.get("role") == "system" and message.get("content") == notice for message in request.messages
+        )
+        if not present:
+            request.messages.insert(0, {"role": "system", "content": notice})
 
 
 _extension.on("session_policy", _policy)
-_extension.on("system_prompt", _prompt)
+_extension.on("llm_request", _prompt)
 
 
 class ChannelRejected(ValueError):
@@ -97,6 +105,8 @@ class ChannelTurn:
     queue: asyncio.Queue[dict[str, Any]]
     task: asyncio.Task[None] | None = None
     cancelled: bool = False
+    context: ChatContext | None = field(default=None, repr=False)
+    release_task: asyncio.Task | None = field(default=None, repr=False)
 
 
 class _WebSender:
@@ -128,6 +138,8 @@ class ConsoleChatChannel:
         self.active: dict[str, ChannelTurn] = {}
         self.clearing: set[str] = set()
         self.stopping = False
+        self.application: Application | None = None
+        self._releasing: set[asyncio.Task] = set()
 
     def _available(self, tenant: str) -> None:
         """限制并发并防止清空与新请求交错。"""
@@ -183,6 +195,8 @@ class ConsoleChatChannel:
         self._available(tenant)
         if not text.strip():
             raise ChannelRejected("empty")
+        if not get_config_manager().get_system()["chat"]["enabled"]:
+            raise ChannelRejected("disabled")
         if not can_reply(session_id=tenant):
             raise ChannelRejected("disabled")
         if persona and persona not in load_personas():
@@ -247,21 +261,7 @@ class ConsoleChatChannel:
                 ChatHookContext(request.session_id, user_id=request.user_id, platform="webui", phase="ingress"),
                 path="reply",
             )
-            await self.service.record_group_message(
-                request.session_id,
-                request.user_id,
-                request.user_name,
-                request.text,
-                is_group=False,
-                dedupe_key=request.dedupe_key,
-                platform="webui",
-                message_id=request.message_id,
-                occurred_at=request.occurred_at,
-            )
-            request.metadata.update({"history_recorded": True, "history_appended": True})
-            await turn.queue.put({"type": "accepted", "id": request.message_id, "content": request.text})
-            runtime = ToolRuntime(sender=_WebSender(turn, self.service), allowed_tools=CHANNEL_TOOLS)
-            sent = await asyncio.wait_for(self.service.process_and_send(request, runtime), TURN_TIMEOUT)
+            sent = await asyncio.wait_for(self._process_input(turn), TURN_TIMEOUT)
             if not sent:
                 await turn.queue.put({"type": "status", "content": "本轮没有发送回复"})
         except asyncio.CancelledError:
@@ -275,6 +275,43 @@ class ConsoleChatChannel:
                 turn.queue.put_nowait({"type": "done"})
             if self.active.get(request.session_id) is turn:
                 self.active.pop(request.session_id)
+
+    async def _process_input(self, turn: ChannelTurn) -> bool:
+        """鉴权后的网页消息和平台一样先观察、再门控、再选择调度所有者。"""
+        request = turn.request
+        runtime = ToolRuntime(
+            sender=_WebSender(turn, self.service),
+            allowed_tools=CHANNEL_TOOLS,
+            application=self.application,
+        )
+        chat = ChatContext(self.service, request, runtime)
+        turn.context = chat
+        chat.phase = "message"
+        await turn.queue.put({"type": "accepted", "id": request.message_id, "content": request.text})
+        await chat.observe()
+        if turn.cancelled or not self.service.is_current(request.session_id, request.accepted_epoch):
+            return False
+        if chat.is_stopped():
+            return chat.sent
+        if not (request.metadata.get("history_recorded") or request.metadata.get("history_appended")):
+            await self.service.record_group_message(
+                request.session_id,
+                request.user_id,
+                request.user_name,
+                request.text,
+                is_group=False,
+                dedupe_key=request.dedupe_key,
+                platform="webui",
+                message_id=request.message_id,
+                occurred_at=request.occurred_at,
+                learn=chat.learn,
+            )
+            request.metadata.update({"history_recorded": True, "history_appended": True})
+        if not chat.gate.allow or not can_reply(session_id=request.session_id):
+            return False
+        if await chat_scheduling.deliver(chat):
+            return chat.sent
+        return await self.service.process_and_send(request, runtime)
 
     async def events(self, turn: ChannelTurn) -> AsyncIterator[str]:
         """响应断开即取消本轮，队列施加背压，不在后台遗留生成任务。"""
@@ -297,10 +334,21 @@ class ConsoleChatChannel:
     async def release(self, turn: ChannelTurn) -> None:
         """按对象身份幂等释放轮次，响应尚未开始迭代就断开时也能清理。"""
         turn.cancelled = True
+        if turn.release_task is None:
+            task = asyncio.create_task(self._release(turn), name=f"console-release:{turn.request.turn_id}")
+            self._releasing.add(task)
+            task.add_done_callback(self._releasing.discard)
+            turn.release_task = task
+        await asyncio.shield(turn.release_task)
+
+    async def _release(self, turn: ChannelTurn) -> None:
         if turn.task is not None:
             if not turn.task.done():
-                turn.task.cancel()
+                if not turn.task.cancelling():
+                    turn.task.cancel()
             await asyncio.gather(turn.task, return_exceptions=True)
+        if turn.context is not None:
+            await chat_scheduling.cancel_context(turn.context)
         if self.active.get(turn.request.session_id) is turn:
             self.active.pop(turn.request.session_id)
 
@@ -331,11 +379,15 @@ class ConsoleChatChannel:
         """框架退出时在模型和共享资源释放前取消网页对话。"""
         self.stopping = True
         await asyncio.gather(*(self.release(turn) for turn in tuple(self.active.values())))
+        if self._releasing:
+            await asyncio.gather(*tuple(self._releasing))
+        self.application = None
 
-    def start(self) -> None:
+    def start(self, application: Application) -> None:
         """开放网页输入前要求旧轮次已取消。"""
-        if self.active or self.clearing:
+        if self.active or self.clearing or self._releasing:
             raise RuntimeError("网页聊天仍有未完成的轮次")
+        self.application = application
         self.stopping = False
 
 

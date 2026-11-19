@@ -14,6 +14,7 @@ from .focus import focus_mode_manager
 from .memory import state
 from ..config import ConfigManager
 from .providers import provider_manager
+from .scheduling import chat_scheduling
 from ..utils.http import close_shared_async_client
 from .continuation import reply_scheduler
 from .memory.tasks import MemoryMaintenance
@@ -79,6 +80,8 @@ class ChatLifecycle:
         reply_scheduler.start()
         resources.push_async_callback(normal_scheduler.stop)
         normal_scheduler.start()
+        resources.push_async_callback(chat_scheduling.stop)
+        chat_scheduling.start()
         await state.prepare_memory()
         await amemorix_runtime.start()
         await image_writeback.start()

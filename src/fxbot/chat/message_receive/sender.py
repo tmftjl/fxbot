@@ -425,7 +425,7 @@ async def _send_parts(
 ) -> str:
     """逐段发送；同租户发送期间不交错，任何一段失效后不再继续。"""
     send_queue = parts(response)
-    direct = bool(response.metadata.get("direct_llm"))
+    direct = bool(response.metadata.get("direct_llm") or response.metadata.get("plugin_reply"))
     if not send_queue:
         return ""
     alive = partial(_alive, service, request, response)
@@ -456,6 +456,10 @@ async def _send_parts(
                 not await guard(
                     "send_guard", hook_context(request, phase="send"), kind="text", text=typo.text, part_index=index
                 )
+                or (
+                    runtime.event is not None
+                    and (runtime.authorizer is None or not await runtime.authorizer.check("chat", runtime.event))
+                )
                 or not alive()
             ):
                 delivery["cancelled"] = True
@@ -483,6 +487,10 @@ async def _send_parts(
             if receipt_id:
                 quote_counter(request.session_id).record(receipt_id, _bot_id(runtime))
             sent_texts.append(typo.text)
+            from ..hooks import dispatch
+            from ..context import ChatContext
+
+            await dispatch("after_send", response.context or ChatContext(service, request, runtime), typo.text, receipt)
             await notify("part_sent", hook_context(request, phase="send"), text=typo.text, part_index=index)
             if not direct:
                 await send_voice(runtime, sender, body, alive, context=hook_context(request, phase="send"))
@@ -495,7 +503,12 @@ async def _send_parts(
                 await send_pictures(service, request, response, runtime, sender)
             await send_emoji(service, request, response, runtime, sender, len(sent_texts), alive)
     reply_text = "\n".join(sent_texts)
-    if sent_texts and not direct and history_enabled(request.is_group):
+    if (
+        sent_texts
+        and not response.metadata.get("direct_llm")
+        and response.metadata.get("learn", True)
+        and history_enabled(request.is_group)
+    ):
         chat_writeback.on_reply(
             request.session_id,
             platform=request.platform,

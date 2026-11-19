@@ -105,6 +105,11 @@ class _Finished(Exception):
     """表示处理器正常提前结束，不代表停止后续路由。"""
 
 
+@dataclass(slots=True)
+class _Propagation:
+    stopped: bool = False
+
+
 @dataclass(slots=True, frozen=True)
 class HandlerContext:
     """当前处理器显式使用的事件、客户端和命令参数。"""
@@ -115,10 +120,19 @@ class HandlerContext:
     scope: ServiceScope = field(default_factory=ServiceScope)
     app_services: ApplicationServices | None = None
     state: dict[str, object] = field(default_factory=dict)
+    _propagation: _Propagation = field(default_factory=_Propagation, init=False, repr=False, compare=False)
 
     @property
     def arguments(self) -> str:
         return self.match.arguments
+
+    def stop_event(self) -> None:
+        """停止本响应器后续处理器及低优先级路由，不中断当前函数或同级响应器。"""
+        self._propagation.stopped = True
+
+    def is_stopped(self) -> bool:
+        """当前响应器是否明确停止了事件传播。"""
+        return self._propagation.stopped
 
     def service(self, factory: Callable[[ApplicationServices], T]) -> T:
         if self.app_services is None:
@@ -280,16 +294,20 @@ class Router:
                 route.app_services,
             )
             if route.permission is not None and await route.permission(context) is not True:
-                return DispatchResult(denied=(route.name,))
+                return DispatchResult(denied=(route.name,), blocked=context.is_stopped())
+            if context.is_stopped():
+                return DispatchResult(blocked=True)
             if route.rule is not None and await route.rule(context) is not True:
-                return DispatchResult()
+                return DispatchResult(blocked=context.is_stopped())
+            if context.is_stopped():
+                return DispatchResult(blocked=True)
             handled = (route.name,)
             logger.success("事件将由 {} 处理", route.name)
             try:
                 await route.handler(context)
             except _Finished:
                 pass
-            return DispatchResult(handled=handled, blocked=route.block)
+            return DispatchResult(handled=handled, blocked=route.block or context.is_stopped())
         except Exception:
             logger.exception("路由执行失败: {} {}", route.name, _event_log_text(event))
             return DispatchResult(handled=handled, failed=(route.name,), blocked=True)

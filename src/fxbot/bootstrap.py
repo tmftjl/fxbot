@@ -26,8 +26,8 @@ from .permission.storage import get_storage
 from .membership.commands import MembershipCommands
 from .console.chat_channel import console_chat
 from .platforms.qq.service import QQService
-from .runtime.notifications import NotificationService
 from .runtime.message_stats import MessageStats
+from .runtime.notifications import NotificationService
 from .runtime.system_commands import install as install_system_commands
 from .permission.authorization import Authorizer
 from .permission.message_policy import MessagePolicy
@@ -100,7 +100,7 @@ def create_runtime(settings: Settings) -> Runtime:
     chat.install(authorizer)
 
     async def start_console() -> None:
-        console_chat.start()
+        console_chat.start(application)
 
     application.resource(start_console, console_chat.stop)
     qq = QQService(application, settings)

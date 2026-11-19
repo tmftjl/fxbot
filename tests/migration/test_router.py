@@ -175,6 +175,80 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.handled, ("ping", "fallback"))
         self.assertEqual(self.bot.send.await_args.args[1].plain_text(), "hello")
 
+    async def test_stop_event_blocks_lower_routes_without_ending_current_function(self) -> None:
+        seen = []
+
+        async def handler(context):
+            self.assertFalse(context.is_stopped())
+            context.stop_event()
+            context.stop_event()
+            self.assertTrue(context.is_stopped())
+            seen.append("continued")
+
+        fallback = AsyncMock()
+        self.router.message("stop", handler, priority=1, block=False)
+        self.router.message("fallback", fallback, priority=99)
+        result = await self.router.dispatch(self.bot, event())
+        self.assertEqual(seen, ["continued"])
+        self.assertEqual(result.handled, ("stop",))
+        self.assertTrue(result.blocked)
+        fallback.assert_not_awaited()
+
+    async def test_stop_event_does_not_cancel_same_priority_routes(self) -> None:
+        stopped = asyncio.Event()
+
+        async def first(context):
+            context.stop_event()
+            stopped.set()
+
+        async def sibling(context):
+            await stopped.wait()
+            self.assertFalse(context.is_stopped())
+
+        fallback = AsyncMock()
+        self.router.message("first", first, priority=1, block=False)
+        self.router.message("sibling", sibling, priority=1, block=False)
+        self.router.message("fallback", fallback, priority=99)
+        result = await self.router.dispatch(self.bot, event())
+        self.assertEqual(result.handled, ("first", "sibling"))
+        self.assertTrue(result.blocked)
+        fallback.assert_not_awaited()
+
+    async def test_stop_event_is_scoped_to_each_dispatch(self) -> None:
+        async def handler(context):
+            self.assertFalse(context.is_stopped())
+            if context.event.message.plain_text() == "stop":
+                context.stop_event()
+
+        fallback = AsyncMock()
+        self.router.message("handler", handler, priority=1, block=False)
+        self.router.message("fallback", fallback, priority=99)
+        first, second = await asyncio.gather(
+            self.router.dispatch(self.bot, event("stop")),
+            self.router.dispatch(self.bot, event("continue")),
+        )
+        self.assertTrue(first.blocked)
+        self.assertEqual(first.handled, ("handler",))
+        self.assertEqual(second.handled, ("handler", "fallback"))
+
+    async def test_stop_event_from_guard_blocks_even_when_guard_declines(self) -> None:
+        for stage in ("permission", "rule"):
+            for accepted in (True, False):
+                with self.subTest(stage=stage, accepted=accepted):
+                    router = Router()
+
+                    async def check(context):
+                        context.stop_event()
+                        return accepted
+
+                    handler, fallback = AsyncMock(), AsyncMock()
+                    router.message("guarded", handler, priority=1, block=False, **{stage: check})
+                    router.message("fallback", fallback, priority=99)
+                    result = await router.dispatch(self.bot, event())
+                    self.assertTrue(result.blocked)
+                    handler.assert_not_awaited()
+                    fallback.assert_not_awaited()
+
     async def test_failure_is_logged_without_customer_message(self) -> None:
         for stage in ("handler", "permission", "rule", "match", "preprocessor"):
             router = Router()

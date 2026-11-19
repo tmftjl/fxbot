@@ -200,10 +200,18 @@ class ReplyScheduler:
         self.tasks[task_key] = task
         return task
 
-    def cancel(self, *, owner: str | None = None, session_id: str | None = None) -> None:
+    def cancel(
+        self,
+        *,
+        owner: str | None = None,
+        session_id: str | None = None,
+        exclude_current: bool = False,
+    ) -> None:
         """立即撤销任务身份后取消，发送前检查也会随即拒绝。"""
         for key, task in list(self.tasks.items()):
             if (owner is None or key[0] == owner) and (session_id is None or key[1] == session_id):
+                if exclude_current and task is asyncio.current_task():
+                    continue
                 self.tasks.pop(key, None)
                 if task is not asyncio.current_task():
                     task.cancel()

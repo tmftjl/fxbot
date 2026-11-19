@@ -418,6 +418,10 @@ async def run(service: Any, context: Any) -> ChatResponse:
                     )
             if response is None:
                 break
+            call_runtime = context.runtime
+            if response.request is not None and response.request.tool_registry is not None:
+                call_runtime = replace(context.runtime, registry=response.request.tool_registry)
+                names, _ = await allowed_tools(call_runtime, session_id=request.session_id)
             snapshot = planner_snapshot(provider, request_messages, tools)
             messages[:] = request_messages
             if reminder and messages and messages[-1].get("content") == reminder:
@@ -512,7 +516,7 @@ async def run(service: Any, context: Any) -> ChatResponse:
                             platform=request.platform,
                             metadata={**request.metadata, "allowed_tools": sorted(names)},
                         )
-                        result = await execute_tool(name, arguments, tool_context, context.runtime, allowed_names=names)
+                        result = await execute_tool(name, arguments, tool_context, call_runtime, allowed_names=names)
                         if name != "tool_search":
                             key = name + ":" + json.dumps(arguments, sort_keys=True, ensure_ascii=False)
                             evidence[key] = json.dumps(result, sort_keys=True, ensure_ascii=False, default=str)

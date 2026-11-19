@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from uuid import uuid4
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import field, replace, dataclass
 
 import httpx
 from loguru import logger
@@ -22,6 +23,41 @@ from .session_hooks import resolve_session_id
 from .message_context import quote_preview
 
 _RESOURCE_ERRORS = (UnsupportedCapability, ActionFailed, TimeoutError, OSError, httpx.HTTPError)
+_ADAPTATIONS = "_fxbot_chat_adaptations"
+
+
+@dataclass
+class _Adaptation:
+    bot: BotClient
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    requests: dict[bool, ChatRequest] = field(default_factory=dict)
+
+
+def _copy_request(request: ChatRequest, trigger_kind: TriggerKind) -> ChatRequest:
+    return replace(
+        request,
+        turn_id=uuid4().hex,
+        trigger_kind=trigger_kind,
+        proactive=trigger_kind == "proactive",
+        metadata={key: value if key == "event" else deepcopy(value) for key, value in request.metadata.items()},
+        segments=deepcopy(request.segments),
+        images=list(request.images),
+        mentions=deepcopy(request.mentions),
+        source_message_ids=list(request.source_message_ids),
+        source_author_ids=list(request.source_author_ids),
+    )
+
+
+def cached_message_event(
+    bot: BotClient,
+    event: Event,
+    *,
+    trigger_kind: TriggerKind,
+    include_quote: bool = True,
+) -> ChatRequest | None:
+    state = event.metadata.get(_ADAPTATIONS, {}).get(id(bot))
+    template = state.requests.get(include_quote) if state is not None else None
+    return _copy_request(template, trigger_kind) if template is not None else None
 
 
 def _segments(event: Event) -> list[MessageSegment]:
@@ -192,6 +228,23 @@ def message_occurred_at(event: Event) -> datetime:
 
 async def adapt_message_event(
     bot: BotClient, event: Event, *, trigger_kind: TriggerKind, include_quote: bool = True
+) -> ChatRequest:
+    """同事件、客户端与引用策略只做一次重适配，各调用者获得独立工作对象。"""
+    state = event.metadata.setdefault(_ADAPTATIONS, {}).setdefault(id(bot), _Adaptation(bot))
+    async with state.lock:
+        if include_quote not in state.requests:
+            state.requests[include_quote] = await _adapt_message_event(
+                bot, event, trigger_kind=trigger_kind, include_quote=include_quote
+            )
+        return _copy_request(state.requests[include_quote], trigger_kind)
+
+
+async def _adapt_message_event(
+    bot: BotClient,
+    event: Event,
+    *,
+    trigger_kind: TriggerKind,
+    include_quote: bool,
 ) -> ChatRequest:
     """媒体只解析一次，原图记忆不混入引用图片。"""
     received_at = to_naive_utc(now())

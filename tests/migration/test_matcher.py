@@ -99,6 +99,29 @@ class MatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.handled, ("test:ping", "fallback"))
         after.assert_awaited_once()
 
+    async def test_stop_event_skips_remaining_handlers_and_lower_routes(self):
+        matcher = on_command("ping", block=False)
+        after, fallback = AsyncMock(), AsyncMock()
+
+        @matcher.handle()
+        async def first(ctx):
+            matcher.stop_event()
+            self.assertTrue(ctx.is_stopped())
+
+        @matcher.handle()
+        async def second(ctx):
+            await after()
+
+        await self.install(matcher)
+        self.app.router.message("fallback", fallback, priority=99)
+        result = await self.app.router.dispatch(self.bot, event())
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.handled, ("test:ping",))
+        after.assert_not_awaited()
+        fallback.assert_not_awaited()
+        with self.assertRaises(RuntimeError):
+            matcher.stop_event()
+
     async def test_handlers_remain_sequential_when_sibling_matcher_runs_concurrently(self):
         first, sibling = on_command("ping", name="first"), on_command("ping", name="sibling")
         entered, release = asyncio.Event(), asyncio.Event()

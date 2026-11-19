@@ -85,7 +85,10 @@ def schedule_status(chat: dict[str, Any] | None = None, *, at: datetime | None =
 
 def rest_time_exempt(session_id: str | None) -> bool:
     """插件为该会话显式放行作息限制，例如服务器运维会话。"""
-    return bool(session_id) and session_policy(session_id).allow_rest_time
+    from .scheduling import chat_scheduling
+
+    owner = chat_scheduling.owner(session_id) if session_id else None
+    return bool(owner and owner.allow_rest_time) or (bool(session_id) and session_policy(session_id).allow_rest_time)
 
 
 def can_reply(chat: dict[str, Any] | None = None, *, session_id: str | None = None) -> bool:

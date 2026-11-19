@@ -16,14 +16,40 @@ class ToolRegistry:
 
     def register(self, spec: ToolSpec) -> ToolSpec:
         """注册工具。"""
+        from ...core.registration import track_registration
+
+        previous = self._tools.get(spec.name)
         self._tools[spec.name] = spec
         self._openai_tools_cache = None
+
+        def rollback() -> None:
+            if self._tools.get(spec.name) is spec:
+                if previous is None:
+                    self.unregister(spec.name)
+                else:
+                    self._tools[spec.name] = previous
+                    self._openai_tools_cache = None
+
+        track_registration(rollback)
         return spec
 
     def unregister(self, name: str) -> None:
         """注销工具。"""
         if self._tools.pop(name, None) is not None:
             self._openai_tools_cache = None
+
+    def select(self, names: list[str] | set[str]) -> ToolRegistry:
+        """建立独立的本轮工具集合，不修改全局注册表。"""
+        selected = ToolRegistry()
+        for name in names:
+            spec = self._tools[name]
+            selected.register(spec)
+        return selected
+
+    def merge(self, other: ToolRegistry) -> None:
+        """同名工具由显式传入的集合覆盖。"""
+        for spec in other.list():
+            self.register(spec)
 
     def get(self, name: str) -> ToolSpec | None:
         """获取工具。"""

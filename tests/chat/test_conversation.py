@@ -38,7 +38,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             request=self.request,
             epoch=0,
             messages=[{"role": "user", "content": "你好"}],
-            runtime=SimpleNamespace(sender=object()),
+            runtime=SimpleNamespace(sender=object(), registry=None),
             provider_name="test",
             limit=30,
             entry=None,
@@ -82,6 +82,21 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.execute.await_args.args[2].session_id, "tenant-a")
         self.service._send_generated.assert_awaited_once()
         self.assertEqual(self.service._process_locked.await_args.kwargs["focus_instruction"], "说明查到的天气")
+
+    async def test_model_registry_is_used_only_for_its_tool_batch(self) -> None:
+        from fxbot.chat.tools import ToolSpec, ToolRuntime, ToolRegistry
+        from fxbot.chat.providers import LLMRequest
+
+        self.context.runtime = ToolRuntime(sender=object())
+        registry = ToolRegistry()
+        registry.register(ToolSpec("lookup", "local", {}, AsyncMock()))
+        self.provider.chat.side_effect = [
+            LLMResponse(tool_calls=[call("lookup")], request=LLMRequest(tool_registry=registry)),
+            LLMResponse(tool_calls=[call("stop")]),
+        ]
+        await conversation.run(self.service, self.context)
+        self.assertIs(self.execute.await_args.args[3].registry, registry)
+        self.assertIsNone(self.context.runtime.registry)
 
     async def test_planner_trace_records_called_tools(self) -> None:
         state = TurnTrace(self.request.turn_id)

@@ -42,9 +42,13 @@ async def execute_tool(
     runtime: ToolRuntime,
     *,
     allowed_names: set[str],
-    registry: ToolRegistry = default_registry,
+    registry: ToolRegistry | None = None,
 ) -> dict[str, Any]:
     """执行单个工具并返回模型可消费的结果。"""
+    from ..hooks import dispatch
+    from ..context import current_chat
+
+    registry = registry if registry is not None else runtime.registry or default_registry
     if name not in allowed_names:
         return {"ok": False, "error": f"工具未允许: {name}"}
     spec = registry.get(name)
@@ -69,14 +73,26 @@ async def execute_tool(
         if spec.args_model is not None:
             model = spec.args_model(**args)
             args = model.model_dump()
+        chat = current_chat.get()
+        if chat is not None:
+            chat.check_current()
+            await dispatch("tool_start", chat, spec, args)
+            if spec.args_model is not None:
+                args = spec.args_model(**args).model_dump()
         if not await guard("tool_guard", hook, tool_name=name, arguments=args):
             return {"ok": False, "error": "工具被会话策略拒绝"}
         await notify("tool_start", hook, tool_name=name, arguments=args)
+        if chat is not None:
+            chat.check_current()
         result = spec.handler(context, runtime, **args)
         if inspect.isawaitable(result):
             result = await result
-        await notify("tool_complete", hook, tool_name=name, result=result)
-        return {"ok": True, "result": result}
+        output = {"ok": True, "result": result}
+        if chat is not None:
+            await dispatch("tool_end", chat, spec, args, output)
+            chat.check_current()
+        await notify("tool_complete", hook, tool_name=name, result=output.get("result"))
+        return output
     except asyncio.CancelledError:
         await notify("tool_cancelled", hook, tool_name=name)
         raise

@@ -102,3 +102,13 @@ class ChatResponse:
     raw: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
     epoch: int = 0
+    context: Any = field(default=None, repr=False, compare=False)
+
+    def resolve_parts(self, original_text: str) -> list[str]:
+        """统一 reply hook 后的正文与分段：正文变化优先，否则使用显式分段。"""
+        parts = self.metadata.get("reply_parts")
+        if parts is None or self.text != original_text:
+            parts = [self.text] if self.text else []
+        self.text = "".join(parts)
+        self.metadata["reply_parts"] = parts
+        return parts

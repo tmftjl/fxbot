@@ -9,7 +9,9 @@ from collections.abc import Callable, Awaitable
 from .hooks import ChatHookContext, guard, notify
 
 T = TypeVar("T")
-StageName = Literal["memory_retrieval", "learning_reference", "learning_write", "scheduled_reply", "planner", "reply"]
+StageName = Literal[
+    "memory_retrieval", "learning_reference", "learning_write", "scheduled_reply", "planner", "reply", "turn"
+]
 CHAT_STAGES = frozenset(get_args(StageName))
 
 

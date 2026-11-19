@@ -70,6 +70,7 @@ def register_callback(
     ):
         raise ValueError("该扩展必须同步")
     registration = Registration(callback, priority, events)
+    previous = entries.get(name)
     entries[name] = registration
 
     def unregister() -> None:
@@ -77,6 +78,16 @@ def register_callback(
         if entries.get(name) is registration:
             entries.pop(name)
 
+    from ..core.registration import track_registration
+
+    def rollback() -> None:
+        if entries.get(name) is registration:
+            if previous is None:
+                entries.pop(name)
+            else:
+                entries[name] = previous
+
+    track_registration(rollback)
     return unregister
 
 

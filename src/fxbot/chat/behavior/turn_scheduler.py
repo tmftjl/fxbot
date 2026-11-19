@@ -31,6 +31,13 @@ def _received_at(request: ChatRequest) -> float:
     return time.time()
 
 
+def _forced(request: ChatRequest) -> bool:
+    decision = request.metadata.get("_chat_gate")
+    if decision is not None and decision.force is not None:
+        return decision.force
+    return request.trigger_kind in {"mention", "persona"}
+
+
 @dataclass
 class ScheduledChat:
     """一个会话的待处理消息、防抖状态和唯一处理任务。"""
@@ -61,7 +68,15 @@ class NormalChatScheduler:
 
     async def submit(self, service: Any, request: ChatRequest, runtime: Any) -> None:
         """保存消息后唤醒会话 worker，进行中的 Planner 直接接收后续消息。"""
-        if self.stopping or not can_reply(session_id=request.session_id):
+        from ..scheduling import chat_scheduling
+
+        gate = request.metadata.get("_chat_gate")
+        if (
+            self.stopping
+            or not can_reply(session_id=request.session_id)
+            or chat_scheduling.owner(request.session_id) is not None
+            or (gate is not None and not gate.allow)
+        ):
             return
         received_at = _received_at(request)
         if request.is_group:
@@ -85,6 +100,8 @@ class NormalChatScheduler:
             if state.quiet.full:
                 state.quiet.requests = state.quiet.requests[-1:]
             state.quiet.accept(request, trigger=request.trigger_kind != "proactive")
+        if gate is not None and not gate.debounce:
+            state.quiet.deadline = 0
         state.event.set()
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(self._run(request.session_id, state))
@@ -132,9 +149,9 @@ class NormalChatScheduler:
                 latest = snapshot[-1]
                 if latest.accepted_epoch is not None and not state.service.is_current(tenant, latest.accepted_epoch):
                     return
-                forced = any(request.trigger_kind in {"mention", "persona"} for request in snapshot)
+                forced = any(_forced(item) for item in snapshot)
                 gate = default_reply_gate_registry.get(tenant)
-                if latest.is_group and talk_value_for(tenant) <= 0:
+                if latest.is_group and not forced and talk_value_for(tenant) <= 0:
                     state.pending.clear()
                     return
                 if latest.is_group and not forced:
@@ -206,19 +223,24 @@ class NormalChatScheduler:
                 self.chats.pop(tenant, None)
                 self.debounce.clear(tenant)
 
-    def clear(self, tenant: str) -> None:
+    def clear(self, tenant: str, *, exclude_current: bool = False) -> None:
         """清空时取消待处理任务和防抖，避免旧消息重新触发。"""
         state = self.chats.pop(tenant, None)
         if state is not None and state.task is not None:
-            state.task.cancel()
+            if not (exclude_current and state.task is asyncio.current_task()) and not state.task.cancelling():
+                state.task.cancel()
         self.debounce.clear(tenant)
 
     async def stop(self) -> None:
         """关闭时先取消全部会话 worker，再释放模型资源。"""
         self.stopping = True
-        tasks = [state.task for state in self.chats.values() if state.task is not None]
+        tasks = [
+            state.task
+            for state in self.chats.values()
+            if state.task is not None and state.task is not asyncio.current_task()
+        ]
         for tenant in list(self.chats):
-            self.clear(tenant)
+            self.clear(tenant, exclude_current=True)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

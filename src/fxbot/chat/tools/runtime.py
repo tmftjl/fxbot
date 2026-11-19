@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from ...core import Event, BotClient, ReplySender
 
 if TYPE_CHECKING:
+    from .registry import ToolRegistry
     from ...core.application import Application
     from ...permission.authorization import Authorizer
 
@@ -22,6 +23,7 @@ class ToolRuntime:
     authorizer: Authorizer | None = None
     application: Application | None = None
     allowed_tools: frozenset[str] | None = None
+    registry: ToolRegistry | None = None
 
     def require_bot(self) -> BotClient:
         """获取 bot，不存在时抛错。"""

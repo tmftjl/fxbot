@@ -26,12 +26,10 @@ from .access import (
 from .config import blocked_reason, policy_switches, auto_run_commands, skip_confirmation
 from .executor import audit, executor
 from .ui_schema import get_ui_schema
-from ...chat.hooks import register_chat_hook
 from ...chat.tools import ToolError, ToolContext, ToolRuntime, tool
 from ...core.plugin import PluginMetadata, on_regex
 from ...utils.paths import data_dir, config_dir, startup_marker_path
-from ...chat.service import chat_service
-from ...chat.session_hooks import SessionPolicy, register_session_policy, register_session_resolver
+from ...chat.extensions import LLMRequest, ChatContext, ChatExtension, SessionPolicy, chat_service
 from ...chat.message_adapter import event_identity, adapt_message_event
 
 __plugin_extensions__ = {"console.config": get_ui_schema}
@@ -45,6 +43,8 @@ __plugin_meta__ = PluginMetadata(
 
 _COMMAND = re.compile(r"^[#＃](服务器模式|聊天模式)\s*$")
 _GROUP_COMMAND = re.compile(r"^[#＃]服务器模式[#＃]\s*")
+_extension = ChatExtension("server_admin")
+_PROMPT_MARKER = "[服务器运维环境]\n"
 
 
 def _resolve(bot, event, base: str) -> str | None:
@@ -124,10 +124,15 @@ def _services_note() -> str:
     return f"服务清单 {path}\n{content}".strip()
 
 
-def _prompt(context) -> str | None:
+def _prompt(context: ChatContext, request: LLMRequest) -> None:
     """提示工作环境和确认方式，不覆盖用户通过 #人格 设置的绑定。"""
-    if not store.is_server_session(context.session_id):
-        return None
+    if not store.is_server_session(context.session_id) or request.phase not in {"reply", "planner"}:
+        return
+    request.messages[:] = [
+        message
+        for message in request.messages
+        if not (message.get("role") == "system" and str(message.get("content", "")).startswith(_PROMPT_MARKER))
+    ]
     if skip_confirmation():
         note = (
             "这是服务器运维会话。命令用 server_exec 执行，未结束用 job_id 查，别重复提交。"
@@ -143,7 +148,12 @@ def _prompt(context) -> str | None:
         command = job["command"]
         tail = "…" if len(command) > 600 else ""
         note += f"\n待确认命令：\n{command[:600]}{tail}"
-    return f"{note}\n{_runtime_facts()}\n{_services_note()}"
+    content = f"{_PROMPT_MARKER}{note}\n{_runtime_facts()}\n{_services_note()}"
+    position = next(
+        (index for index, message in enumerate(request.messages) if message.get("role") != "system"),
+        len(request.messages),
+    )
+    request.messages.insert(position, {"role": "system", "content": content})
 
 
 async def _observe(event: str, context, details) -> None:
@@ -154,13 +164,13 @@ async def _observe(event: str, context, details) -> None:
 
 
 # 模块只注册纯回调；实际命令任务由触发它的 Application 创建和回收。
-register_session_resolver("server_admin", _resolve)
-register_session_policy("server_admin", _policy)
-register_chat_hook("request_guard", "server_admin", _guard)
-register_chat_hook("send_guard", "server_admin", _guard)
-register_chat_hook("tool_guard", "server_admin", _tools)
-register_chat_hook("prompt", "server_admin", _prompt)
-register_chat_hook("observer", "server_admin", _observe)
+_extension.on("session_resolver", _resolve)
+_extension.on("session_policy", _policy)
+_extension.on("request_guard", _guard)
+_extension.on("send_guard", _guard)
+_extension.on("tool_guard", _tools)
+_extension.on("llm_request", _prompt)
+_extension.on("observer", _observe, events={"session_clear_start"})
 
 
 async def _rule(context: HandlerContext) -> bool:

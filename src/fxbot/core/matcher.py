@@ -116,6 +116,13 @@ class Matcher:
     async def finish(self, message: Message | str | None = None) -> NoReturn:
         await self._context().finish(message)
 
+    def stop_event(self) -> None:
+        """停止当前事件传播；需要立即结束当前函数时继续调用 finish()。"""
+        self._context().stop_event()
+
+    def is_stopped(self) -> bool:
+        return self._context().is_stopped()
+
 
 @dataclass(frozen=True, slots=True)
 class MatcherDefinition:
@@ -141,6 +148,8 @@ class MatcherDefinition:
         token = _current.set(execution)
         try:
             for handler in self.handlers:
+                if context.is_stopped():
+                    break
                 await handler.invoke(context, self.matcher)
         finally:
             execution.active = False

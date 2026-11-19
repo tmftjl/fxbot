@@ -16,7 +16,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from ..core import Capability
-from .hooks import ChatHookContext, guard, notify, hook_context, filter_reply_text, system_prompt_sections
+from .hooks import ChatHookContext, guard, notify, hook_context
 from .tools import ToolRuntime, subagent as subagent_module, tool_result_store
 from .trace import TurnTrace, turn_trace
 from .types import MentionRef, ChatRequest, ChatResponse, is_proactive, is_continuation
@@ -24,6 +24,7 @@ from .memory import state as memory_state
 from .stages import execute_stage
 from .vision import describe_images, vision_configured
 from ..config import get_manager as get_config_manager
+from .context import ChatContext, ChatExpired, current_chat
 from .replyer import prompt, generator
 from .session import ChatSessionStore, history_limit, default_session_store
 from .personas import get_persona_text, effective_persona_name
@@ -150,11 +151,61 @@ class ChatService:
     def __init__(self, session_store: ChatSessionStore = default_session_store) -> None:
         self.session_store = session_store
         self._active_requests: dict[str, ChatRequest] = {}
+        self._running: dict[str, tuple[ChatContext, asyncio.Task]] = {}
+
+    async def context(self, handler: Any) -> ChatContext:
+        """从平台处理器创建聊天上下文，不借用处理器的 finish 生命周期。"""
+        from .message_adapter import adapt_message_event
+        from .focus.group_runtime import FocusSender
+
+        request = await adapt_message_event(
+            handler.bot, handler.event, trigger_kind="mention" if handler.event.is_group else "private"
+        )
+        await self.ensure_hydrated(request.session_id, is_group=request.is_group)
+        request.accepted_epoch = self.session_store.epoch(request.session_id)
+        services = handler.app_services
+        return ChatContext(
+            self,
+            request,
+            ToolRuntime(
+                bot=handler.bot,
+                event=handler.event,
+                sender=FocusSender(handler.bot, handler.event.target),
+                application=services.application if services is not None else None,
+                authorizer=services.authorizer if services is not None else None,
+            ),
+        )
+
+    async def execute(self, context: ChatContext, *, model_request: Any = None, result: Any = None) -> ChatResponse:
+        """托管自定义对话：沿用轮次锁、准入、持久化与发送，不经过默认 Planner。"""
+        context.model_request = model_request
+        context.result = result
+        async with self.session_store.turn_lock(context.session_id):
+            response = await self._process_locked(context.request, context.runtime, context=context)
+            context.sent = await self._send_generated(context.request, response, context.runtime)
+            return response
+
+    def running(self, session_id: str) -> tuple[ChatContext, ...]:
+        return tuple(context for context, _ in self._running.values() if context.session_id == session_id)
+
+    def cancel(self, session_id: str, *, turn_id: str | None = None, exclude_current: bool = False) -> None:
+        """取消指定运行；不会清空会话，也不会撤销已完成工具的副作用。"""
+        for key, (context, task) in tuple(self._running.items()):
+            if context.session_id == session_id and (turn_id is None or key == turn_id):
+                if exclude_current and task is asyncio.current_task():
+                    continue
+                if not task.cancelling():
+                    task.cancel()
 
     async def queue_message(self, request: ChatRequest, runtime: ToolRuntime | None = None) -> bool:
         """运行中的会话接收后续消息，由同一个 Planner 消费。"""
         active = self._active_requests.get(request.session_id)
-        if active is None or active.metadata.get("_direct_llm") or direct_reply_mode(request.session_id):
+        if (
+            active is None
+            or not active.metadata.get("planner_loop")
+            or active.metadata.get("_direct_llm")
+            or direct_reply_mode(request.session_id)
+        ):
             return False
         active.metadata["planner_latest_request"] = request
         if runtime is not None:
@@ -180,6 +231,7 @@ class ChatService:
             has_at_bot=bool(request.metadata.get("has_at_bot")),
             sender_role=request.metadata.get("sender_role"),
             quote_snapshot=request.metadata.get("quote_snapshot"),
+            learn=request.metadata.get("learn", True),
         )
         request.metadata["history_recorded"] = True
         request.metadata["history_appended"] = True
@@ -222,6 +274,27 @@ class ChatService:
                 self._active_requests.pop(request.session_id, None)
 
     async def _send_generated(self, request: ChatRequest, response: ChatResponse, runtime: ToolRuntime | None) -> bool:
+        """发送阶段也保持可查询、可取消的执行身份。"""
+        context = response.context
+        if context is None:
+            return await self._deliver_generated(request, response, runtime)
+        previous = self._running.get(request.turn_id)
+        self._running[request.turn_id] = (context, asyncio.current_task())
+        try:
+            context.sent = await self._deliver_generated(request, response, runtime)
+            return context.sent
+        finally:
+            if previous is not None:
+                self._running[request.turn_id] = previous
+            else:
+                self._running.pop(request.turn_id, None)
+
+    async def _deliver_generated(
+        self,
+        request: ChatRequest,
+        response: ChatResponse,
+        runtime: ToolRuntime | None,
+    ) -> bool:
         """发送已生成的回复；空正文、失效轮次或缺少发送目标时结束本轮。"""
         if response.metadata.get("planner_sent"):
             return True
@@ -296,18 +369,21 @@ class ChatService:
             return sent_text
 
     async def _process_locked(
-        self, request: ChatRequest, runtime: ToolRuntime | None, *, focus_instruction: str | None = None
+        self,
+        request: ChatRequest,
+        runtime: ToolRuntime | None,
+        *,
+        focus_instruction: str | None = None,
+        context: ChatContext | None = None,
     ) -> ChatResponse:
         """调用方已持有轮次锁。"""
+        from .hooks import dispatch
+
         chat_cfg = get_config_manager().get_system()["chat"]
         if not can_reply(chat_cfg, session_id=request.session_id):
             return ChatResponse(text="", epoch=self.session_store.epoch(request.session_id))
         # 本轮固定模式，避免异步生成期间热更新导致提示与发送走不同分支。
         request.metadata["_direct_llm"] = direct_reply_mode(request.session_id)
-        if request.metadata["_direct_llm"] and (
-            is_proactive(request) or request.batched or focus_instruction is not None
-        ):
-            return ChatResponse(text="", epoch=self.session_store.epoch(request.session_id))
         if request.metadata["_direct_llm"]:
             request.metadata.pop("planner_loop", None)
         await self._hydrate(request.session_id, history_limit(chat_cfg, request.is_group))
@@ -316,6 +392,9 @@ class ChatService:
         if not self.is_current(request.session_id, request.accepted_epoch):
             logger.debug(f"[Chat] 清空后跳过排队轮次: session={request.session_id}")
             return ChatResponse(text="", epoch=request.accepted_epoch)
+        if runtime is not None and runtime.event is not None:
+            if runtime.authorizer is None or not await runtime.authorizer.check("chat", runtime.event):
+                return ChatResponse(text="", epoch=request.accepted_epoch)
         hook = hook_context(
             request, phase="planner" if focus_instruction is None and not request.metadata["_direct_llm"] else "reply"
         )
@@ -328,20 +407,109 @@ class ChatService:
         from .continuation import reply_scheduler
 
         reply_scheduler.remember(self, request, runtime)
+        context = context or ChatContext(self, request, runtime)
+        context._executing = True
+        context.phase = "reply" if focus_instruction is not None else "chat"
+        task = asyncio.current_task()
+        previous_execution = self._running.get(request.turn_id)
+        self._running[request.turn_id] = (context, task)
+        token = current_chat.set(context)
+        trace_token = bind_turn(request.session_id, request.turn_id)
+        started = time.monotonic()
+        custom = False
         try:
             await notify("request_start", hook)
             if not self.is_current(request.session_id, request.accepted_epoch):
                 return ChatResponse(text="", epoch=request.accepted_epoch)
-            response = await self._process(request, runtime, focus_instruction=focus_instruction)
-        except asyncio.CancelledError:
+            await dispatch("chat_request", context)
+            request.metadata["learn"] = context.learn
+            context.check_current()
+            custom = context.result is not None or context.model_request is not None or context.executor is not None
+            if custom:
+                request.metadata.pop("planner_loop", None)
+                request.metadata["_direct_llm"] = False
+                await context.ensure_started()
+
+                async def run_custom():
+                    if context.executor is not None:
+                        output = await context.executor(context)
+                        return context.result if output is None else output
+                    if context.model_request is not None:
+                        return await context.tool_loop_agent(context.model_request)
+                    return context.result
+
+                output = await execute_stage("turn", hook_context(request), run_custom, rejected=None)
+                if output is None:
+                    await self._mark_turn_aborted(request, "插件结束本轮，未提交回复")
+                    response = ChatResponse("", epoch=request.accepted_epoch)
+                else:
+                    response = await context.finalize(output)
+            elif context.is_stopped():
+                response = ChatResponse("", epoch=request.accepted_epoch)
+            elif request.metadata["_direct_llm"] and (
+                is_proactive(request) or request.batched or focus_instruction is not None
+            ):
+                response = ChatResponse("", epoch=request.accepted_epoch)
+            else:
+                response = await self._process(request, runtime, focus_instruction=focus_instruction)
+            context.last_response = response
+            response.context = context
+            response.metadata.setdefault("learn", context.learn)
+            context.status = "completed"
+        except asyncio.CancelledError as exc:
+            context.status, context.error = "cancelled", exc
             await notify("request_cancelled", hook)
+            await self._mark_turn_aborted(request, "执行被取消")
             raise
+        except ChatExpired as exc:
+            context.status, context.error = "expired", exc
+            await self._mark_turn_aborted(request, str(exc))
+            return ChatResponse("", epoch=request.accepted_epoch)
         except Exception as exc:
+            context.status, context.error = "failed", exc
             await notify("request_error", hook)
             await self._mark_turn_failed(request, exc)
             raise
+        finally:
+            try:
+                await dispatch("chat_done", context)
+                if custom:
+                    await self._record_extension_trace(request, context, started)
+            finally:
+                current_chat.reset(token)
+                context._executing = False
+                unbind_turn(trace_token)
+                if previous_execution is not None:
+                    self._running[request.turn_id] = previous_execution
+                else:
+                    self._running.pop(request.turn_id, None)
         await notify("request_complete", hook, text=response.text, epoch=response.epoch)
         return response
+
+    async def _record_extension_trace(self, request: ChatRequest, context: ChatContext, started: float) -> None:
+        state = turn_trace(request)
+        if state is None:
+            state = TurnTrace(request.turn_id)
+            request.metadata["_turn_trace"] = state
+        if state.turn_id != request.turn_id or state.saved:
+            return
+        elapsed = int((time.monotonic() - started) * 1000)
+        state.add_stage(
+            "extension",
+            "插件对话",
+            elapsed,
+            provider=context.last_provider,
+            error=str(context.error or "") if context.status != "completed" else "",
+        )
+        snapshot = state.snapshot()
+        await history_module.record_trace(
+            request,
+            context.last_provider,
+            elapsed,
+            str(context.error or ""),
+            {"budget": snapshot, "request_preview": sanitize_line(request.text, 200)},
+        )
+        state.saved = True
 
     async def _send_emoji(
         self, request: ChatRequest, response: ChatResponse, runtime: ToolRuntime | None, sender: Any, sent: int
@@ -389,8 +557,16 @@ class ChatService:
         from .memory.trimmed import trimmed_learning
         from .behavior.turn_scheduler import normal_scheduler
 
+        for context, task in tuple(self._running.values()):
+            if context.session_id == session_id and task is not asyncio.current_task():
+                if not task.cancelling():
+                    task.cancel()
+        from .scheduling import chat_scheduling
+
+        chat_scheduling.cancel(session_id, exclude_current=True)
+
         reply_scheduler.cancel(session_id=session_id)
-        normal_scheduler.clear(session_id)
+        normal_scheduler.clear(session_id, exclude_current=True)
         trimmed_learning.clear(session_id)
         self._active_requests.pop(session_id, None)
         default_debounce_registry.clear(session_id)
@@ -589,6 +765,7 @@ class ChatService:
         has_at_bot: bool = False,
         sender_role: str | None = None,
         quote_snapshot: dict[str, str] | None = None,
+        learn: bool = True,
     ) -> None:
         """记录群聊或私聊的上下文消息，图片同样转成文字描述写入历史。"""
         images = list(images or [])
@@ -620,6 +797,7 @@ class ChatService:
             has_at_bot=has_at_bot,
             sender_role=sender_role if is_group else None,
             quote_snapshot=quote_snapshot,
+            learn=learn,
         )
         if active := self._active_requests.get(session_id):
             active.metadata["planner_pending"] = True
@@ -698,24 +876,7 @@ class ChatService:
             if not self._alive(request, epoch):
                 return ChatResponse(text="", epoch=epoch)
             # 只重放真实用户消息和已发送正文，不能把旧模式的内部规划/参考带回直聊。
-            source_ids = set(request.source_message_ids or [request.message_id or request.dedupe_key])
-            history = (
-                [
-                    {"role": item["role"], "content": item["content"]}
-                    for item in self.session_store.get(request.session_id)
-                    if item.get("role") in {"user", "assistant"}
-                    and (item.get("_sender_id") if item["role"] == "user" else item.get("_self_message"))
-                    and not item.get("_planner_internal")
-                    and not item.get("_reference")
-                    and not item.get("tool_calls")
-                    and not item.get("tool_call_id")
-                    and isinstance(item.get("content"), str)
-                    and item["content"]
-                    and not source_ids.intersection(item.get("_source_ids") or [])
-                ][-limit:]
-                if limit > 0
-                else []
-            )
+            history = (current_chat.get() or ChatContext(self, request, runtime)).history()
             if not request.metadata.get("history_recorded") and not request.metadata.get("history_appended"):
                 entry = {"role": "user", "content": request.text, "_sender_id": request.user_id}
                 entry.update(
@@ -728,8 +889,6 @@ class ChatService:
                 request.metadata["history_appended"] = True
         # 独立阶段允许插件显式参与直聊，不恢复普通回复模板与其他增强。
         system_text = get_persona_text(name)
-        if sections := system_prompt_sections(hook_context(request, phase="direct_reply")):
-            system_text = f"{system_text}\n\n{sections}"
         messages = [
             {"role": "system", "content": system_text},
             *history,
@@ -745,12 +904,24 @@ class ChatService:
         if not self._alive(request, epoch):
             await self._mark_turn_aborted(request, "生成期间已失效")
             return ChatResponse(text="", epoch=epoch)
-        text = response.content or ""
-        parts = [text] if text else []
+        result = ChatResponse(text=response.content or "", raw=response, epoch=epoch)
+        original_text = result.text
+        from .hooks import dispatch
+
+        await dispatch("reply", current_chat.get() or ChatContext(self, request, runtime), result)
+        parts = result.resolve_parts(original_text)
+        response.content = result.text
         item_ids = await self._persist_turn_end(
-            request, persisted, response, str(getattr(provider, "provider_id", "")), request.text, [], parts, text
+            request,
+            persisted,
+            response,
+            str(getattr(provider, "provider_id", "")),
+            request.text,
+            [],
+            parts,
+            original_text,
         )
-        result = ChatResponse(text=text, raw=response, epoch=epoch, metadata={"direct_llm": True, "reply_parts": parts})
+        result.metadata["direct_llm"] = True
         if item_ids is not None:
             result.metadata["turn_item_ids"] = item_ids
         if persisted is not None:
@@ -957,7 +1128,6 @@ class ChatService:
             response = await generator.generate(
                 self, request, runtime, provider, messages, tools, allowed_names, epoch, limit
             )
-            response.content = filter_reply_text(hook_context(request, phase="reply"), response.content or "")
             post_cfg = chat_cfg.get("response_post_process") or {}
             splitter_cfg = chat_cfg.get("response_splitter")
             if not session_policy(request.session_id).allow_split:
@@ -983,6 +1153,13 @@ class ChatService:
                 await self._mark_turn_aborted(request, reason)
                 return ChatResponse(text=response.content, raw=response, epoch=epoch)
             parts = [segment.text for segment in segments]
+            from .hooks import dispatch
+
+            pending = ChatResponse(response.content, raw=response, epoch=epoch, metadata={"reply_parts": parts})
+            original_text = pending.text
+            await dispatch("reply", current_chat.get() or ChatContext(self, request, runtime), pending)
+            parts = pending.resolve_parts(original_text)
+            response.content = pending.text
             provider_name = str(getattr(provider, "provider_id", "") or provider_name)
             item_ids = await self._persist_turn_end(
                 request,
@@ -994,9 +1171,7 @@ class ChatService:
                 parts,
                 generated_text,
             )
-            result = ChatResponse(text=response.content, raw=response, epoch=epoch)
-            if parts:
-                result.metadata["reply_parts"] = parts
+            result = pending
             if item_ids is not None:
                 result.metadata["turn_item_ids"] = item_ids
             if persisted is not None:

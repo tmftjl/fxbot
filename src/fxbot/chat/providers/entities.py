@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 if TYPE_CHECKING:
     from .base import BaseProvider
+    from ..tools.registry import ToolRegistry
 
 
 class ProviderType(Enum):
@@ -58,6 +59,38 @@ class LLMRequest:
     tools: list[dict[str, Any]] | None = None
     image_urls: list[str] = field(default_factory=list)
     system_prompt: str = ""
+    provider_id: str | None = None
+    tool_registry: ToolRegistry | None = None
+    timeout: float | None = 240
+    max_steps: int = 20
+    tool_timeout: float | None = 120
+    use_hooks: bool = True
+    phase: str = "reply"
+    operation: str = "chat"
+
+    def chat_kwargs(self) -> dict[str, Any]:
+        """独立系统字段前置，图片附到最后一条 user；不改变原始消息。"""
+        from copy import deepcopy
+
+        messages = deepcopy(self.messages)
+        if self.system_prompt:
+            messages.insert(0, {"role": "system", "content": self.system_prompt})
+        if self.image_urls:
+            target = next((item for item in reversed(messages) if item.get("role") == "user"), None)
+            if target is None:
+                target = {"role": "user", "content": []}
+                messages.append(target)
+            content = target.get("content") or []
+            target["content"] = ([{"type": "text", "text": content}] if isinstance(content, str) else content) + [
+                {"type": "image_url", "image_url": {"url": url}} for url in self.image_urls
+            ]
+        return {
+            "messages": messages,
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "tools": self.tools,
+        }
 
     def get_plain_text(self) -> str:
         """提取最后一条用户消息的纯文本。"""
@@ -145,6 +178,7 @@ class LLMResponse:
     usage: TokenUsage = field(default_factory=TokenUsage)
     is_stream_chunk: bool = False
     provider_data: dict[str, Any] | None = None
+    request: LLMRequest | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """在响应边界归一化原生用量，调用方只读取统一字段。"""

@@ -1,13 +1,13 @@
-"""聊天扩展点：只读快照、拒绝型守卫、明确返回值和失败隔离的生命周期通知。"""
+"""开放的可修改执行 hook、拒绝型守卫与失败隔离的生命周期通知。"""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
 from copy import deepcopy
-from math import isfinite
 from types import MappingProxyType
 from typing import Any, Literal, get_args
+from contextvars import ContextVar
 from dataclasses import dataclass
 from collections.abc import Callable, Collection, MutableMapping
 
@@ -19,12 +19,18 @@ HOOK_TIMEOUT_SECONDS = 5.0
 _IMMUTABLE_SCALARS = frozenset({str, int, float, bool, bytes, type(None)})
 _hooks: dict[str, MutableMapping[str, Callable[..., Any]]] = {}
 HookKind = Literal[
+    "message",
+    "gate",
+    "chat_request",
+    "llm_request",
+    "llm_response",
+    "tool_start",
+    "tool_end",
+    "reply",
+    "after_send",
+    "chat_done",
     "request_guard",
-    "persona",
-    "system_prompt",
-    "prompt",
     "tool_guard",
-    "reply_text",
     "send_guard",
     "observer",
     "stage_guard",
@@ -33,6 +39,32 @@ HookKind = Literal[
     "session_policy",
 ]
 _KINDS = frozenset(get_args(HookKind))
+_active_hooks: ContextVar[frozenset[tuple[str, int]]] = ContextVar("chat_active_hooks", default=frozenset())
+
+
+async def dispatch(kind: str, context: Any, *args: Any) -> None:
+    """工作对象直接传递；执行入口失败闭锁，普通扩展记录错误后继续，取消始终传播。"""
+    active = _active_hooks.get()
+    slot = (kind, id(context))
+    if slot in active:
+        return
+    token = _active_hooks.set(active | {slot})
+    try:
+        for name, callback in ordered_callbacks(_hooks.get(kind, {})):
+            try:
+                value = callback(context, *args)
+                if inspect.isawaitable(value):
+                    await value
+                elif value is not None:
+                    raise TypeError("执行 hook 必须返回 None，通过上下文设置结果")
+            except Exception as exc:
+                logger.opt(exception=True).warning("[ChatHook] 扩展失败: {}/{}", kind, name)
+                if kind in {"message", "chat_request"}:
+                    raise ChatHookError(f"{kind} 扩展失败: {name}") from exc
+            if kind in {"message", "chat_request"} and context.is_stopped():
+                break
+    finally:
+        _active_hooks.reset(token)
 
 
 def _freeze(value: Any) -> tuple[Any, bool]:
@@ -84,24 +116,12 @@ class ChatHookContext:
     source: str = "message"
 
 
-@dataclass(frozen=True)
-class PersonaOverride:
-    """只替换本次生成的人格名称或原始人格文本，不改会话绑定和真实场景。"""
-
-    name: str | None = None
-    text: str | None = None
-
-
-@dataclass(frozen=True)
-class SystemPromptSection:
-    """人格解析后、阶段任务规则前的独立系统段，按数值及注册名排序。"""
-
-    text: str
-    order: float = 100
-
-
 class ChatHookError(RuntimeError):
     """阻止有风险的回调失败继续生成或发送。"""
+
+
+class UnsupportedChatHook(ImportError):
+    """插件依赖已不存在的聊天扩展 API；按不可加载插件处理。"""
 
 
 def has_chat_hooks(*kinds: str) -> bool:
@@ -150,26 +170,14 @@ def register_chat_hook(
         register = register_session_resolver if kind == "session_resolver" else register_session_policy
         return register(name, callback, priority=priority)
     if kind not in _KINDS:
-        raise ValueError("聊天 hook 类型、名称或回调无效")
+        raise UnsupportedChatHook(f"聊天 hook {kind!r} 不存在，请迁移到开放式聊天扩展 API")
     return register_callback(
         _hooks.setdefault(kind, CallbackRegistry()),
         name,
         callback,
         priority=priority,
-        synchronous=kind in {"persona", "system_prompt", "prompt", "reply_text"},
         events=events,
     )
-
-
-def _sync(callback: Callable[..., Any], *args: Any) -> Any:
-    """验证同步返回，避免协程被当成有效过滤结果。"""
-    value = callback(*args)
-    if inspect.isawaitable(value):
-        close = getattr(value, "close", None)
-        if callable(close):
-            close()
-        raise TypeError("该 hook 必须同步返回")
-    return value
 
 
 async def _call(callback: Callable[..., Any], *args: Any) -> Any:
@@ -197,90 +205,6 @@ async def guard(hook_kind: str, context: ChatHookContext, **details: Any) -> boo
             logger.opt(exception=True).warning(f"[ChatHook] 守卫失败: {hook_kind}/{name}")
             return False
     return True
-
-
-def resolve_persona(context: ChatHookContext, name: str, text: str) -> tuple[str, str]:
-    """依次应用明确的人格覆盖值，错误时终止而非套用其他人格。"""
-    for label, callback in ordered_callbacks(_hooks.get("persona", {})):
-        try:
-            value = _sync(callback, context, name, text)
-            if value is None:
-                continue
-            if not isinstance(value, PersonaOverride):
-                raise TypeError("人格 hook 必须返回 PersonaOverride 或 None")
-            if value.name is not None:
-                if not isinstance(value.name, str) or not value.name.strip():
-                    raise ValueError("人格名称不能为空")
-                name = value.name
-                if value.text is None:
-                    from .personas import get_persona_text
-
-                    text = get_persona_text(name)
-            if value.text is not None:
-                if not isinstance(value.text, str):
-                    raise TypeError("人格文本必须是字符串")
-                text = value.text
-        except Exception as exc:
-            logger.opt(exception=True).warning(f"[ChatHook] 人格覆盖失败: {label}")
-            raise ChatHookError("人格扩展失败") from exc
-    return name, text
-
-
-def system_prompt_sections(context: ChatHookContext) -> str:
-    """独立解析并排序系统段，空贡献不改变原模板，失败时中止生成。"""
-    sections: list[tuple[float, str, str]] = []
-    for name, callback in ordered_callbacks(_hooks.get("system_prompt", {})):
-        try:
-            section = _sync(callback, context)
-            if section is None:
-                continue
-            if not isinstance(section, SystemPromptSection) or not isinstance(section.text, str):
-                raise TypeError("系统提示词 hook 必须返回 SystemPromptSection 或 None")
-            if (
-                isinstance(section.order, bool)
-                or not isinstance(section.order, (int, float))
-                or not isfinite(section.order)
-            ):
-                raise ValueError("系统提示词段 order 必须是有限数值")
-            if section.text.strip():
-                sections.append((section.order, name, section.text))
-        except Exception as exc:
-            logger.opt(exception=True).warning(f"[ChatHook] 系统提示词段失败: {name}")
-            raise ChatHookError("系统提示词扩展失败") from exc
-    return "\n\n".join(text for _, _, text in sorted(sections))
-
-
-def prompt_notes(context: ChatHookContext) -> list[str]:
-    """只追加独立参考，不允许改写历史、系统身份或工具协议。"""
-    notes = []
-    for name, callback in ordered_callbacks(_hooks.get("prompt", {})):
-        try:
-            note = _sync(callback, context)
-            if note is None:
-                continue
-            if not isinstance(note, str):
-                raise TypeError("提示 hook 只允许返回字符串或 None")
-            if note.strip():
-                notes.append(note)
-        except Exception as exc:
-            logger.opt(exception=True).warning(f"[ChatHook] 提示扩展失败: {name}")
-            raise ChatHookError("提示扩展失败") from exc
-    return notes
-
-
-def filter_reply_text(context: ChatHookContext, text: str) -> str:
-    """在断句和持久化前过滤生成正文，空串表示丢弃回复。"""
-    for name, callback in ordered_callbacks(_hooks.get("reply_text", {})):
-        try:
-            result = _sync(callback, context, text)
-            if result is not None:
-                if not isinstance(result, str):
-                    raise TypeError("正文 hook 只允许返回字符串或 None")
-                text = result
-        except Exception as exc:
-            logger.opt(exception=True).warning(f"[ChatHook] 正文扩展失败: {name}")
-            raise ChatHookError("正文扩展失败") from exc
-    return text
 
 
 async def notify(event: str, context: ChatHookContext, **details: Any) -> None:

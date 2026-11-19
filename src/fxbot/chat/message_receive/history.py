@@ -125,7 +125,7 @@ async def _track_message(
 
 async def _prepare_image_memory(request: ChatRequest) -> None:
     """原始图片缓存只准备一次，避免等待后重新规划反复下载。"""
-    if request.metadata.get("_direct_llm"):
+    if request.metadata.get("_direct_llm") or not request.metadata.get("learn", True):
         return
     if request.metadata.get("image_memory") or request.metadata.get("history_recorded"):
         return
@@ -138,7 +138,11 @@ async def _prepare_image_memory(request: ChatRequest) -> None:
 
 async def _enqueue_image_memory(request: ChatRequest) -> None:
     """原图和原始消息均已持久化后登记可恢复的图片任务。"""
-    if request.metadata.get("_direct_llm") or not request.metadata.get("image_memory"):
+    if (
+        request.metadata.get("_direct_llm")
+        or not request.metadata.get("learn", True)
+        or not request.metadata.get("image_memory")
+    ):
         return
     from ..amemorix.image_writeback import image_writeback
 
@@ -158,14 +162,15 @@ async def persist_batch(requests: list[ChatRequest]) -> None:
         except Exception:
             logger.opt(exception=True).warning("[Chat] 缓冲消息落库失败，跳过剩余消息")
             return
-        await _track_message(
-            request.session_id,
-            request.platform,
-            request.user_id,
-            request.user_name,
-            str(request.group_id or ""),
-            request.occurred_at,
-        )
+        if request.metadata.get("learn", True):
+            await _track_message(
+                request.session_id,
+                request.platform,
+                request.user_id,
+                request.user_name,
+                str(request.group_id or ""),
+                request.occurred_at,
+            )
 
 
 async def persist_turn_start(request: ChatRequest, content: str, epoch: int) -> tuple[int, int | None] | None:
@@ -225,7 +230,7 @@ async def persist_turn_start(request: ChatRequest, content: str, epoch: int) -> 
     except Exception:
         logger.opt(exception=True).warning("[Chat] 轮次落库失败，本轮仅用内存历史")
         return None
-    if message_id is not None and not request.metadata.get("_direct_llm"):
+    if message_id is not None and not request.metadata.get("_direct_llm") and request.metadata.get("learn", True):
         await _track_message(
             request.session_id,
             request.platform,
@@ -500,6 +505,7 @@ async def record_group_message(
     has_at_bot: bool = False,
     sender_role: str | None = None,
     quote_snapshot: dict[str, str] | None = None,
+    learn: bool = True,
 ) -> None:
     """记录群聊或私聊的上下文消息，图片同样转成文字描述写入历史。"""
     if limit <= 0:
@@ -537,7 +543,7 @@ async def record_group_message(
 
         memory_sources = [source for _, source in memory_images] if memory_images is not None else images
         memory_paths = [path for path, _ in memory_images] if memory_images is not None else None
-        image_items = await image_writeback.prepare(session_id, memory_sources, memory_paths)
+        image_items = await image_writeback.prepare(session_id, memory_sources, memory_paths) if learn else []
         payload = json.dumps(
             {"has_image": bool(has_image or images), "image_memory": image_items, "context": context},
             ensure_ascii=False,
@@ -564,7 +570,7 @@ async def record_group_message(
             logger.opt(exception=True).warning("[Chat] 群聊消息落库失败，本轮仅用内存历史")
         if row_id is not None and image_items:
             await image_writeback.enqueue(session_id, message_id or dedupe_key)
-    if row_id is not None:
+    if row_id is not None and learn:
         group_id = session_id.partition(":group:")[2] if ":group:" in session_id else ""
         await _track_message(session_id, platform, user_id, user_name, group_id, occurred_at)
     threshold = int((chat_cfg.get("message_receive") or {}).get("image_parse_threshold", 5))

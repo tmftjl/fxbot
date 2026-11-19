@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Any
+from dataclasses import replace
 
 from loguru import logger
 
@@ -61,6 +63,11 @@ async def allowed_tools(
     runtime: ToolRuntime, *, proactive: bool = False, session_id: str = ""
 ) -> tuple[set[str], list[dict[str, Any]]]:
     """按调用者权限过滤工具；主动轮只保留只读工具。"""
+    if runtime.registry is not None:
+        names = {
+            spec.name for spec in runtime.registry.list() if await tool_allowed(spec, runtime, session_id=session_id)
+        }
+        return names, [item for item in runtime.registry.to_openai_tools() if item["function"]["name"] in names]
     specs = default_registry.list()
     if not amemorix_runtime.available or not amemorix_runtime.config().image_memory.enabled:
         specs = [spec for spec in specs if spec.name != "query_image_memory"]
@@ -123,9 +130,18 @@ async def _generate(
     limit: int,
 ) -> LLMResponse:
     """回复器只生成正文，工具调用由 Planner 执行。"""
-    response = await asyncio.wait_for(
-        provider.chat(messages=messages, tools=None, temperature=1.0, max_tokens=8192), 240
-    )
+    from ..context import current_chat
+    from ..providers import LLMRequest
+
+    context = current_chat.get()
+    if context is not None:
+        response = await context.tool_loop_agent(
+            LLMRequest(messages=messages, temperature=1.0, max_tokens=8192), provider=provider
+        )
+    else:
+        response = await asyncio.wait_for(
+            provider.chat(messages=messages, tools=None, temperature=1.0, max_tokens=8192), 240
+        )
     if response.has_tool_calls:
         logger.warning("[Chat] 回复模型返回了工具调用，已丢弃该次输出")
         return LLMResponse(content="")
@@ -141,15 +157,31 @@ async def _generate(
 async def _continue_reasoning(provider: Any, messages: list[dict[str, Any]], response: LLMResponse) -> LLMResponse:
     """对齐 MaiBot：纯推理响应先续写，Provider 不支持时提示正文为空后重生成一次。"""
     logger.warning("[Chat] 回复模型只返回了思考内容，尝试续写一次")
+    from ..context import ChatExpired, current_chat
+
+    context = current_chat.get()
+    original = response.request
+    if original is not None:
+        messages = deepcopy(original.messages)
+    options = {
+        "messages": messages,
+        "previous": response,
+        "temperature": original.temperature if original else 1.0,
+        "max_tokens": original.max_tokens if original else 8192,
+    }
+    if original is not None:
+        options["model"] = original.model
     continuation = getattr(provider, "chat_continuation", None)
     if continuation is not None:
         try:
-            continued = await asyncio.wait_for(
-                continuation(messages=messages, previous=response, temperature=1.0, max_tokens=8192), 240
-            )
+            continued = await asyncio.wait_for(continuation(**options), original.timeout if original else 240)
+        except ChatExpired:
+            raise
         except Exception:
             logger.opt(exception=True).warning("[Chat] 推理续写失败，改用重生成")
             continued = None
+        if continued is not None and continued.has_tool_calls and context is not None and continued.request is not None:
+            continued = await context.tool_loop_agent(continued.request, provider=provider, initial_response=continued)
         if continued is not None and (continued.content or "").strip():
             if continued.has_tool_calls:
                 logger.warning("[Chat] 推理续写返回了工具调用，已丢弃该次输出")
@@ -168,16 +200,16 @@ async def _continue_reasoning(provider: Any, messages: list[dict[str, Any]], res
         if trace_key
         else {}
     )
-    retry = await asyncio.wait_for(
-        provider.chat(
-            messages=[*messages, {"role": "user", "content": REASONING_ONLY_HINT}],
-            tools=None,
-            temperature=1.0,
-            max_tokens=8192,
-            **trace_kwargs,
-        ),
-        240,
-    )
+    replay = [*messages, {"role": "user", "content": REASONING_ONLY_HINT}]
+    if original is not None:
+        request = replace(original, messages=replay, tools=None, operation="regeneration")
+        retry = await provider.chat(_request=request, **trace_kwargs)
+    else:
+        retry = await asyncio.wait_for(
+            provider.chat(messages=replay, tools=None, temperature=1.0, max_tokens=8192, **trace_kwargs), 240
+        )
+    if retry.has_tool_calls and context is not None and retry.request is not None:
+        retry = await context.tool_loop_agent(retry.request, provider=provider, initial_response=retry)
     if not retry.has_tool_calls and not retry.reasoning_content:
         retry.reasoning_content = response.reasoning_content
     if retry.has_tool_calls:

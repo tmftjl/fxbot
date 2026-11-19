@@ -12,24 +12,36 @@ from .hooks import (
     HookKind,
     ChatHookError,
     ChatHookContext,
-    PersonaOverride,
-    SystemPromptSection,
     register_chat_hook,
 )
 from .stages import CHAT_STAGES, StageName
+from .context import ChatContext, ChatExpired
+from .service import ChatService, chat_service
+from .providers import LLMRequest, LLMResponse
+from .scheduling import GateDecision, chat_scheduling
+from .tools.types import ToolSpec
 from .continuation import reply_scheduler
 from .session_hooks import SessionPolicy
+from .tools.registry import ToolRegistry
 
 __all__ = [
     "CHAT_STAGES",
+    "ChatContext",
+    "ChatExpired",
+    "ChatService",
+    "chat_service",
+    "LLMRequest",
+    "LLMResponse",
+    "ToolRegistry",
+    "ToolSpec",
+    "GateDecision",
+    "chat_scheduling",
     "ChatExtension",
     "ChatHookContext",
     "ChatHookError",
     "HookKind",
-    "PersonaOverride",
     "SessionPolicy",
     "StageName",
-    "SystemPromptSection",
     "register_chat_hook",
 ]
 
@@ -111,4 +123,14 @@ class ChatExtension:
         for remove in reversed(tuple(self._removers.values())):
             remove()
         self._removers.clear()
-        reply_scheduler.cancel(owner=self._task_owner)
+        reply_scheduler.cancel(owner=self._task_owner, exclude_current=True)
+        chat_scheduling.release_owner(self._task_owner)
+
+    async def claim_session(self, context: ChatContext, receive: Any, **options: Any) -> None:
+        """插件声明调度业务，核心负责所有权冲突与任务回收。"""
+        if self._closed:
+            raise RuntimeError("聊天扩展已关闭")
+        await chat_scheduling.claim(self._task_owner, context, receive, **options)
+
+    async def release_session(self, session_id: str) -> None:
+        await chat_scheduling.release(self._task_owner, session_id)

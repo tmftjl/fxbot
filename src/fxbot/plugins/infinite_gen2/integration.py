@@ -1,21 +1,34 @@
-"""通过独立系统段注入原版提示词，不改人格解析、历史或权限。"""
+"""通过可修改模型请求注入独立系统段，不改人格、历史或权限。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from .config import is_enabled, direct_llm_enabled
-from ...chat.hooks import ChatHookContext, SystemPromptSection, register_chat_hook
-from ...chat.session_hooks import SessionPolicy, register_session_policy
+from ...chat.extensions import LLMRequest, ChatContext, ChatExtension, SessionPolicy
 
 PROMPT_TEXT = (Path(__file__).parent / "resources" / "infinite_gen2.prompt").read_text(encoding="utf-8").strip()
+_PROMPT_MARKER = "[无限二代提示词]\n"
+_extension = ChatExtension("infinite_gen2")
 
 
-def prompt_section(context: ChatHookContext) -> SystemPromptSection | None:
-    """普通规划、共享规划、普通回复和直聊均贡献独立系统段。"""
-    if context.phase not in {"reply", "direct_reply", "planner", "focus_planner"} or not is_enabled():
-        return None
-    return SystemPromptSection(text=PROMPT_TEXT, order=100)
+def prepare_request(context: ChatContext, request: LLMRequest) -> None:
+    """普通规划、Focus、回复和直聊均注入；循环及续写只保留最新的一段。"""
+    del context
+    if request.phase not in {"reply", "planner"}:
+        return
+    request.messages[:] = [
+        message
+        for message in request.messages
+        if not (message.get("role") == "system" and str(message.get("content", "")).startswith(_PROMPT_MARKER))
+    ]
+    if not is_enabled():
+        return
+    position = next(
+        (index for index, message in enumerate(request.messages) if message.get("role") != "system"),
+        len(request.messages),
+    )
+    request.messages.insert(position, {"role": "system", "content": f"{_PROMPT_MARKER}{PROMPT_TEXT}"})
 
 
 def direct_chat_policy(session_id: str) -> SessionPolicy | None:
@@ -26,8 +39,8 @@ def direct_chat_policy(session_id: str) -> SessionPolicy | None:
 
 def install() -> None:
     """同名注册保证重复加载不叠加提示词。"""
-    register_chat_hook("system_prompt", "infinite_gen2", prompt_section)
-    register_session_policy("infinite_gen2", direct_chat_policy)
+    _extension.on("llm_request", prepare_request)
+    _extension.on("session_policy", direct_chat_policy)
 
 
 install()
