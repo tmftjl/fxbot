@@ -862,11 +862,36 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             file_path.write_bytes(b"partial")
             raise httpx.ConnectError("fake transport")
 
-        with patch.object(downloader, "_download_file_httpx", side_effect=failed):
+        with (
+            patch.object(downloader, "_download_file_httpx", side_effect=failed),
+            patch.object(downloader, "_download_file_with_curl", side_effect=RuntimeError("fake curl")),
+        ):
             with self.assertRaises(downloader.DownloadError):
                 await downloader.download_file("https://example.com/a.mp4", directory=self.root)
         self.assertEqual(attempts, 1)
         self.assertEqual(list(self.root.iterdir()), [])
+
+    async def test_download_file_uses_curl_after_httpx_failure(self):
+        import httpx
+
+        from fxbot.plugins.video_parser import downloader
+
+        async def failed(url, *, file_path, headers):
+            file_path.write_bytes(b"partial")
+            raise httpx.RemoteProtocolError("peer closed connection")
+
+        async def curl(url, *, file_path, headers):
+            file_path.write_bytes(b"complete")
+            return file_path
+
+        with (
+            patch.object(downloader, "_download_file_httpx", side_effect=failed) as http,
+            patch.object(downloader, "_download_file_with_curl", side_effect=curl) as fallback,
+        ):
+            path = await downloader.download_file("https://example.com/a.mp4", directory=self.root)
+        http.assert_awaited_once()
+        fallback.assert_awaited_once()
+        self.assertEqual(path.read_bytes(), b"complete")
 
     async def test_download_file_uses_backup_after_primary_failure(self):
         import httpx
@@ -883,7 +908,10 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             file_path.write_bytes(b"complete")
             return file_path
 
-        with patch.object(downloader, "_download_file_httpx", side_effect=download):
+        with (
+            patch.object(downloader, "_download_file_httpx", side_effect=download),
+            patch.object(downloader, "_download_file_with_curl", side_effect=RuntimeError("fake curl")),
+        ):
             path = await downloader.download_file(
                 "https://example.com/primary.mp4",
                 backup_urls=["https://example.com/backup.mp4"],
@@ -907,6 +935,10 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             bilibili._stream_urls(stream),
             ["https://example.com/primary", "https://example.com/backup"],
+        )
+        self.assertEqual(
+            bilibili._preferred_urls(stream),
+            ["https://example.com/backup", "https://example.com/primary"],
         )
 
     async def test_image_batch_waits_for_other_download_before_failure_cleanup(self):

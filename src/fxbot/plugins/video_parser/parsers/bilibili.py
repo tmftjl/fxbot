@@ -194,20 +194,20 @@ def _select_download_urls(
             if 0 < _enum_int(getattr(stream, "video_quality", None)) <= BILI_MAX_VIDEO_QUALITY
         ]
         video_stream = max(preferred_video_streams or video_streams, key=_video_stream_rank)
-        video_urls = _stream_urls(video_stream)
+        video_urls = _preferred_urls(video_stream)
         if not video_urls:
             raise ParseError("B 站没有可下载的视频流")
         audio_streams = [
             stream for stream in streams if isinstance(stream, audio_stream_type) and _stream_urls(stream)
         ]
         audio_stream = max(audio_streams, key=_audio_stream_rank) if audio_streams else None
-        audio_urls = _stream_urls(audio_stream) if audio_stream is not None else []
+        audio_urls = _preferred_urls(audio_stream) if audio_stream is not None else []
         return video_urls[0], audio_urls[0] if audio_urls else None, video_urls[1:], audio_urls[1:]
 
     merged_streams = [stream for stream in streams if _stream_urls(stream)]
     if merged_streams:
         merged_stream = max(merged_streams, key=_merged_stream_rank)
-        merged_urls = _stream_urls(merged_stream)
+        merged_urls = _preferred_urls(merged_stream)
         if merged_urls:
             return merged_urls[0], None, merged_urls[1:], []
     raise ParseError("B 站没有可下载的视频流")
@@ -225,6 +225,12 @@ def _stream_urls(stream: Any) -> list[str]:
     elif isinstance(backups, (list, tuple)):
         values.extend(str(value) for value in backups if value)
     return list(dict.fromkeys(value for value in values if value))
+
+
+def _preferred_urls(stream: Any) -> list[str]:
+    """优先使用镜像备用地址，PCDN 主地址放到最后。"""
+    urls = _stream_urls(stream)
+    return urls[1:] + urls[:1] if len(urls) > 1 else urls
 
 
 def _video_stream_rank(stream: Any) -> tuple[int, int]:

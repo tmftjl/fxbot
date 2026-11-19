@@ -57,9 +57,14 @@ def _cache_path(url: str, suffix: str, *, directory: Path) -> Path:
 
 
 def _timeout() -> httpx.Timeout:
-    """构造请求超时。"""
+    """构造请求超时；大文件下载使用更长的读取窗口。"""
     seconds = float(cfg_general().get("request_timeout_seconds", 20))
-    return httpx.Timeout(seconds)
+    return httpx.Timeout(
+        connect=min(15.0, seconds),
+        read=max(240.0, seconds),
+        write=10.0,
+        pool=10.0,
+    )
 
 
 def _proxy() -> str | None:
@@ -89,14 +94,40 @@ async def download_file(
     for index, candidate in enumerate(candidates):
         try:
             return await _download_file_httpx(candidate, file_path=file_path, headers=headers)
-        except (DownloadError, httpx.HTTPError, ValueError, OSError) as exc:
+        except (httpx.HTTPError, OSError) as exc:
             last_error = exc
             file_path.unlink(missing_ok=True)
-            logger.opt(exception=True).warning(
-                "[video_parser] 媒体地址下载失败，尝试下一个地址: host={} ({}/{})",
+            logger.warning(
+                "[video_parser] httpx 下载失败，改用 curl_cffi 重试: host={} ({}/{}) {}: {}",
                 urlsplit(candidate).netloc,
                 index + 1,
                 len(candidates),
+                type(exc).__name__,
+                exc,
+            )
+            try:
+                return await _download_file_with_curl(candidate, file_path=file_path, headers=headers)
+            except Exception as curl_exc:
+                last_error = curl_exc
+                file_path.unlink(missing_ok=True)
+                logger.warning(
+                    "[video_parser] curl_cffi 下载失败，切换备用地址: host={} ({}/{}) {}: {}",
+                    urlsplit(candidate).netloc,
+                    index + 1,
+                    len(candidates),
+                    type(curl_exc).__name__,
+                    curl_exc,
+                )
+        except (DownloadError, ValueError) as exc:
+            last_error = exc
+            file_path.unlink(missing_ok=True)
+            logger.warning(
+                "[video_parser] 媒体地址不可用，切换备用地址: host={} ({}/{}) {}: {}",
+                urlsplit(candidate).netloc,
+                index + 1,
+                len(candidates),
+                type(exc).__name__,
+                exc,
             )
         except BaseException:
             file_path.unlink(missing_ok=True)
@@ -129,6 +160,27 @@ async def _download_file_httpx(url: str, *, file_path: Path, headers: dict[str, 
                         file.write(chunk)
                 return _ensure_downloaded(file_path)
         raise DownloadError("媒体重定向次数超出限制")
+
+
+async def _download_file_with_curl(url: str, *, file_path: Path, headers: dict[str, str]) -> Path:
+    """httpx 传输失败后，用 curl_cffi 的浏览器指纹重试同一地址。"""
+    try:
+        import curl_cffi
+    except Exception as exc:
+        raise DownloadError("缺少 curl_cffi 依赖，无法进行浏览器传输兜底") from exc
+
+    max_bytes = int(cfg_general().get("max_file_mb", 80)) * 1024 * 1024
+    total = 0
+    async with curl_cffi.AsyncSession(allow_redirects=True, impersonate="chrome") as session:
+        response = await session.get(url, headers=headers, timeout=240, stream=True)
+        response.raise_for_status()
+        _check_content_length(response.headers.get("Content-Length"), max_bytes)
+        with file_path.open("wb") as file:
+            async for chunk in response.aiter_content(chunk_size=1024 * 1024):
+                total += len(chunk)
+                _check_total_size(total, max_bytes)
+                file.write(chunk)
+    return _ensure_downloaded(file_path)
 
 
 def _check_content_length(content_length: str | None, max_bytes: int) -> None:
