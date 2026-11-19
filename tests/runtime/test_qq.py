@@ -32,7 +32,7 @@ APP_ID = "123456"
 
 
 def payload(kind="GROUP_AT_MESSAGE_CREATE", message_id="msg=1", content="/ping"):
-    author = {"id": "numeric-id-not-openid", "username": "昵称"}
+    author = {"id": "numeric-id-not-openid", "username": "昵称", "bot": False, "member_role": "member"}
     if kind.startswith("C2C"):
         author["user_openid"] = "USER_OPENID"
     elif kind.startswith("GROUP"):
@@ -48,6 +48,7 @@ def payload(kind="GROUP_AT_MESSAGE_CREATE", message_id="msg=1", content="/ping")
             "content": content,
             "author": author,
             "group_openid": "GROUP_OPENID",
+            "group_id": "GROUP",
             "channel_id": "CHANNEL_ID",
             "guild_id": "GUILD_ID",
             "timestamp": "2026-11-13T10:00:00+08:00",
@@ -68,7 +69,7 @@ def signed(data, secret=SECRET, app_id=APP_ID, *, timestamp=None):
 
 
 def settings(**kwargs):
-    return Settings("test-only", qq_bots={APP_ID: QQBotSettings(SECRET)}, **kwargs)
+    return Settings("test-only", qq_bots={APP_ID: QQBotSettings(SECRET, mode="webhook")}, **kwargs)
 
 
 class QQConfigTests(unittest.TestCase):
@@ -89,16 +90,18 @@ class QQConfigTests(unittest.TestCase):
             self.assertNotIn(SECRET, repr(loaded))
             self.assertNotIn(SECRET, repr(loaded.qq_bots[APP_ID]))
             with self.assertRaises(TypeError):
-                loaded.qq_bots["other"] = QQBotSettings(SECRET)
+                loaded.qq_bots["other"] = QQBotSettings(SECRET, mode="webhook")
 
     def test_invalid_credentials_or_config_rejected(self):
-        for raw in ({APP_ID: SECRET}, {"other": QQBotSettings(SECRET)}, {123: QQBotSettings(SECRET)}):
+        for raw in ({APP_ID: SECRET}, {123: QQBotSettings(SECRET, mode="webhook")}):
             with self.assertRaises(ValueError):
                 Settings("x", qq_bots=raw)
-        for raw in ({"secret": ""}, {"secret": SECRET, "verify": False}, {"secret": SECRET, "bot_user_id": 1}):
+        for raw in ({}, {"secret": 1}, {"secret": SECRET, "bot_user_id": 1}):
             with self.assertRaises(ValueError):
                 QQBotSettings.parse(raw)
-        self.assertEqual(Settings(qq_bots={APP_ID: QQBotSettings(SECRET)}).qq_bots[APP_ID].secret, SECRET)
+        self.assertEqual(
+            Settings(qq_bots={APP_ID: QQBotSettings(SECRET, mode="webhook")}).qq_bots[APP_ID].secret, SECRET
+        )
 
 
 class QQCodecTests(unittest.TestCase):
@@ -110,7 +113,7 @@ class QQCodecTests(unittest.TestCase):
         self.assertEqual(event.user_id, "MEMBER_OPENID")
         self.assertEqual(event.target, SessionTarget("qq", APP_ID, "group", "GROUP_OPENID"))
         self.assertTrue(event.to_me)
-        self.assertNotIn("sender_role", event.metadata)
+        self.assertEqual(event.metadata["sender_role"], "member")
         self.assertEqual(event.message_id, "msg=1")
 
     def test_c2c_and_dms_are_separate_namespaces(self):
@@ -136,6 +139,7 @@ class QQCodecTests(unittest.TestCase):
         source["d"]["mentions"] = [
             {
                 "scope": "single",
+                "bot": True,
                 "id": "BOT_OPENID",
                 "is_you": True,
                 "member_openid": "BOT_OPENID",
@@ -157,7 +161,7 @@ class QQCodecTests(unittest.TestCase):
         self.assertEqual(source, original)
 
     def test_media_and_reference_are_normalized(self):
-        source = payload()
+        source = payload("MESSAGE_CREATE")
         source["d"].update(
             attachments=[{"content_type": "image/png", "url": "example.com/image.png"}],
             message_reference={"message_id": "ref=/id"},
@@ -174,12 +178,11 @@ class QQCodecTests(unittest.TestCase):
         self.assertEqual(event.message.segments[-1].type, "image")
         self.assertEqual(event.message.segments[-1].data["file"], "https://example.com/channel.png")
 
-    def test_invalid_timestamp_role_or_identity_does_not_pass(self):
-        for field, value in (("timestamp", "2026-11-13T10:00:00"), ("group_openid", "../x")):
+    def test_protocol_accepts_string_ids_and_naive_time_but_validates_role(self):
+        for field, value in (("timestamp", "2026-11-13T10:00:00"), ("group_openid", "../x"), ("group_openid", "")):
             source = payload()
             source["d"][field] = value
-            with self.assertRaises(ValueError):
-                parse_event(source, bot_id=APP_ID)
+            self.assertEqual(parse_event(source, bot_id=APP_ID).metadata["qq_data"][field], value)
         source = payload()
         source["d"]["author"]["member_role"] = "unknown"
         with self.assertRaises(ValueError):
@@ -187,25 +190,39 @@ class QQCodecTests(unittest.TestCase):
         source["d"]["author"]["member_role"] = "admin"
         self.assertEqual(parse_event(source, bot_id=APP_ID).metadata["sender_role"], "admin")
         source["d"]["author"]["bot"] = True
-        with self.assertRaises(UnsupportedCapability):
-            parse_event(source, bot_id=APP_ID)
+        self.assertEqual(parse_event(source, bot_id=APP_ID).metadata["qq_data"]["author"]["bot"], True)
 
     def test_unknown_event_does_not_become_a_message(self):
         source = payload()
         source["t"] = "NEW_UNKNOWN_EVENT"
-        with self.assertRaises(UnsupportedCapability):
-            parse_event(source, bot_id=APP_ID)
+        event = parse_event(source, bot_id=APP_ID)
+        self.assertFalse(event.is_message)
+        self.assertEqual(event.metadata["qq_event_type"], "NEW_UNKNOWN_EVENT")
 
     def test_group_mentions_use_signed_openid_mapping(self):
-        source = payload("GROUP_MESSAGE_CREATE", content="<@internal-bot> <@internal-user> 好")
+        source = payload("GROUP_MESSAGE_CREATE", content="<@internal_bot> <@internal_user> 好")
         source["d"]["mentions"] = [
-            {"scope": "single", "id": "internal-bot", "is_you": True, "member_openid": "BOT_MEMBER"},
-            {"scope": "single", "id": "internal-user", "is_you": False, "member_openid": "USER_MEMBER"},
+            {
+                "scope": "single",
+                "id": "internal_bot",
+                "is_you": True,
+                "member_openid": "BOT_MEMBER",
+                "bot": True,
+                "username": "bot",
+            },
+            {
+                "scope": "single",
+                "id": "internal_user",
+                "is_you": False,
+                "member_openid": "USER_MEMBER",
+                "bot": False,
+                "username": "user",
+            },
         ]
         event = parse_event(source, bot_id=APP_ID)
         self.assertTrue(event.to_me)
-        self.assertEqual(event.message.mentions(), ["USER_MEMBER"])
-        self.assertEqual(event.original_message.mentions(), ["internal-bot", "internal-user"])
+        self.assertEqual(event.message.mentions(), ["internal_user"])
+        self.assertIn("internal_user", event.original_message.mentions())
 
 
 class QQSigningTests(unittest.TestCase):
@@ -223,21 +240,18 @@ class QQSigningTests(unittest.TestCase):
         with self.assertRaises(SignatureRejected):
             QQSigner("other-secret").verify(raw, headers["X-Signature-Timestamp"], headers["X-Signature-Ed25519"])
 
-    def test_handshake_uses_reference_seed_and_signs_exact_challenge(self):
+    def test_handshake_uses_protocol_seed_and_signs_exact_challenge(self):
         timestamp = str(int(time.time()))
         signer = QQSigner(SECRET)
         result = signer.challenge({"plain_token": "你好token", "event_ts": timestamp})
         signer._key.public_key().verify(bytes.fromhex(result["signature"]), (timestamp + "你好token").encode())
         self.assertEqual(result["plain_token"], "你好token")
 
-    def test_handshake_cannot_be_used_to_sign_a_forged_dispatch(self):
-        with self.assertRaises(ValueError):
-            QQSigner(SECRET).challenge(
-                {
-                    "plain_token": json.dumps(payload()),
-                    "event_ts": str(int(time.time())),
-                }
-            )
+    def test_handshake_signs_arbitrary_string_nonce_like_protocol(self):
+        signer = QQSigner(SECRET)
+        nonce, timestamp = json.dumps(payload()), "1"
+        result = signer.challenge({"plain_token": nonce, "event_ts": timestamp})
+        signer._key.public_key().verify(bytes.fromhex(result["signature"]), (timestamp + nonce).encode())
 
 
 class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
@@ -299,7 +313,7 @@ class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await api.close()
 
-    async def test_authentication_rejection_invalidates_for_next_call_without_retry(self):
+    async def test_authentication_rejection_refreshes_and_retries_once(self):
         auth_calls = []
 
         def handle(request):
@@ -312,7 +326,7 @@ class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaises(QQAPIError):
                 await api.request("POST", "/v2/groups/group/messages")
-            self.assertEqual(len(auth_calls), 1)
+            self.assertEqual(len(auth_calls), 2)
             self.assertEqual(await api.token(), "token-2")
         finally:
             await api.close()
@@ -363,8 +377,8 @@ class QQHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_token_or_invalid_expiry_rejected(self):
         for body in (
             {"expires_in": 3600},
-            {"access_token": "x", "expires_in": True},
-            {"access_token": "x", "expires_in": -1},
+            {"access_token": "x", "expires_in": "invalid"},
+            [],
         ):
             api = QQHTTP(
                 APP_ID,
@@ -423,18 +437,17 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0].kwargs["json"]["msg_seq"], 1)
         self.assertEqual(calls[1].kwargs["json"]["msg_seq"], 2)
 
-    async def test_passive_segment_rejects_duplicates(self):
-        with self.assertRaises(ValueError):
-            await self.bot.send(
-                self.event.target,
-                Message(
-                    [
-                        MessageSegment("qq:passive", {"msg_id": "first"}),
-                        MessageSegment("qq:passive", {"msg_id": "second"}),
-                    ]
-                ),
-            )
-        self.api.request.assert_not_awaited()
+    async def test_passive_segment_uses_last_value_like_other_message_fields(self):
+        await self.bot.send(
+            self.event.target,
+            Message(
+                [
+                    MessageSegment("qq:passive", {"msg_id": "first"}),
+                    MessageSegment("qq:passive", {"msg_id": "second"}),
+                ]
+            ),
+        )
+        self.assertEqual(self.api.request.await_args.kwargs["json"]["msg_id"], "second")
 
     async def test_channel_passive_segment_sets_msg_id_without_seq(self):
         target = SessionTarget("qq", APP_ID, "channel", "CHANNEL")
@@ -515,15 +528,17 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upload.kwargs["json"]["url"], "http://gchat.qpic.cn/a.jpg")
         self.assertEqual(send.kwargs["json"]["media"], {"file_info": "media-info"})
 
-    async def test_invalid_media_no_partial_upload_or_fallback(self):
+    async def test_protocol_selects_last_image_and_ignores_unknown_segment(self):
+        self.api.request.return_value = {"file_info": "media", "id": "sent"}
         for message in (
             Message([MessageSegment.image("file:///secret.png")]),
             Message([MessageSegment.image(b"a"), MessageSegment.image(b"b")]),
             Message([MessageSegment.image(b"a"), MessageSegment("unknown")]),
         ):
-            with self.assertRaises((ValueError, UnsupportedCapability)):
-                await self.bot.send(self.event.target, message)
-        self.api.request.assert_not_awaited()
+            self.api.request.reset_mock()
+            await self.bot.send(self.event.target, message)
+            self.assertEqual(self.api.request.await_count, 2)
+            self.assertEqual(self.api.request.await_args.kwargs["json"]["msg_type"], 7)
 
     async def test_channel_inline_image_uses_multipart_and_dms_has_explicit_route(self):
         target = SessionTarget("qq", APP_ID, "channel", "CHANNEL")
@@ -549,10 +564,52 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_channel_quote_is_loaded_before_dispatch_and_not_fetched_twice(self):
+        seen = []
+
+        async def capture(context):
+            self.assertTrue(context.event.to_me)
+            quoted = await self.connection.client.get_reply(context.event)
+            seen.append(quoted.message.plain_text())
+
+        self.app.router.message("quoted-bot", capture)
+        self.connection.events.bot_user_id = "BOT_USER"
+        self.connection.api.request = AsyncMock(
+            return_value={
+                "id": "quoted",
+                "channel_id": "CHANNEL_ID",
+                "guild_id": "GUILD_ID",
+                "content": "original bot message",
+                "author": {"id": "BOT_USER"},
+            }
+        )
+        frame = payload("MESSAGE_CREATE", content="reply")
+        frame["d"]["message_reference"] = {"message_id": "quoted"}
+        self.connection.receive(frame)
+        await self.drain()
+        self.assertEqual(seen, ["original bot message"])
+        self.assertEqual(self.connection.api.request.await_count, 1)
+
+    async def test_channel_quote_failure_still_dispatches_without_retry(self):
+        seen = []
+
+        async def capture(context):
+            seen.append(context.event.reply)
+
+        self.app.router.message("quote-failure", capture)
+        self.connection.events.bot_user_id = "BOT_USER"
+        self.connection.api.request = AsyncMock(side_effect=ValueError("bad reply"))
+        frame = payload("MESSAGE_CREATE", content="reply")
+        frame["d"]["message_reference"] = {"message_id": "quoted"}
+        self.connection.receive(frame)
+        await self.drain()
+        self.assertEqual(seen, [None])
+        self.assertEqual(self.connection.api.request.await_count, 1)
+
     async def asyncSetUp(self):
         self.app = Application()
         await self.app.start()
-        self.connection = QQWebhookConnection(self.app, APP_ID, QQBotSettings(SECRET), settings())
+        self.connection = QQWebhookConnection(self.app, APP_ID, QQBotSettings(SECRET, mode="webhook"), settings())
         self.addAsyncCleanup(self.connection.close)
         self.addAsyncCleanup(self.app.stop)
 
@@ -662,10 +719,10 @@ class QQWebhookQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQEntryTests(unittest.TestCase):
-    def test_signed_notice_missing_payload_returns_400_without_registration(self):
+    def test_signed_notice_missing_payload_is_acknowledged_without_dispatch(self):
         result = self.post({"op": 0, "t": "GROUP_MEMBER_ADD", "id": "missing-data"})
-        self.assertEqual(result.status_code, 400)
-        self.assertFalse(self.connection.events.started)
+        self.assertEqual(result.status_code, 200)
+        self.assertTrue(self.connection.events.started)
         self.assertEqual(self.sent, [])
 
     def setUp(self):
@@ -683,9 +740,9 @@ class QQEntryTests(unittest.TestCase):
         async def handle(request):
             if str(request.url) == AUTH_URL:
                 return httpx.Response(200, json={"access_token": "fake-access", "expires_in": "3600"})
-            self.sent.append(request)
             if request.url.path == "/users/@me":
                 return httpx.Response(200, json={"id": "BOT_USER"})
+            self.sent.append(request)
             return httpx.Response(200, json={"id": "sent-" + str(len(self.sent))})
 
         self.client.portal.call(self.connection.api._http.aclose)
@@ -740,6 +797,9 @@ class QQEntryTests(unittest.TestCase):
             "d": {
                 "id": "interaction-id",
                 "application_id": APP_ID,
+                "type": 11,
+                "version": 1,
+                "scene": "group",
                 "chat_type": 1,
                 "group_openid": "GROUP",
                 "group_member_openid": "MEMBER",
@@ -757,7 +817,7 @@ class QQEntryTests(unittest.TestCase):
     def test_signed_group_ping_enters_core_router_and_replies_via_official_api(self):
         response = self.post(payload())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"op": 12, "d": 0})
+        self.assertEqual(response.content, b"")
         self.drain_events()
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0].url.path, "/v2/groups/GROUP_OPENID/messages")
@@ -778,7 +838,7 @@ class QQEntryTests(unittest.TestCase):
 
     def test_c2c_and_channel_and_dms_ping_use_distinct_official_paths(self):
         cases = (
-            ("C2C_MESSAGE_CREATE", "/ping", "/v2/users/USER_OPENID/messages"),
+            ("C2C_MESSAGE_CREATE", "/ping", "/v2/users/numeric-id-not-openid/messages"),
             ("AT_MESSAGE_CREATE", "<@BOT_USER> /ping", "/channels/CHANNEL_ID/messages"),
             ("DIRECT_MESSAGE_CREATE", "/ping", "/dms/GUILD_ID/messages"),
         )
@@ -788,15 +848,17 @@ class QQEntryTests(unittest.TestCase):
             self.assertEqual(self.sent[-1].url.path, path)
             self.assertEqual(json.loads(self.sent[-1].content)["content"], "pong")
 
-    def test_no_signature_tampered_wrong_bot_and_stale_requests_rejected(self):
+    def test_invalid_signatures_rejected_but_no_extra_timestamp_window(self):
         raw, headers = signed(payload())
         self.assertEqual(self.client.post("/qq/webhook", content=raw, headers={"X-Bot-Appid": APP_ID}).status_code, 403)
         self.assertEqual(self.client.post("/qq/webhook", content=raw + b" ", headers=headers).status_code, 403)
         self.assertEqual(self.post(payload(), secret="wrong").status_code, 403)
         self.assertEqual(self.post(payload(), app_id="999").status_code, 403)
-        self.assertEqual(self.post(payload(), timestamp="1").status_code, 403)
         self.assertEqual(self.app.state.runtime.bots, ())
         self.assertEqual(self.sent, [])
+        self.assertEqual(self.post(payload(), timestamp="1").status_code, 200)
+        self.drain_events()
+        self.assertEqual(len(self.sent), 1)
 
     def test_challenge_response_has_no_token_request_and_does_not_register_bot(self):
         timestamp = str(int(time.time()))
@@ -812,7 +874,7 @@ class QQEntryTests(unittest.TestCase):
         self.assertEqual(self.app.state.runtime.bots, ())
         self.assertFalse(self.sent)
 
-    def test_challenge_rejects_arbitrary_dispatch_as_nonce(self):
+    def test_challenge_accepts_arbitrary_string_nonce(self):
         response = self.client.post(
             "/qq/webhook",
             headers={"X-Bot-Appid": APP_ID},
@@ -824,19 +886,23 @@ class QQEntryTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
         self.assertFalse(self.app.state.runtime.bots)
         self.assertFalse(self.sent)
 
-    def test_unknown_events_acknowledged_invalid_messages_rejected_and_not_cached(self):
+    def test_unknown_events_and_invalid_messages_acknowledged_without_killing_connection(self):
         unknown = payload()
         unknown["t"] = "UNSUPPORTED_EVENT"
         self.assertEqual(self.post(unknown).status_code, 200)
         invalid = payload()
         del invalid["d"]["author"]["member_openid"]
-        self.assertEqual(self.post(invalid).status_code, 400)
+        self.assertEqual(self.post(invalid).status_code, 200)
+        self.drain_events()
         self.assertFalse(self.connection.events._tasks)
-        self.assertFalse(self.app.state.runtime.bots)
+        self.assertTrue(self.app.state.runtime.bots)
+        self.assertEqual(self.post(payload()).status_code, 200)
+        self.drain_events()
+        self.assertEqual(len(self.sent), 1)
 
     def test_unsupported_like_is_explicit_without_network_write(self):
         self.assertEqual(self.post(payload(content="#赞我")).status_code, 200)
@@ -844,9 +910,9 @@ class QQEntryTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(json.loads(self.sent[0].content)["content"], "当前平台不支持点赞")
 
-    def test_oversized_body_rejected_before_parsing_or_network(self):
+    def test_large_invalid_json_rejected_by_parser_without_extra_body_limit(self):
         response = self.client.post("/qq/webhook", headers={"X-Bot-Appid": APP_ID}, content=b"x" * (1024 * 1024 + 1))
-        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.status_code, 400)
         self.assertFalse(self.sent)
         self.assertFalse(self.app.state.runtime.bots)
 
@@ -854,7 +920,7 @@ class QQEntryTests(unittest.TestCase):
         self.assertEqual(
             self.client.post("/qq/webhook", headers={"X-Bot-Appid": APP_ID}, content=b"{").status_code, 400
         )
-        self.assertEqual(self.post({"op": 2, "d": {}}).status_code, 400)
+        self.assertEqual(self.post({"op": 2, "d": {}}).status_code, 200)
         self.assertFalse(self.sent)
 
     def test_same_appid_as_onebot_bot_never_shares_connection(self):

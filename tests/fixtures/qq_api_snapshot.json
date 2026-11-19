@@ -1,0 +1,3872 @@
+[
+  {
+    "method": "me",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/users/@me",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "me",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/users/@me",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "me",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/users/@me",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "guilds",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/users/@me/guilds",
+        {
+          "params": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "guilds",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/users/@me/guilds",
+        {
+          "params": {
+            "before": "value",
+            "after": "value",
+            "limit": 1.5
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "guilds",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/users/@me/guilds",
+        {
+          "params": {
+            "before": "value",
+            "after": "value",
+            "limit": 1.5
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channels",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/channels",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channels",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/channels",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channels",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/channels",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_channels",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/channels",
+        {
+          "json": {
+            "name": "value",
+            "type": 0,
+            "sub_type": 0
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_channels",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/channels",
+        {
+          "json": {
+            "name": "value",
+            "type": 0,
+            "sub_type": 0,
+            "position": 1,
+            "parent_id": 1,
+            "private_type": 0,
+            "private_user_ids": [
+              "value"
+            ],
+            "speaking_permission": 0,
+            "application_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_channels",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/channels",
+        {
+          "json": {
+            "name": "value",
+            "type": 0,
+            "sub_type": 0,
+            "position": 1,
+            "parent_id": 1,
+            "private_type": 0,
+            "private_user_ids": [
+              "value"
+            ],
+            "speaking_permission": 0,
+            "application_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_channel",
+    "variant": 0,
+    "calls": [
+      [
+        "PATCH",
+        "/channels/value",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_channel",
+    "variant": 1,
+    "calls": [
+      [
+        "PATCH",
+        "/channels/value",
+        {
+          "json": {
+            "name": "value",
+            "type": 0,
+            "sub_type": 0,
+            "position": 1,
+            "parent_id": 1,
+            "private_type": 1,
+            "speaking_permission": 0,
+            "application_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_channel",
+    "variant": 2,
+    "calls": [
+      [
+        "PATCH",
+        "/channels/value",
+        {
+          "json": {
+            "name": "value",
+            "type": 0,
+            "sub_type": 0,
+            "position": 1,
+            "parent_id": 1,
+            "private_type": 1,
+            "speaking_permission": 0,
+            "application_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_channel",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_channel",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_channel",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_members",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/members",
+        {
+          "params": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_members",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/members",
+        {
+          "params": {
+            "after": "value",
+            "limit": 1.5
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_members",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/members",
+        {
+          "params": {
+            "after": "value",
+            "limit": 1.5
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_role_members",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/roles/value/members",
+        {
+          "params": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_role_members",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/roles/value/members",
+        {
+          "params": {
+            "start_index": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_role_members",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/roles/value/members",
+        {
+          "params": {
+            "start_index": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_member",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/members/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_member",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/members/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_member",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/members/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_member",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/members/value",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_member",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/members/value",
+        {
+          "json": {
+            "add_blacklist": true,
+            "delete_history_msg_days": -1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_member",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/members/value",
+        {
+          "json": {
+            "add_blacklist": true,
+            "delete_history_msg_days": -1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild_roles",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/roles",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild_roles",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/roles",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild_roles",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/roles",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_guild_role",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/roles",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_guild_role",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/roles",
+        {
+          "json": {
+            "name": "value",
+            "color": 1.5,
+            "hoist": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_guild_role",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/roles",
+        {
+          "json": {
+            "name": "value",
+            "color": 1.5,
+            "hoist": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_role",
+    "variant": 0,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/roles/value",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_role",
+    "variant": 1,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/roles/value",
+        {
+          "json": {
+            "name": "value",
+            "color": 1.5,
+            "hoist": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_role",
+    "variant": 2,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/roles/value",
+        {
+          "json": {
+            "name": "value",
+            "color": 1.5,
+            "hoist": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_role",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/roles/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_role",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/roles/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_role",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/roles/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_guild_member_role",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/guilds/value/members/value/roles/value",
+        {
+          "json": null
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_guild_member_role",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/guilds/value/members/value/roles/value",
+        {
+          "json": {
+            "channel": {
+              "id": "value"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_guild_member_role",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/guilds/value/members/value/roles/value",
+        {
+          "json": {
+            "channel": {
+              "id": "value"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_member_role",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/members/value/roles/value",
+        {
+          "json": null
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_member_role",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/members/value/roles/value",
+        {
+          "json": {
+            "channel": {
+              "id": "value"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_member_role",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/members/value/roles/value",
+        {
+          "json": {
+            "channel": {
+              "id": "value"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel_permissions",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/members/value/permissions",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel_permissions",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/members/value/permissions",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel_permissions",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/members/value/permissions",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_channel_permissions",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/members/value/permissions",
+        {
+          "json": {
+            "add": "None",
+            "remove": "None"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_channel_permissions",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/members/value/permissions",
+        {
+          "json": {
+            "add": "1",
+            "remove": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_channel_permissions",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/members/value/permissions",
+        {
+          "json": {
+            "add": "1",
+            "remove": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel_roles_permissions",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/roles/value/permissions",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel_roles_permissions",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/roles/value/permissions",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_channel_roles_permissions",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/roles/value/permissions",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_channel_roles_permissions",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/roles/value/permissions",
+        {
+          "json": {
+            "add": "None",
+            "remove": "None"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_channel_roles_permissions",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/roles/value/permissions",
+        {
+          "json": {
+            "add": "1",
+            "remove": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_channel_roles_permissions",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/roles/value/permissions",
+        {
+          "json": {
+            "add": "1",
+            "remove": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_message_of_id",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_message_of_id",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_message_of_id",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_messages",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/messages",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_messages",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/messages",
+        {
+          "files": {
+            "file_image": [
+              "file_image",
+              {
+                "bytes_hex": "6279746573"
+              }
+            ],
+            "embed": [
+              "embed",
+              {
+                "bytes_hex": "7b22656d626564223a207b2270726f6d7074223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "ark": [
+              "ark",
+              {
+                "bytes_hex": "7b2261726b223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "message_reference": [
+              "message_reference",
+              {
+                "bytes_hex": "7b226d6573736167655f7265666572656e6365223a207b226d6573736167655f6964223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "markdown": [
+              "markdown",
+              {
+                "bytes_hex": "7b226d61726b646f776e223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "keyboard": [
+              "keyboard",
+              {
+                "bytes_hex": "7b226b6579626f617264223a207b7d7d"
+              },
+              "application/json"
+            ]
+          },
+          "data": {
+            "content": "value",
+            "image": "value",
+            "msg_id": "value",
+            "event_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_messages",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/messages",
+        {
+          "files": {
+            "file_image": [
+              "file_image",
+              {
+                "bytes_hex": "6279746573"
+              }
+            ],
+            "embed": [
+              "embed",
+              {
+                "bytes_hex": "7b22656d626564223a207b2270726f6d7074223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "ark": [
+              "ark",
+              {
+                "bytes_hex": "7b2261726b223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "message_reference": [
+              "message_reference",
+              {
+                "bytes_hex": "7b226d6573736167655f7265666572656e6365223a207b226d6573736167655f6964223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "markdown": [
+              "markdown",
+              {
+                "bytes_hex": "7b226d61726b646f776e223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "keyboard": [
+              "keyboard",
+              {
+                "bytes_hex": "7b226b6579626f617264223a207b7d7d"
+              },
+              "application/json"
+            ]
+          },
+          "data": {
+            "content": "value",
+            "image": "value",
+            "msg_id": "value",
+            "event_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_message",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/messages/value",
+        {
+          "params": null
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_message",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/messages/value",
+        {
+          "params": {
+            "hidetip": "true"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_message",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/messages/value",
+        {
+          "params": {
+            "hidetip": "true"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_message_setting",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/message/setting",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_message_setting",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/message/setting",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_message_setting",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/message/setting",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_dms",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/users/@me/dms",
+        {
+          "json": {
+            "recipient_id": "value",
+            "source_guild_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_dms",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/users/@me/dms",
+        {
+          "json": {
+            "recipient_id": "value",
+            "source_guild_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_dms",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/users/@me/dms",
+        {
+          "json": {
+            "recipient_id": "value",
+            "source_guild_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_dms_messages",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/dms/value/messages",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_dms_messages",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/dms/value/messages",
+        {
+          "files": {
+            "file_image": [
+              "file_image",
+              {
+                "bytes_hex": "6279746573"
+              }
+            ],
+            "embed": [
+              "embed",
+              {
+                "bytes_hex": "7b22656d626564223a207b2270726f6d7074223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "ark": [
+              "ark",
+              {
+                "bytes_hex": "7b2261726b223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "message_reference": [
+              "message_reference",
+              {
+                "bytes_hex": "7b226d6573736167655f7265666572656e6365223a207b226d6573736167655f6964223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "markdown": [
+              "markdown",
+              {
+                "bytes_hex": "7b226d61726b646f776e223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "keyboard": [
+              "keyboard",
+              {
+                "bytes_hex": "7b226b6579626f617264223a207b7d7d"
+              },
+              "application/json"
+            ]
+          },
+          "data": {
+            "content": "value",
+            "image": "value",
+            "msg_id": "value",
+            "event_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_dms_messages",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/dms/value/messages",
+        {
+          "files": {
+            "file_image": [
+              "file_image",
+              {
+                "bytes_hex": "6279746573"
+              }
+            ],
+            "embed": [
+              "embed",
+              {
+                "bytes_hex": "7b22656d626564223a207b2270726f6d7074223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "ark": [
+              "ark",
+              {
+                "bytes_hex": "7b2261726b223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "message_reference": [
+              "message_reference",
+              {
+                "bytes_hex": "7b226d6573736167655f7265666572656e6365223a207b226d6573736167655f6964223a202276616c7565227d7d"
+              },
+              "application/json"
+            ],
+            "markdown": [
+              "markdown",
+              {
+                "bytes_hex": "7b226d61726b646f776e223a207b7d7d"
+              },
+              "application/json"
+            ],
+            "keyboard": [
+              "keyboard",
+              {
+                "bytes_hex": "7b226b6579626f617264223a207b7d7d"
+              },
+              "application/json"
+            ]
+          },
+          "data": {
+            "content": "value",
+            "image": "value",
+            "msg_id": "value",
+            "event_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_dms_message",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/dms/value/messages/value",
+        {
+          "params": null
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_dms_message",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/dms/value/messages/value",
+        {
+          "params": {
+            "hidetip": "true"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_dms_message",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/dms/value/messages/value",
+        {
+          "params": {
+            "hidetip": "true"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_mute",
+    "variant": 0,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/mute",
+        {
+          "json": {
+            "mute_end_timestamp": "None",
+            "mute_seconds": "None"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_mute",
+    "variant": 1,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/mute",
+        {
+          "json": {
+            "mute_end_timestamp": "1",
+            "mute_seconds": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_mute",
+    "variant": 2,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/mute",
+        {
+          "json": {
+            "mute_end_timestamp": "1795082400",
+            "mute_seconds": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_member_mute",
+    "variant": 0,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/members/value/mute",
+        {
+          "json": {
+            "mute_end_timestamp": "None",
+            "mute_seconds": "None"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_member_mute",
+    "variant": 1,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/members/value/mute",
+        {
+          "json": {
+            "mute_end_timestamp": "1",
+            "mute_seconds": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_member_mute",
+    "variant": 2,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/members/value/mute",
+        {
+          "json": {
+            "mute_end_timestamp": "1795082400",
+            "mute_seconds": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_mute_multi_member",
+    "variant": 0,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/mute",
+        {
+          "json": {
+            "user_ids": [
+              "value"
+            ],
+            "mute_end_timestamp": "None",
+            "mute_seconds": "None"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_mute_multi_member",
+    "variant": 1,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/mute",
+        {
+          "json": {
+            "user_ids": [
+              "value"
+            ],
+            "mute_end_timestamp": "1",
+            "mute_seconds": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_guild_mute_multi_member",
+    "variant": 2,
+    "calls": [
+      [
+        "PATCH",
+        "/guilds/value/mute",
+        {
+          "json": {
+            "user_ids": [
+              "value"
+            ],
+            "mute_end_timestamp": "1795082400",
+            "mute_seconds": "1"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_guild_announces",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/announces",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_guild_announces",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/announces",
+        {
+          "json": {
+            "message_id": "value",
+            "channel_id": "value",
+            "announces_type": 1,
+            "recommend_channels": [
+              {}
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_guild_announces",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/announces",
+        {
+          "json": {
+            "message_id": "value",
+            "channel_id": "value",
+            "announces_type": 1,
+            "recommend_channels": [
+              {}
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_announces",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/announces/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_announces",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/announces/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_guild_announces",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/guilds/value/announces/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_pins_message",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/pins/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_pins_message",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/pins/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_pins_message",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/pins/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_pins_message",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/pins/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_pins_message",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/pins/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_pins_message",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/pins/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_pins_message",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/pins",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_pins_message",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/pins",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_pins_message",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/pins",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_schedules",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/schedules",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_schedules",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/schedules",
+        {
+          "json": {
+            "since": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_schedules",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/schedules",
+        {
+          "json": {
+            "since": 1795082400000
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_schedule",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/schedules/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_schedule",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/schedules/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_schedule",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/schedules/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_schedule",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/schedules",
+        {
+          "json": {
+            "schedule": {
+              "name": "value",
+              "start_timestamp": "1",
+              "end_timestamp": "1",
+              "remind_type": "0"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_schedule",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/schedules",
+        {
+          "json": {
+            "schedule": {
+              "name": "value",
+              "description": "value",
+              "start_timestamp": "1",
+              "end_timestamp": "1",
+              "jump_channel_id": "value",
+              "remind_type": "0"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_schedule",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/schedules",
+        {
+          "json": {
+            "schedule": {
+              "name": "value",
+              "description": "value",
+              "start_timestamp": "1795082400000",
+              "end_timestamp": "1795082400000",
+              "jump_channel_id": "value",
+              "remind_type": "0"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_schedule",
+    "variant": 0,
+    "calls": [
+      [
+        "PATCH",
+        "/channels/value/schedules/value",
+        {
+          "json": {
+            "schedule": {}
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_schedule",
+    "variant": 1,
+    "calls": [
+      [
+        "PATCH",
+        "/channels/value/schedules/value",
+        {
+          "json": {
+            "schedule": {
+              "name": "value",
+              "description": "value",
+              "start_timestamp": "1",
+              "end_timestamp": "1",
+              "jump_channel_id": 1,
+              "remind_type": "0"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "patch_schedule",
+    "variant": 2,
+    "calls": [
+      [
+        "PATCH",
+        "/channels/value/schedules/value",
+        {
+          "json": {
+            "schedule": {
+              "name": "value",
+              "description": "value",
+              "start_timestamp": "1795082400000",
+              "end_timestamp": "1795082400000",
+              "jump_channel_id": 1,
+              "remind_type": "0"
+            }
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_schedule",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/schedules/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_schedule",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/schedules/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_schedule",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/schedules/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_message_reaction",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/messages/value/reactions/1/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_message_reaction",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/messages/value/reactions/1/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_message_reaction",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/messages/value/reactions/1/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_own_message_reaction",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/messages/value/reactions/1/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_own_message_reaction",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/messages/value/reactions/1/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_own_message_reaction",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/messages/value/reactions/1/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_reaction_users",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/messages/value/reactions/1/value",
+        {
+          "params": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_reaction_users",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/messages/value/reactions/1/value",
+        {
+          "params": {
+            "cookie": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_reaction_users",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/messages/value/reactions/1/value",
+        {
+          "params": {
+            "cookie": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "audio_control",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/audio",
+        {
+          "json": {
+            "status": 0
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "audio_control",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/audio",
+        {
+          "json": {
+            "audio_url": "value",
+            "text": "value",
+            "status": 0
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "audio_control",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/channels/value/audio",
+        {
+          "json": {
+            "audio_url": "value",
+            "text": "value",
+            "status": 0
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_mic",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/mic",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_mic",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/mic",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_mic",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/mic",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_mic",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/mic",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_mic",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/mic",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_mic",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/mic",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_threads_list",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/threads",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_threads_list",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/threads",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_threads_list",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/threads",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_thread",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/threads/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_thread",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/threads/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_thread",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/channels/value/threads/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_thread",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/threads",
+        {
+          "json": {
+            "title": "value",
+            "content": "value",
+            "format": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_thread",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/threads",
+        {
+          "json": {
+            "title": "value",
+            "content": "value",
+            "format": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_thread",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/channels/value/threads",
+        {
+          "json": {
+            "title": "value",
+            "content": "{}",
+            "format": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_thread",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/threads/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_thread",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/threads/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_thread",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/channels/value/threads/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild_api_permission",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/api_permission",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild_api_permission",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/api_permission",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_guild_api_permission",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/guilds/value/api_permission",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_api_permission_demand",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/api_permission/demand",
+        {
+          "json": {
+            "channel_id": "value",
+            "api_identify": {},
+            "desc": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_api_permission_demand",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/api_permission/demand",
+        {
+          "json": {
+            "channel_id": "value",
+            "api_identify": {},
+            "desc": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_api_permission_demand",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/guilds/value/api_permission/demand",
+        {
+          "json": {
+            "channel_id": "value",
+            "api_identify": {},
+            "desc": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "url_get",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/gateway",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "url_get",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/gateway",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "url_get",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/gateway",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "shard_url_get",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/gateway/bot",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "shard_url_get",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/gateway/bot",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "shard_url_get",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/gateway/bot",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_interaction",
+    "variant": 0,
+    "calls": [
+      [
+        "PUT",
+        "/interactions/value",
+        {
+          "json": {
+            "code": 0
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_interaction",
+    "variant": 1,
+    "calls": [
+      [
+        "PUT",
+        "/interactions/value",
+        {
+          "json": {
+            "code": 0
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "put_interaction",
+    "variant": 2,
+    "calls": [
+      [
+        "PUT",
+        "/interactions/value",
+        {
+          "json": {
+            "code": 0
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_messages",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/messages",
+        {
+          "json": {
+            "msg_type": 0,
+            "timestamp": 1795082400
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_messages",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/messages",
+        {
+          "json": {
+            "msg_type": 0,
+            "content": "value",
+            "markdown": {},
+            "keyboard": {},
+            "media": {
+              "file_info": "value"
+            },
+            "ark": {},
+            "embed": {
+              "prompt": "value"
+            },
+            "message_reference": {
+              "message_id": "value"
+            },
+            "stream": {
+              "state": 1,
+              "index": 1
+            },
+            "prompt_keyboard": {
+              "keyboard": {
+                "content": {
+                  "rows": [
+                    {
+                      "buttons": [
+                        {
+                          "render_data": {
+                            "label": "value"
+                          },
+                          "action": {}
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "action_button": {
+              "template_id": "1"
+            },
+            "event_id": "value",
+            "msg_id": "value",
+            "msg_seq": 1,
+            "timestamp": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_messages",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/messages",
+        {
+          "json": {
+            "msg_type": 0,
+            "content": "value",
+            "markdown": {},
+            "keyboard": {},
+            "media": {
+              "file_info": "value"
+            },
+            "ark": {},
+            "embed": {
+              "prompt": "value"
+            },
+            "message_reference": {
+              "message_id": "value"
+            },
+            "stream": {
+              "state": 1,
+              "index": 1
+            },
+            "prompt_keyboard": {
+              "keyboard": {
+                "content": {
+                  "rows": [
+                    {
+                      "buttons": [
+                        {
+                          "render_data": {
+                            "label": "value"
+                          },
+                          "action": {}
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "action_button": {
+              "template_id": "1"
+            },
+            "event_id": "value",
+            "msg_id": "value",
+            "msg_seq": 1,
+            "timestamp": 1795082400
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_files",
+    "variant": 0,
+    "calls": [],
+    "error": "file_type must be provided if upload_id is not provided"
+  },
+  {
+    "method": "post_c2c_files",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/files",
+        {
+          "json": {
+            "upload_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_files",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/files",
+        {
+          "json": {
+            "upload_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_upload_prepare",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/upload_prepare",
+        {
+          "json": {
+            "file_type": 1,
+            "file_name": "value",
+            "file_size": 1,
+            "md5": "value",
+            "sha1": "value",
+            "md5_10m": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_upload_prepare",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/upload_prepare",
+        {
+          "json": {
+            "file_type": 1,
+            "file_name": "value",
+            "file_size": 1,
+            "md5": "value",
+            "sha1": "value",
+            "md5_10m": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_upload_prepare",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/upload_prepare",
+        {
+          "json": {
+            "file_type": 1,
+            "file_name": "value",
+            "file_size": 1,
+            "md5": "value",
+            "sha1": "value",
+            "md5_10m": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_upload_part_finish",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/upload_part_finish",
+        {
+          "json": {
+            "upload_id": "value",
+            "part_index": 1,
+            "block_size": 1,
+            "md5": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_upload_part_finish",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/upload_part_finish",
+        {
+          "json": {
+            "upload_id": "value",
+            "part_index": 1,
+            "block_size": 1,
+            "md5": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_c2c_upload_part_finish",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/users/value/upload_part_finish",
+        {
+          "json": {
+            "upload_id": "value",
+            "part_index": 1,
+            "block_size": 1,
+            "md5": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_c2c_message",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/v2/users/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_c2c_message",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/v2/users/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_c2c_message",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/v2/users/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_messages",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/messages",
+        {
+          "json": {
+            "msg_type": 0,
+            "timestamp": 1795082400
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_messages",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/messages",
+        {
+          "json": {
+            "msg_type": 0,
+            "content": "value",
+            "markdown": {},
+            "keyboard": {},
+            "media": {
+              "file_info": "value"
+            },
+            "ark": {},
+            "embed": {
+              "prompt": "value"
+            },
+            "message_reference": {
+              "message_id": "value"
+            },
+            "event_id": "value",
+            "msg_id": "value",
+            "msg_seq": 1,
+            "timestamp": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_messages",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/messages",
+        {
+          "json": {
+            "msg_type": 0,
+            "content": "value",
+            "markdown": {},
+            "keyboard": {},
+            "media": {
+              "file_info": "value"
+            },
+            "ark": {},
+            "embed": {
+              "prompt": "value"
+            },
+            "message_reference": {
+              "message_id": "value"
+            },
+            "event_id": "value",
+            "msg_id": "value",
+            "msg_seq": 1,
+            "timestamp": 1795082400
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_files",
+    "variant": 0,
+    "calls": [],
+    "error": "file_type must be provided if upload_id is not provided"
+  },
+  {
+    "method": "post_group_files",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/files",
+        {
+          "json": {
+            "upload_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_files",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/files",
+        {
+          "json": {
+            "upload_id": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_upload_prepare",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/upload_prepare",
+        {
+          "json": {
+            "file_type": 1,
+            "file_name": "value",
+            "file_size": 1,
+            "md5": "value",
+            "sha1": "value",
+            "md5_10m": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_upload_prepare",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/upload_prepare",
+        {
+          "json": {
+            "file_type": 1,
+            "file_name": "value",
+            "file_size": 1,
+            "md5": "value",
+            "sha1": "value",
+            "md5_10m": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_upload_prepare",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/upload_prepare",
+        {
+          "json": {
+            "file_type": 1,
+            "file_name": "value",
+            "file_size": 1,
+            "md5": "value",
+            "sha1": "value",
+            "md5_10m": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_upload_part_finish",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/upload_part_finish",
+        {
+          "json": {
+            "upload_id": "value",
+            "part_index": 1,
+            "block_size": 1,
+            "md5": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_upload_part_finish",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/upload_part_finish",
+        {
+          "json": {
+            "upload_id": "value",
+            "part_index": 1,
+            "block_size": 1,
+            "md5": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_upload_part_finish",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/upload_part_finish",
+        {
+          "json": {
+            "upload_id": "value",
+            "part_index": 1,
+            "block_size": 1,
+            "md5": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_group_message",
+    "variant": 0,
+    "calls": [
+      [
+        "DELETE",
+        "/v2/groups/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_group_message",
+    "variant": 1,
+    "calls": [
+      [
+        "DELETE",
+        "/v2/groups/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "delete_group_message",
+    "variant": 2,
+    "calls": [
+      [
+        "DELETE",
+        "/v2/groups/value/messages/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_members",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/members",
+        {
+          "json": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_members",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/members",
+        {
+          "json": {
+            "limit": 1,
+            "start_index": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_members",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/members",
+        {
+          "json": {
+            "limit": 1,
+            "start_index": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_info",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/info",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_info",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/info",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_info",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/info",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_bot_state",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/bot_state",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_bot_state",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/bot_state",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_bot_state",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/bot_state",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_mute_setting",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/restrict_chat_setting",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_mute_setting",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/restrict_chat_setting",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_mute_setting",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/restrict_chat_setting",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "set_group_members_mute",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/restrict_chat_setting",
+        {
+          "json": {
+            "members": [
+              {
+                "op": "add",
+                "member_openid": "value"
+              }
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "set_group_members_mute",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/restrict_chat_setting",
+        {
+          "json": {
+            "members": [
+              {
+                "op": "add",
+                "member_openid": "value"
+              }
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "set_group_members_mute",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/restrict_chat_setting",
+        {
+          "json": {
+            "members": [
+              {
+                "op": "add",
+                "member_openid": "value"
+              }
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_join_request_list",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/join_request_list",
+        {
+          "params": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_join_request_list",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/join_request_list",
+        {
+          "params": {
+            "cursor": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_join_request_list",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/join_request_list",
+        {
+          "params": {
+            "cursor": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "approval_join_request",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/approval_join_request/value",
+        {
+          "json": {
+            "op": "approve"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "approval_join_request",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/approval_join_request/value",
+        {
+          "json": {
+            "op": "approve",
+            "join_request_id": "value",
+            "reject_reason": "value",
+            "add_to_member_blacklist": true
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "approval_join_request",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/approval_join_request/value",
+        {
+          "json": {
+            "op": "approve",
+            "join_request_id": "value",
+            "reject_reason": "value",
+            "add_to_member_blacklist": true
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_members",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/members",
+        {
+          "params": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_members",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/members",
+        {
+          "params": {
+            "cursor": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_members",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/members",
+        {
+          "params": {
+            "cursor": "value"
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_member",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/members/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_member",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/members/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_member",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/members/value",
+        {}
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "batch_remove_group_members",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/batch_remove_members",
+        {
+          "json": {
+            "member_openids": [
+              "value"
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "batch_remove_group_members",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/batch_remove_members",
+        {
+          "json": {
+            "member_openids": [
+              "value"
+            ],
+            "add_to_member_blacklist": true
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "batch_remove_group_members",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/batch_remove_members",
+        {
+          "json": {
+            "member_openids": [
+              "value"
+            ],
+            "add_to_member_blacklist": true
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_member_blacklist",
+    "variant": 0,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/member_blacklist",
+        {
+          "params": {}
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_member_blacklist",
+    "variant": 1,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/member_blacklist",
+        {
+          "params": {
+            "cursor": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "get_group_member_blacklist",
+    "variant": 2,
+    "calls": [
+      [
+        "GET",
+        "/v2/groups/value/member_blacklist",
+        {
+          "params": {
+            "cursor": "value",
+            "limit": 1
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_member_blacklist",
+    "variant": 0,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/member_blacklist",
+        {
+          "json": {
+            "op": "add",
+            "member_openids": [
+              "value"
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_member_blacklist",
+    "variant": 1,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/member_blacklist",
+        {
+          "json": {
+            "op": "add",
+            "member_openids": [
+              "value"
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  },
+  {
+    "method": "post_group_member_blacklist",
+    "variant": 2,
+    "calls": [
+      [
+        "POST",
+        "/v2/groups/value/member_blacklist",
+        {
+          "json": {
+            "op": "add",
+            "member_openids": [
+              "value"
+            ]
+          }
+        }
+      ]
+    ],
+    "error": null
+  }
+]

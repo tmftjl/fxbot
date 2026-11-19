@@ -1,13 +1,13 @@
 <!-- -*- coding: utf-8 -*- -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { copyText } from '@/utils/clipboard'
 import { adapterApi, type AdapterStatus, type QQBotPayload, type RuntimeConfigPayload } from '@/api'
 
-const DEFAULT_INTENTS = 251658240
+const DEFAULT_INTENTS = (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27)
 const DEFAULT_API_BASE = 'https://api.bot.qq.com'
 const DEFAULT_AUTH_URL = 'https://api.bot.qq.com/app/getAppAccessToken'
 
@@ -30,7 +30,10 @@ const CHANNEL_INTENT_OPTIONS: IntentOption[] = [
   { bit: 1 << 9, label: '频道消息（私域）', help: '私域机器人的频道消息' },
   { bit: 1 << 10, label: '频道表情表态', help: '频道消息的表情表态' },
   { bit: 1 << 12, label: '频道私信', help: '频道私信消息' },
+  { bit: 1 << 18, label: '开放论坛事件', help: '开放论坛主题、帖子和回复' },
+  { bit: 1 << 19, label: '音视频成员', help: '音视频频道成员事件' },
   { bit: 1 << 28, label: '论坛事件', help: '频道论坛主题和回复' },
+  { bit: 1 << 29, label: '音频动作', help: '音频播放及上下麦事件' },
   { bit: 1 << 30, label: '公域频道消息', help: '公域机器人的频道 @ 消息' },
 ]
 
@@ -43,6 +46,7 @@ interface BotDraft {
   mode: 'webhook' | 'websocket'
   bot_user_id: string
   intents: number
+  verify_webhook: boolean
   shard_index: number | null
   shard_total: number | null
   gateway_url: string
@@ -93,9 +97,10 @@ function emptyDraft(): BotDraft {
   return {
     app_id: '',
     secret: '',
-    mode: 'webhook',
+    mode: 'websocket',
     bot_user_id: '',
     intents: DEFAULT_INTENTS,
+    verify_webhook: true,
     shard_index: null,
     shard_total: null,
     gateway_url: '',
@@ -103,17 +108,6 @@ function emptyDraft(): BotDraft {
     auth_url: DEFAULT_AUTH_URL,
   }
 }
-
-watch(
-  () => draft.value.mode,
-  (mode) => {
-    // Webhook 不接受分片；切换后清空，避免保存时被服务端拒绝。
-    if (mode === 'webhook') {
-      draft.value.shard_index = null
-      draft.value.shard_total = null
-    }
-  },
-)
 
 const selectedIntents = computed<number[]>({
   get: () =>
@@ -237,8 +231,7 @@ const validateConfig = (value: RuntimeConfigPayload) => {
   if (!Number.isInteger(value.port) || value.port <= 0 || value.port > 65535) return '监听端口必须在 1-65535 之间'
   if (value.token !== value.token.trim()) return 'OneBot 令牌不能包含首尾空白'
   for (const [appId, bot] of Object.entries(value.qq_bots)) {
-    if (!/^[1-9]\d*$/.test(appId)) return `QQ AppID「${appId}」必须是正整数`
-    if (!bot.secret || bot.secret !== bot.secret.trim()) return `AppID ${appId} 的 Secret 不能为空或包含首尾空白`
+    if (!bot.secret) return `AppID ${appId} 的 Secret 不能为空`
   }
   return ''
 }
@@ -259,7 +252,8 @@ const openEdit = (appId: string) => {
     secret: bot.secret,
     mode: bot.mode,
     bot_user_id: bot.bot_user_id || '',
-    intents: bot.intents || DEFAULT_INTENTS,
+    intents: bot.intents,
+    verify_webhook: bot.verify_webhook ?? true,
     shard_index: shard ? shard[0] : null,
     shard_total: shard ? shard[1] : null,
     gateway_url: bot.gateway_url || '',
@@ -272,29 +266,20 @@ const openEdit = (appId: string) => {
 const validateDraft = () => {
   const value = draft.value
   if (!config.value) return '配置尚未加载'
-  if (!/^[1-9]\d*$/.test(value.app_id)) return 'AppID 必须是正整数'
-  if (!value.secret || value.secret !== value.secret.trim()) return 'Secret 不能为空或包含首尾空白'
-  if (!Number.isInteger(value.intents) || value.intents <= 0 || value.intents >= 2 ** 31) {
-    return '至少选择一项功能权限'
-  }
-  if (value.mode === 'webhook' && (value.shard_index != null || value.shard_total != null)) {
-    return 'Webhook 模式不能配置分片'
-  }
+  if (!value.secret) return 'Secret 不能为空'
+  if (!Number.isInteger(value.intents)) return '权限掩码必须是整数'
   if (value.shard_index != null || value.shard_total != null) {
     if (value.shard_index == null || value.shard_total == null) return '分片序号和分片总数需要同时填写'
     if (
       !Number.isInteger(value.shard_index) ||
-      !Number.isInteger(value.shard_total) ||
-      value.shard_total < 1 ||
-      value.shard_index < 0 ||
-      value.shard_index >= value.shard_total
+      !Number.isInteger(value.shard_total)
     ) {
-      return '分片序号必须小于分片总数，且总分片数至少为 1'
+      return '分片序号和分片总数必须是整数'
     }
   }
-  if (value.gateway_url && !value.gateway_url.startsWith('wss://')) return '自定义网关地址必须使用 wss://'
-  if (!value.api_base.startsWith('https://') || !value.auth_url.startsWith('https://')) {
-    return '接口地址和鉴权地址必须使用 https://'
+  if (value.gateway_url && !/^wss?:\/\//.test(value.gateway_url)) return '自定义网关地址必须使用 ws:// 或 wss://'
+  if (!/^https?:\/\//.test(value.api_base) || !/^https?:\/\//.test(value.auth_url)) {
+    return '接口地址和鉴权地址必须使用 http:// 或 https://'
   }
   return ''
 }
@@ -306,15 +291,16 @@ const confirmBot = async () => {
     return
   }
   const value = draft.value
-  if (editingAppId.value === null && config.value?.qq_bots[value.app_id]) {
+  if (editingAppId.value === null && Object.prototype.hasOwnProperty.call(config.value?.qq_bots ?? {}, value.app_id)) {
     ElMessage.warning('该 AppID 已存在')
     return
   }
   const payload: QQBotPayload = {
     secret: value.secret,
     mode: value.mode,
-    bot_user_id: value.bot_user_id.trim(),
+    bot_user_id: value.bot_user_id,
     intents: value.intents,
+    verify_webhook: value.verify_webhook,
     api_base: value.api_base.trim(),
     auth_url: value.auth_url.trim(),
   }
@@ -323,9 +309,8 @@ const confirmBot = async () => {
   }
   if (value.gateway_url.trim()) payload.gateway_url = value.gateway_url.trim()
   if (!config.value) return
-  const bots = { ...config.value.qq_bots }
+  const bots = { ...config.value.qq_bots, [value.app_id]: payload }
   if (editingAppId.value !== null && editingAppId.value !== value.app_id) delete bots[editingAppId.value]
-  bots[value.app_id] = payload
   if (await saveBots(bots)) dialogVisible.value = false
 }
 
@@ -576,8 +561,8 @@ onMounted(() => {
             </el-tooltip>
           </el-checkbox-group>
           <div class="field-help">
-            默认只勾选群聊和私聊相关权限。QQ 群机器人至少勾选「群与 C2C 消息」；需要入群验证或
-            退群处理时再勾选「群成员变动」。频道权限在高级设置里，默认不勾选。
+            默认订阅群成员变动、群与 C2C 消息、交互事件和消息审核。
+            频道能力可在高级设置中按需启用；已有配置的其他权限位会原样保留。
             <el-button link type="primary" size="small" @click="resetIntents">恢复默认</el-button>
           </div>
           <div v-if="residualIntents" class="field-help">
@@ -599,18 +584,20 @@ onMounted(() => {
                   <el-checkbox :value="option.bit" border>{{ option.label }}</el-checkbox>
                 </el-tooltip>
               </el-checkbox-group>
-              <div class="field-help">仅在接入 QQ 频道时需要，默认不勾选；QQ 群机器人保持全不选即可。</div>
+              <div class="field-help">按实际接入场景和官方授予的权限选择。</div>
+            </el-form-item>
+            <el-form-item label="Webhook 验签">
+              <el-switch v-model="draft.verify_webhook" />
+              <div class="field-help">默认开启。关闭后不再校验回调来源，请仅用于可信测试环境。</div>
             </el-form-item>
             <el-row :gutter="20">
               <el-col :span="12">
                 <el-form-item label="分片序号">
                   <el-input-number
                     v-model="draft.shard_index"
-                    :min="0"
                     :step="1"
                     controls-position="right"
                     style="width: 100%"
-                    :disabled="draft.mode === 'webhook'"
                     placeholder="留空自动"
                   />
                 </el-form-item>
@@ -619,17 +606,15 @@ onMounted(() => {
                 <el-form-item label="分片总数">
                   <el-input-number
                     v-model="draft.shard_total"
-                    :min="1"
                     :step="1"
                     controls-position="right"
                     style="width: 100%"
-                    :disabled="draft.mode === 'webhook'"
                     placeholder="留空自动"
                   />
                 </el-form-item>
               </el-col>
             </el-row>
-            <el-form-item label="自定义网关地址（WSS）">
+            <el-form-item label="自定义网关地址（WS / WSS）">
               <el-input v-model="draft.gateway_url" placeholder="留空使用官方网关" />
             </el-form-item>
             <el-row :gutter="20">

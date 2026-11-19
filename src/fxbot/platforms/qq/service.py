@@ -1,18 +1,21 @@
-"""QQ 官方接入装配：每个 AppID 明确选择一种传输。"""
+"""QQ 官方接入装配：Webhook 回调与可选的主动 WebSocket 网关。"""
 
 from __future__ import annotations
 
-import json
 import asyncio
 from contextlib import AsyncExitStack
 
-from fastapi import Request, HTTPException
+from fastapi import Request, Response, HTTPException
+from pydantic import TypeAdapter
 from starlette.requests import ClientDisconnect
 
+from .models import User, Dispatch, PayloadType, WebhookVerify
 from .gateway import QQGateway
 from .signing import SignatureRejected
-from .webhook import MAX_BODY_BYTES, QQWebhookConnection
+from .webhook import QQWebhookConnection
 from ...core.application import ApplicationState
+
+_PAYLOAD = TypeAdapter(PayloadType)
 
 
 class QQService:
@@ -57,33 +60,41 @@ class QQService:
         if app_id not in self.connections:
             raise HTTPException(403, "QQ AppID 未授权")
         connection = self.connections[app_id]
-        if not isinstance(connection, QQWebhookConnection):
-            raise HTTPException(403, "此 QQ AppID 使用 WebSocket，不接受 Webhook")
         body = bytearray()
         try:
             async for chunk in request.stream():
                 body.extend(chunk)
-                if len(body) > MAX_BODY_BYTES:
-                    raise HTTPException(413, "QQ 回调数据过大")
         except ClientDisconnect:
             raise HTTPException(400, "QQ 回调连接中断") from None
         # 握手帧本身不带事件签名；其余帧验证原始字节，不能重新序列化后验签。
         try:
-            payload = json.loads(body)
-            if not isinstance(payload, dict) or type(payload.get("op")) is not int:
-                raise ValueError("QQ 回调缺少 op")
-            if payload["op"] == 13:
-                return connection.signer.challenge(payload.get("d"))
-            connection.signer.verify(
-                bytes(body),
-                request.headers.get("x-signature-timestamp", ""),
-                request.headers.get("x-signature-ed25519", ""),
-            )
-            if payload["op"] != 0:
-                raise ValueError("QQ Webhook 只接受握手或 Dispatch")
-            connection.receive(payload)
-        except SignatureRejected:
-            raise HTTPException(403, "QQ 回调签名无效或已过期") from None
-        except (ValueError, TypeError, UnicodeDecodeError):
+            frame = _PAYLOAD.validate_json(body)
+        except ValueError:
             raise HTTPException(400, "QQ 回调格式无效") from None
-        return {"op": 12, "d": 0}
+        if isinstance(frame, WebhookVerify):
+            return connection.signer.challenge(frame.data.model_dump())
+        try:
+            if connection.config.verify_webhook:
+                connection.signer.verify(
+                    bytes(body),
+                    request.headers.get("x-signature-timestamp", ""),
+                    request.headers.get("x-signature-ed25519", ""),
+                )
+        except SignatureRejected:
+            raise HTTPException(403, "QQ 回调签名无效") from None
+        if isinstance(connection, QQWebhookConnection):
+            if not connection.events.bot_user_id:
+                profile = User.model_validate(await connection.api.request("GET", "/users/@me"))
+                connection.events.bot_user_id = profile.id
+                connection.events.bot_username = profile.username
+            if not connection.events.started:
+                connection.events.start(connection.close)
+        else:
+            if not connection._bot_user_id:
+                profile = User.model_validate(await connection.api.request("GET", "/users/@me"))
+                connection._bot_user_id = profile.id
+                connection._bot_username = profile.username
+            connection._activate()
+        if isinstance(frame, Dispatch):
+            connection.receive(frame.model_dump(by_alias=True, mode="json"))
+        return Response(status_code=200)

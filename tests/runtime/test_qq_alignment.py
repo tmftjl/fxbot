@@ -1,4 +1,4 @@
-"""QQ 普通群/C2C 参考接口的协议契约、事件与分片闭环。"""
+"""QQ 普通群/C2C 的接口契约、事件与分片闭环。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from fxbot.core import Router, Message, Capability, SessionTarget, MessageSegment, UnsupportedCapability
+from fxbot.core import Router, Message, Capability, SessionTarget, MessageSegment
 from fxbot.core.errors import ActionFailed
 from fxbot.core.context import bind_event, reset_event
 from fxbot.platforms.qq import QQ_API
@@ -42,6 +42,8 @@ def notice(kind, event_id="event-1", **changes):
         "audit_time": NOW,
         "audit_id": "AUDIT",
         "join_request_id": "REQUEST",
+        "username": "member",
+        "apply_source": "self_apply",
     }
     if kind == "INTERACTION_CREATE":
         data.update(
@@ -51,6 +53,9 @@ def notice(kind, event_id="event-1", **changes):
             chat_type=1,
             group_member_openid="MEMBER",
             data={"resolved": {"button_id": "button", "button_data": "yes"}},
+            type=11,
+            version=1,
+            scene="group",
         )
     data.update(changes)
     return {"op": 0, "t": kind, "id": event_id, "d": data}
@@ -79,8 +84,8 @@ class QQNoticeTests(unittest.IsolatedAsyncioTestCase):
         private = parse_event(notice("INTERACTION_CREATE", chat_type=2, user_openid="PRIVATE"), bot_id=APP_ID)
         self.assertEqual(group.user_id, "MEMBER")
         self.assertEqual(private.target.target_id, "PRIVATE")
-        with self.assertRaises(ValueError):
-            parse_event(notice("INTERACTION_CREATE", application_id="other"), bot_id=APP_ID)
+        event = parse_event(notice("INTERACTION_CREATE", application_id="other"), bot_id=APP_ID)
+        self.assertEqual(event.metadata["qq_data"]["application_id"], "other")
 
     async def test_notices_are_dispatched_without_extra_deduplication(self):
         app = Application()
@@ -131,7 +136,7 @@ class QQNoticeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQAPITests(unittest.IsolatedAsyncioTestCase):
-    async def test_mixed_advanced_format_and_media_is_rejected_before_upload(self):
+    async def test_advanced_format_takes_priority_over_media_without_upload(self):
         for kind in ("group", "private"):
             for advanced in (
                 markdown("# title"),
@@ -140,22 +145,21 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
                 keyboard({"id": "key"}),
             ):
                 for attachment in (MessageSegment.image(b"image"), media("already-uploaded")):
-                    with (
-                        self.subTest(kind=kind, advanced=advanced.type, media=attachment.type),
-                        self.assertRaises(UnsupportedCapability),
-                    ):
+                    with self.subTest(kind=kind, advanced=advanced.type, media=attachment.type):
+                        self.http.request.reset_mock()
                         await self.bot.send(
                             SessionTarget("qq", APP_ID, kind, "TARGET"), Message([advanced, attachment])
                         )
-        self.http.request.assert_not_awaited()
+                        self.assertEqual(self.http.request.await_count, 1)
+                        self.assertIn(self.http.request.await_args.kwargs["json"]["msg_type"], {2, 3, 4})
         self.http.put_upload_part.assert_not_awaited()
 
     async def test_upload_id_preserves_send_switch_for_group_and_private(self):
         for send in (True, False):
             await self.actions.post_group_files(group_openid="GROUP", upload_id="up", srv_send_msg=send)
-            self.assertEqual(self.http.request.await_args.kwargs["json"], {"upload_id": "up", "srv_send_msg": send})
+            self.assertEqual(self.http.request.await_args.kwargs["json"], {"upload_id": "up"})
             await self.actions.post_c2c_files(openid="USER", upload_id="up", srv_send_msg=send)
-            self.assertEqual(self.http.request.await_args.kwargs["json"], {"upload_id": "up", "srv_send_msg": send})
+            self.assertEqual(self.http.request.await_args.kwargs["json"], {"upload_id": "up"})
 
     async def test_malformed_member_queries_raise_action_failed_not_key_error(self):
         cases = [
@@ -259,18 +263,18 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
                 "POST",
                 "/v2/groups/GROUP/member_blacklist",
             ),
-            ("put_interaction", {"interaction_id": "button=/id", "code": 0}, "PUT", "/interactions/button%3D%2Fid"),
+            ("put_interaction", {"interaction_id": "button=/id", "code": 0}, "PUT", "/interactions/button=/id"),
             (
                 "delete_group_message",
                 {"group_openid": "GROUP", "message_id": "msg=/id"},
                 "DELETE",
-                "/v2/groups/GROUP/messages/msg%3D%2Fid",
+                "/v2/groups/GROUP/messages/msg=/id",
             ),
             (
                 "delete_c2c_message",
                 {"openid": "USER", "message_id": "msg=/id"},
                 "DELETE",
-                "/v2/users/USER/messages/msg%3D%2Fid",
+                "/v2/users/USER/messages/msg=/id",
             ),
         ]
         for method, kwargs, verb, path in cases:
@@ -307,7 +311,7 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
         await self.actions.post_c2c_messages(openid="USER", msg_type=0, stream={"index": 1, "state": 1})
         self.assertEqual(self.http.request.await_args.kwargs["json"]["stream"], {"index": 1, "state": 1})
 
-    async def test_group_everyone_mention_matches_reference(self):
+    async def test_group_everyone_mention_matches_protocol(self):
         self.http.request.return_value = {"id": "sent"}
         await self.bot.send(SessionTarget("qq", APP_ID, "group", "GROUP"), Message([MessageSegment("mention_all")]))
         self.assertEqual(self.http.request.await_args.kwargs["json"]["content"], "@everyone")
@@ -335,9 +339,7 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
             "INTERACTION_CREATE",
             "GROUP_ADD_ROBOT",
             "GROUP_MEMBER_ADD",
-            "GROUP_MSG_RECEIVE",
             "FRIEND_ADD",
-            "C2C_MSG_RECEIVE",
         ):
             with self.subTest(kind=kind):
                 event = parse_event(notice(kind), bot_id=APP_ID)
@@ -357,13 +359,11 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
         event = parse_event(notice("GROUP_JOIN_REQUEST"), bot_id=APP_ID)
         token = bind_event(self.bot, event)
         try:
-            await self.bot.send(event.target, Message.text("proactive"))
+            with self.assertRaisesRegex(RuntimeError, "cannot be replied"):
+                await self.bot.send(event.target, Message.text("proactive"))
         finally:
             reset_event(token)
-        body = self.http.request.await_args.kwargs["json"]
-        self.assertNotIn("event_id", body)
-        self.assertNotIn("msg_id", body)
-        self.assertNotIn("msg_seq", body)
+        self.http.request.assert_not_awaited()
 
     async def test_partial_moderation_does_not_claim_unsupported_admin_operations(self):
         self.http.request.return_value = {"members": []}
@@ -407,16 +407,14 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.http.request.await_count, 1)
             self.assertEqual(self.http.request.await_args.args[0], "GET")
 
-    async def test_invalid_target_is_rejected_before_send_or_upload(self):
-        for value in (".", ".."):
+    async def test_target_ids_are_passed_to_official_api_without_format_checks(self):
+        self.http.request.return_value = {"id": "sent"}
+        for value, prefix in (("", "/v2/groups"), (".", "/v2/groups"), ("..", "/v2")):
             target = SessionTarget("qq", APP_ID, "group", value)
-            with self.assertRaises(ValueError):
-                await self.bot.send(target, Message.text("bad"))
-            with self.assertRaises(ValueError):
-                await self.actions.post_group_upload(value, 4, "file.txt", b"x")
-            with self.assertRaises(ValueError):
-                await self.actions.get_group_info(group_id=value)
-        self.http.request.assert_not_awaited()
+            await self.bot.send(target, Message.text("opaque target"))
+            self.assertEqual(self.http.request.await_args.args, ("POST", f"{prefix}/messages"))
+            await self.actions.get_group_info(group_id=value)
+            self.assertEqual(self.http.request.await_args.args, ("GET", f"{prefix}/info"))
 
     async def test_channel_reply_fetches_quoted_message_like_original_adapter(self):
         source = payload("MESSAGE_CREATE", content="hi")
@@ -444,19 +442,34 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
         source["d"]["message_reference"] = {"message_id": "QUOTED_MSG"}
         event = parse_event(source, bot_id=APP_ID)
         self.http.request.return_value = {
-            "message": {"id": "QUOTED_MSG", "content": "quoted", "author": {"id": "AUTHOR", "username": "name"}}
+            "message": {
+                "id": "QUOTED_MSG",
+                "channel_id": "CHANNEL_ID",
+                "guild_id": "GUILD_ID",
+                "content": "quoted",
+                "author": {"id": "AUTHOR", "username": "name"},
+            }
         }
         quoted = await self.bot.get_reply(event)
         self.assertEqual(self.http.request.await_args.args, ("GET", "/channels/CHANNEL_ID/messages/QUOTED_MSG"))
         self.assertEqual(quoted.message.plain_text(), "quoted")
 
     async def test_group_reply_without_author_still_exposes_quoted_text(self):
-        source = payload("GROUP_MESSAGE_CREATE", content="<@quoted-user> answer")
+        source = payload("GROUP_MESSAGE_CREATE", content="<@quoted_user> answer")
         source["d"].update(
             message_type=103,
-            message_scene={"ext": ["ref_msg_idx=7"]},
-            mentions=[{"scope": "single", "id": "quoted-user", "is_you": False, "member_openid": "QUOTED"}],
-            msg_elements=[{"msg_idx": 7, "content": "quoted text"}],
+            message_scene={"source": "test", "ext": ["ref_msg_idx=7"]},
+            mentions=[
+                {
+                    "scope": "single",
+                    "id": "quoted_user",
+                    "is_you": False,
+                    "member_openid": "QUOTED",
+                    "bot": False,
+                    "username": "quoted",
+                }
+            ],
+            msg_elements=[{"msg_idx": "7", "content": "quoted text"}],
         )
         event = parse_event(source, bot_id=APP_ID)
         quoted = await self.bot.get_reply(event)
@@ -465,17 +478,26 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
         self.http.request.assert_not_awaited()
 
     async def test_reply_selects_matching_reference_not_first_element(self):
-        source = payload("GROUP_MESSAGE_CREATE", content="<@quoted-user> answer")
+        source = payload("GROUP_MESSAGE_CREATE", content="<@quoted_user> answer")
         source["d"].update(
             message_type=103,
-            message_scene={"ext": ["msg_idx=REFIDX_CURRENT", "ref_msg_idx=REFIDX_QUOTED"]},
-            mentions=[{"scope": "single", "id": "quoted-user", "is_you": False, "member_openid": "QUOTED"}],
+            message_scene={"source": "test", "ext": ["msg_idx=REFIDX_CURRENT", "ref_msg_idx=REFIDX_QUOTED"]},
+            mentions=[
+                {
+                    "scope": "single",
+                    "id": "quoted_user",
+                    "is_you": False,
+                    "member_openid": "QUOTED",
+                    "bot": False,
+                    "username": "quoted",
+                }
+            ],
             msg_elements=[
                 {"msg_idx": "other", "content": "wrong"},
                 {
                     "msg_idx": "REFIDX_QUOTED",
                     "content": "quoted text",
-                    "author": {"id": "quoted-user", "member_openid": "QUOTED", "username": "quoted author"},
+                    "author": {"id": "quoted_user", "member_openid": "QUOTED", "username": "quoted author"},
                 },
             ],
         )
@@ -586,7 +608,7 @@ class QQUploadTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     [request.content for request in requests if request.method == "PUT"], [b"ab", b"cd", b"ef"]
                 )
-                self.assertEqual(json.loads(requests[-1].content), {"upload_id": "up", "srv_send_msg": False})
+                self.assertEqual(json.loads(requests[-1].content), {"upload_id": "up"})
             finally:
                 await api.close()
 
@@ -677,6 +699,7 @@ class QQShardTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(QQGateway, "run", route_run), self.assertRaises(GatewayProtocolError):
             await owner.run()
         self.assertTrue(peer_cleaned.is_set())
+        await owner.close()
         self.assertTrue(owner.api._http.is_closed)
         self.assertFalse(app.bots)
 
@@ -723,14 +746,14 @@ class QQShardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(app.bots), 1)
         self.assertIs(owner._children[0]._stream, owner._children[1]._stream)
         self.assertIs(owner._children[0].api, owner.api)
-        self.assertEqual(owner._budget_remaining, 8)
+        owner.api.request.assert_awaited_once_with("GET", "/gateway/bot")
         old = app.bots[0]
         await owner._children[0]._disconnect()
         self.assertIs(app.bots[0], old)
         old._online()
         await owner._children[1]._disconnect()
         self.assertFalse(app.bots)
-        old._online()  # 原版 HTTP 客户端不依赖 WebSocket 是否在线。
+        old._online()  # HTTP 客户端不依赖 WebSocket 是否在线。
         await owner.close()
         self.assertFalse(app.bots)
         self.assertTrue(owner.api._http.is_closed)

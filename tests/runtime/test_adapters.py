@@ -77,7 +77,7 @@ class AdapterConfigTests(unittest.TestCase):
         cases = (
             {**config, "unknown": True},
             {**config, "port": 70000},
-            {**config, "qq_bots": {"not-a-number": {"secret": "value"}}},
+            {**config, "qq_bots": {APP_ID: {"secret": 1}}},
             {**config, "qq_bots": {APP_ID: {"secret": ""}}},
             {**config, "qq_bots": {APP_ID: {"secret": "value", "mode": "invalid"}}},
         )

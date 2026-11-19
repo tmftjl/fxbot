@@ -69,14 +69,8 @@ class Settings:
         if not isinstance(self.qq_bots, Mapping):
             raise ValueError("qq_bots 必须是 AppID 到凭证的映射")
         for app_id, credential in self.qq_bots.items():
-            if (
-                not isinstance(app_id, str)
-                or not app_id.isascii()
-                or not app_id.isdecimal()
-                or int(app_id) <= 0
-                or not isinstance(credential, QQBotSettings)
-            ):
-                raise ValueError("QQ AppID 必须为正十进制数字，并配置有效凭证")
+            if not isinstance(app_id, str) or not isinstance(credential, QQBotSettings):
+                raise ValueError("QQ AppID 必须为字符串，并配置有效凭证")
         object.__setattr__(self, "qq_bots", MappingProxyType(dict(self.qq_bots)))
         self._validate_listen()
 

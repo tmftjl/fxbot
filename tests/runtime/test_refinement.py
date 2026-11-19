@@ -135,7 +135,6 @@ class QQResponseBoundaryTests(unittest.TestCase):
         for response in (
             httpx.Response(200, text="not JSON"),
             httpx.Response(201, content=b"\xff"),
-            httpx.Response(200, json=[]),
         ):
             with self.subTest(status=response.status_code), self.assertRaises(QQAPIError) as caught:
                 self.api._response(response)

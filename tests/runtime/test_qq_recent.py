@@ -1,4 +1,4 @@
-"""QQ 群引用与近期消息缓存的旧版行为测试。"""
+"""QQ 群引用与近期消息缓存的行为测试。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class QQRecentReplyTests(unittest.IsolatedAsyncioTestCase):
         source["d"].update(
             group_openid="CACHE_GROUP",
             message_type=103,
-            message_scene={"ext": ["ref_msg_idx=REFIDX_BOT"]},
+            message_scene={"source": "test", "ext": ["ref_msg_idx=REFIDX_BOT"]},
             msg_elements=[{"msg_idx": "REFIDX_BOT", "content": ""}],
         )
         event = parse_event(source, bot_id=APP_ID)
@@ -43,7 +43,7 @@ class QQRecentReplyTests(unittest.IsolatedAsyncioTestCase):
         source = payload("GROUP_MESSAGE_CREATE", content="original text")
         source["d"].update(
             group_openid="CACHE_INCOMING",
-            message_scene={"ext": ["msg_idx=REFIDX_ORIGINAL"]},
+            message_scene={"source": "test", "ext": ["msg_idx=REFIDX_ORIGINAL"]},
         )
         remember_event(self.bot, parse_event(source, bot_id=APP_ID))
 
@@ -51,7 +51,7 @@ class QQRecentReplyTests(unittest.IsolatedAsyncioTestCase):
         quoted_source["d"].update(
             group_openid="CACHE_INCOMING",
             message_type=103,
-            message_scene={"ext": ["ref_msg_idx=REFIDX_ORIGINAL"]},
+            message_scene={"source": "test", "ext": ["ref_msg_idx=REFIDX_ORIGINAL"]},
             msg_elements=[],
         )
         event = parse_event(quoted_source, bot_id=APP_ID)

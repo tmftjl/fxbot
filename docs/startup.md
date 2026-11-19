@@ -85,7 +85,7 @@ OneBot 扩展动作在首次使用时通过 `get_version_info` 自动识别 NapC
   WebSocket 网关按新凭证重建连接
 - `host` / `port` 只写入配置文件，需要重启 FxBot 才会更换监听地址；页面会保留重启提示
 - 页面使用文件内容哈希做并发检测，多开控制台时不会用旧快照覆盖他人刚保存的内容
-- QQ Bot 的 Intents 默认只勾选群聊/私聊相关权限，频道场景权限在高级设置里按需启用；
+- QQ Bot 的 Intents 默认包含群成员变动、群与 C2C 消息、交互事件和消息审核；频道权限在高级设置里按需启用；
   配置中已有的其他权限位会原样保留，也可以在弹窗中一键清除
 
 ## 平台接入
@@ -99,7 +99,7 @@ V11/V12 在 `token` 非空时要求 `Authorization: Bearer <token>`；QQ 回调�
 
 ## QQ 官方 Bot
 
-`qq_bots` 按 AppID 声明凭证，每个 AppID 明确选择一种传输方式：
+`qq_bots` 按 AppID 声明凭证，`mode` 选择是否主动连接 WebSocket；两种模式均可接收 Webhook：
 
 ```json
 {
@@ -117,16 +117,18 @@ V11/V12 在 `token` 非空时要求 `Authorization: Bearer <token>`；QQ 回调�
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `secret` | 必填 | QQ 开放平台 AppSecret，用于回调 Ed25519 验签或换取 access token |
-| `mode` | `webhook` | `webhook` 或 `websocket`，同一 AppID 只能选一种 |
+| `mode` | `websocket` | `webhook` 仅接收回调；`websocket` 另外启动主动网关连接 |
 | `bot_user_id` | `""` | 可选，频道场景下的 Bot 真实用户 ID；不填时通过 `/users/@me` 查询 |
-| `intents` | 位 24–27 | 31 位权限掩码，默认 `251658240`（群成员、群/C2C 消息、交互、审核） |
+| `intents` | `251658240` | 群成员变动、群与 C2C 消息、交互事件、消息审核；频道场景按需另启频道权限位 |
 | `shard` | 不填 | `[分片序号, 分片总数]`；不填且网关要求多分片时自动连接全部分片 |
-| `api_base` / `auth_url` | 官方地址 | 必须为 HTTPS，仅从项目配置读取 |
-| `gateway_url` | 不填 | 自定义 WSS 网关地址，必须为 WSS |
+| `api_base` / `auth_url` | 官方地址 | HTTP(S) 地址，仅从项目配置读取；生产使用 HTTPS |
+| `gateway_url` | 不填 | 自定义 WS/WSS 网关地址 |
+| `verify_webhook` | `true` | 回调 Ed25519 验签开关；生产应保持开启 |
 
-Webhook 回调路径为 `POST /qq/webhook`，必须由公网 HTTPS 入口转发；验签强制开启，
-时间窗口 300 秒，不接受关闭验签或兼容旧配置。`mode=websocket` 时不需要回调地址，
-由核心主动连接官方网关。AppID 不是 QQ 号；普通群和 C2C 的身份使用官方 OpenID。
+Webhook 回调路径为 `POST /qq/webhook`，生产应由公网 HTTPS 入口转发。按官方要求验证签名，
+不额外设置时间窗口或请求体大小限制；握手按原始字符串签名。关闭验签会失去来源校验，
+仅应在可信测试环境使用。`mode=websocket` 不要求配置回调地址，由核心主动连接官方网关。
+AppID 不是 QQ 号；ID 不增加字符集、长度或非空限制，协议模型仍验证字段类型和必填项。
 
 ## 插件依赖
 

@@ -11,14 +11,10 @@ from fastapi import HTTPException
 from fxbot.core.errors import BotOffline
 
 from .api import QQHTTP
-from .codec import parse_event
-from ...core import UnsupportedCapability
 from .client import QQClient
 from .events import QQEventStream
 from .signing import QQSigner
 from ...core.application import ApplicationState, DuplicateBotError
-
-MAX_BODY_BYTES = 1024 * 1024
 
 
 class QQWebhookConnection:
@@ -43,10 +39,6 @@ class QQWebhookConnection:
     def receive(self, payload: dict) -> None:
         if self._closed or self.application.state is not ApplicationState.RUNNING:
             raise HTTPException(503, "QQ Bot 未就绪")
-        try:
-            parse_event(payload, bot_id=self.app_id, bot_user_id=self.config.bot_user_id)
-        except UnsupportedCapability:
-            return
         if not self.events.started:
             try:
                 self.events.start(self.close)

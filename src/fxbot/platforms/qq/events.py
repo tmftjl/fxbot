@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import httpx
 from loguru import logger
 
 from fxbot.core.errors import BotOffline, ActionFailed
 
-from .codec import identifier, parse_event
-from ...core import UnsupportedCapability
+from .audit import audit_result
+from .codec import parse_event
+from ...core import ReplyTarget
+from .models import User
 from .recent import remember_event
 
 
@@ -20,6 +23,7 @@ class QQEventStream:
     def __init__(self, application, client, *, bot_user_id: str):
         self.application, self.client = application, client
         self.bot_user_id = bot_user_id
+        self.bot_username = None
         self.closed = False
         self._started = False
         self._tasks: set[asyncio.Task] = set()
@@ -39,24 +43,44 @@ class QQEventStream:
         if self.closed or not self._started:
             raise BotOffline("QQ 事件流未运行")
         try:
-            event = parse_event(payload, bot_id=self.client.bot_id, bot_user_id=self.bot_user_id)
-        except UnsupportedCapability:
+            event = parse_event(
+                payload, bot_id=self.client.bot_id, bot_user_id=self.bot_user_id, bot_username=self.bot_username
+            )
+        except Exception:
+            logger.opt(exception=True).warning("QQ 事件解析失败，跳过当前事件: {}", payload)
             return
+        if event.metadata.get("qq_event_type", "").startswith("MESSAGE_AUDIT_"):
+            audit_result.add_result(event)
         task = self.application.spawn(self._run(payload, event), name=f"qq:{self.client.bot_id}:event")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
     async def _run(self, payload: dict, event) -> None:
-        """补全频道 Bot 身份后分发，不增加原版之外的回执和去重。"""
+        """补全频道 Bot 身份后分发，不增加额外的回执和去重。"""
         if event.target.kind == "channel" or event.target.target_id.startswith("dms/"):
             try:
                 if not self.bot_user_id:
                     profile = await self.client.api.request("GET", "/users/@me")
-                    self.bot_user_id = identifier(profile.get("id"))
-                event = parse_event(payload, bot_id=self.client.bot_id, bot_user_id=self.bot_user_id)
+                    self.bot_user_id = User.model_validate(profile).id
+                    self.bot_username = profile.get("username")
+                    event = parse_event(
+                        payload, bot_id=self.client.bot_id, bot_user_id=self.bot_user_id, bot_username=self.bot_username
+                    )
             except (ActionFailed, httpx.HTTPError, ValueError):
                 logger.exception("QQ 频道 Bot 身份查询失败，本次事件未分发")
                 return
+            if event.is_message and event.reply is not None:
+                try:
+                    quoted = await self.client.get_reply(event)
+                    if quoted is not None:
+                        event = replace(
+                            event,
+                            reply=ReplyTarget(event.reply.message_id, quoted.sender_id, quoted.sender_name),
+                            to_me=event.to_me or quoted.sender_id == self.bot_user_id,
+                        )
+                except Exception:
+                    logger.opt(exception=True).warning("QQ 引用正文查询失败，继续分发当前消息")
+                    event = replace(event, reply=None)
         remember_event(self.client, event)
         await self.application.router.dispatch(self.client, event)
 

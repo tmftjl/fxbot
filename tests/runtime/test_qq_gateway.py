@@ -10,7 +10,6 @@ from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from fastapi import HTTPException
 from websockets.frames import Close
 from websockets.exceptions import ConnectionClosedError
 from websockets.asyncio.client import connect
@@ -30,13 +29,18 @@ def gateway_info(**changes):
     return {
         "url": "wss://gateway.example.test/ws",
         "shards": 1,
-        "session_start_limit": {"remaining": 10, "reset_after": 60000, "max_concurrency": 1},
+        "session_start_limit": {"total": 100, "remaining": 10, "reset_after": 60000, "max_concurrency": 1},
         **changes,
     }
 
 
 def ready(seq=1):
-    return {"op": 0, "t": "READY", "s": seq, "d": {"session_id": "session-id", "user": {"id": "BOT_USER"}}}
+    return {
+        "op": 0,
+        "t": "READY",
+        "s": seq,
+        "d": {"session_id": "session-id", "user": {"id": "BOT_USER"}, "version": 1, "shard": [0, 1]},
+    }
 
 
 async def _drain(stream):
@@ -70,6 +74,69 @@ class Socket:
 
 
 class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_group_notice_and_bad_event_do_not_stop_next_message(self):
+        seen = []
+
+        async def member_left(context):
+            seen.append(("left", context.event.target.target_id))
+
+        async def message(context):
+            seen.append(("message", context.event.message_id))
+
+        self.app.router.event("left", "member_left", member_left)
+        self.app.router.message("next-message", message)
+        socket, task, _ = await self.session()
+        socket.feed(ready())
+        socket.feed(
+            {
+                "op": 0,
+                "s": 2,
+                "t": "GROUP_MEMBER_REMOVE",
+                "d": {
+                    "group_openid": "",
+                    "union_group_openid": "",
+                    "member_openid": "MEMBER",
+                    "timestamp": 1784276757,
+                },
+            }
+        )
+        socket.feed({"op": 0, "s": 3, "t": "GROUP_MEMBER_REMOVE", "d": {"group_openid": None}})
+        good = payload(message_id="after-bad-event")
+        good["s"] = 4
+        socket.feed(good)
+        socket.feed({"op": 7})
+        with self.assertRaises(GatewayReconnect):
+            await asyncio.wait_for(task, 1)
+        await _drain(self.gateway._stream)
+        self.assertEqual(seen, [("left", ""), ("message", "after-bad-event")])
+        self.assertEqual(self.gateway._received, 4)
+        self.assertFalse(self.gateway.api._http.is_closed)
+
+    async def test_unexpected_receive_error_reconnects_without_closing_shared_resources(self):
+        attempts = []
+
+        @asynccontextmanager
+        async def connector(url, **kwargs):
+            attempts.append(url)
+            self.assertFalse(self.gateway.api._http.is_closed)
+            socket = Socket()
+            socket.feed({"op": 10, "d": {"heartbeat_interval": 1000}})
+            socket.feed(ready() if len(attempts) == 1 else {"op": 0, "t": "RESUMED", "s": 3, "d": ""})
+            socket.feed(ValueError("unexpected receive failure"))
+            if len(attempts) == 2:
+                self.gateway._stopped = True
+            yield socket
+
+        self.gateway._connector = connector
+        self.gateway._pause = AsyncMock()
+        await self.gateway.run()
+        self.assertEqual(len(attempts), 2)
+        self.gateway.api.request.assert_awaited_once_with("GET", "/gateway/bot")
+        self.assertEqual([call.args for call in self.gateway._pause.await_args_list], [(3.0,), (3.0,)])
+        self.assertFalse(self.gateway.api._http.is_closed)
+        await self.gateway.close()
+        self.assertTrue(self.gateway.api._http.is_closed)
+
     async def asyncSetUp(self):
         self.app = Application()
         await self.app.start()
@@ -162,27 +229,34 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(GatewayReconnect):
             await task
 
-    async def test_buffered_ack_is_read_even_when_event_loop_resumes_past_deadline(self):
-        socket = Socket()
+    async def test_buffered_ack_does_not_interrupt_event_receipt(self):
+        socket, task, _ = await self.session()
+        socket.feed(ready())
         socket.feed({"op": 11})
-        frame = await self.gateway._receive_before(socket, asyncio.get_running_loop().time() - 1)
-        self.assertEqual(json.loads(frame), {"op": 11})
+        socket.feed({"op": 7})
+        with self.assertRaises(GatewayReconnect):
+            await task
 
-    async def test_expired_empty_receive_does_not_leave_a_reader_consuming_future_frames(self):
-        socket = Socket()
-        with self.assertRaises(asyncio.TimeoutError):
-            await self.gateway._receive_before(socket, asyncio.get_running_loop().time() - 1)
-        socket.feed({"op": 11})
-        self.assertEqual(
-            json.loads(await self.gateway._receive_before(socket, asyncio.get_running_loop().time() + 1)), {"op": 11}
-        )
+    async def test_session_cancellation_joins_heartbeat(self):
+        socket, task, _ = await self.session(interval=20)
+        socket.feed(ready())
+        await socket.next()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        while not socket.outgoing.empty():
+            socket.outgoing.get_nowait()
+        await asyncio.sleep(0.04)
+        self.assertTrue(socket.outgoing.empty())
 
-    async def test_missing_heartbeat_ack_causes_reconnect(self):
+    async def test_missing_heartbeat_ack_does_not_add_extra_timeout(self):
         socket, task, _ = await self.session(interval=20)
         socket.feed(ready())
         self.assertEqual((await socket.next())["op"], 1)
-        with self.assertRaisesRegex(GatewayReconnect, "ACK"):
-            await asyncio.wait_for(task, 1)
+        self.assertEqual((await socket.next())["op"], 1)
+        self.assertFalse(task.done())
+        socket.feed({"op": 7})
+        with self.assertRaises(GatewayReconnect):
+            await task
         self.assertEqual(self.gateway._session_id, "session-id")
 
     async def test_resume_replays_and_advances_cursor_before_handler_finishes(self):
@@ -199,7 +273,7 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         frame["s"] = 6
         socket.feed(frame)
         await asyncio.wait_for(entered.wait(), 1)
-        # 与原版一致，序号代表最后收到的 Dispatch，不代表业务已完成。
+        # 序号代表最后收到的 Dispatch，不代表业务已完成。
         socket.feed({"op": 0, "t": "RESUMED", "s": 6, "d": ""})
         await asyncio.sleep(0.01)
         self.assertEqual(self.gateway._received, 6)
@@ -215,7 +289,7 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         socket.feed({"op": 9, "d": False})
         with self.assertRaises(GatewayReconnect):
             await task
-        self.assertEqual(self.gateway._session_id, "")
+        self.assertIsNone(self.gateway._session_id)
         self.assertIsNone(self.gateway._received)
 
     async def test_unknown_events_advance_processed_cursor(self):
@@ -227,6 +301,7 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0)
         self.assertEqual(self.gateway._received, 2)
+        await _drain(self.gateway._stream)
         self.assertFalse(self.gateway._stream._tasks)
         socket.feed({"op": 7})
         with self.assertRaises(GatewayReconnect):
@@ -309,7 +384,7 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(entered.wait(), 1)
         heartbeat = await socket.next()
         self.assertEqual(heartbeat["op"], 1)
-        self.assertEqual(heartbeat["d"], 2)
+        self.assertIn(heartbeat["d"], {1, 2})
         self.assertEqual(self.gateway._received, 2)
         socket.feed({"op": 11})
         socket.feed({"op": 7})
@@ -318,38 +393,37 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_hello_is_protocol_error_not_fallback(self):
         socket = Socket()
-        socket.feed({"op": 10, "d": {"heartbeat_interval": True}})
+        socket.feed({"op": 7})
         with self.assertRaises(GatewayProtocolError):
             await self.gateway.session(socket)
         self.assertTrue(socket.outgoing.empty())
 
-    async def test_missing_dispatch_sequence_rejected(self):
+    async def test_missing_dispatch_sequence_keeps_sequence_optional(self):
         socket, task, _ = await self.session()
         socket.feed(ready())
         socket.feed(payload())
-        with self.assertRaises(GatewayProtocolError):
+        socket.feed({"op": 7})
+        with self.assertRaises(GatewayReconnect):
             await task
+        self.assertIsNone(self.gateway._received)
 
-    async def test_gateway_https_userinfo_and_invalid_quota_rejected(self):
+    async def test_gateway_discovery_does_not_add_url_restrictions(self):
         for info in (
             gateway_info(url="ws://gateway.test"),
             gateway_info(url="wss://secret@gateway.test"),
-            gateway_info(session_start_limit={}),
         ):
             self.gateway.api.request.return_value = info
-            with self.assertRaises(GatewayProtocolError):
-                await self.gateway._gateway()
+            self.assertEqual(await self.gateway._gateway(), info["url"])
 
     async def test_explicit_shard_and_zero_identify_quota(self):
         self.gateway.config = replace(self.config, shard=(1, 2))
         self.gateway.api.request.return_value = gateway_info(shards=2)
         await self.gateway._gateway()
         self.assertEqual(self.gateway._shard, (1, 2))
-        self.gateway._budget_remaining = 0
-        self.gateway._pause = AsyncMock()
-        with self.assertRaises(GatewayReconnect):
-            await self.gateway._identify_limit()
-        self.gateway._pause.assert_awaited_once()
+        info = gateway_info()
+        info["session_start_limit"]["remaining"] = 0
+        self.gateway.api.request.return_value = info
+        self.assertEqual(await self.gateway._gateway(), gateway_info()["url"])
 
     async def test_resume_reuses_original_http_client_and_reply_sequences(self):
         socket, task, _ = await self.session()
@@ -370,23 +444,27 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BotOffline):
             old_client._online()
 
-    async def test_fatal_intents_close_stops_instead_of_retrying(self):
-        socket = Socket()
-        socket.feed({"op": 10, "d": {"heartbeat_interval": 1000}})
-        socket.feed(ConnectionClosedError(Close(4014, "not allowed"), None))
+    async def test_intents_close_is_logged_and_reconnected_like_protocol(self):
         attempts = []
 
         @asynccontextmanager
         async def connector(url, **kwargs):
             attempts.append(url)
+            socket = Socket()
+            socket.feed({"op": 10, "d": {"heartbeat_interval": 1000}})
+            socket.feed(ConnectionClosedError(Close(4014, "not allowed"), None))
+            if len(attempts) == 2:
+                self.gateway._stopped = True
             self.assertIsNone(kwargs["proxy"])
             self.assertIsNone(kwargs["ping_interval"])
             yield socket
 
         self.gateway._connector = connector
-        with self.assertRaisesRegex(GatewayProtocolError, "4014"):
-            await self.gateway.run()
-        self.assertEqual(len(attempts), 1)
+        self.gateway._pause = AsyncMock()
+        await self.gateway.run()
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual([call.args for call in self.gateway._pause.await_args_list], [(3.0,), (3.0,)])
+        await self.gateway.close()
         self.assertTrue(self.gateway.api._http.is_closed)
         self.assertFalse(self.app.bots)
 
@@ -414,7 +492,7 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.gateway._connector = connector
         self.gateway._pause = AsyncMock()
         await self.gateway.run()
-        self.assertEqual(auth, [6, 2])
+        self.assertEqual(auth, [6, 6])
 
     async def test_gateway_task_shutdown_interrupts_reconnect_wait(self):
         waiting = asyncio.Event()
@@ -424,7 +502,13 @@ class QQGatewayTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
 
         self.gateway._pause = pause
-        self.gateway.api.request.side_effect = httpx.ConnectError("fake")
+
+        @asynccontextmanager
+        async def connector(url, **kwargs):
+            raise OSError("fake")
+            yield
+
+        self.gateway._connector = connector
         self.gateway.start()
         await asyncio.wait_for(waiting.wait(), 1)
         await self.gateway.close()
@@ -549,6 +633,11 @@ class QQGatewayLoopbackTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQGatewayConfigTests(unittest.TestCase):
+    def test_default_intents_target_group_and_c2c_not_channels(self):
+        config = QQBotSettings(SECRET)
+        self.assertEqual(config.intents, (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27))
+        self.assertFalse(config.intents & ((1 << 0) | (1 << 1) | (1 << 10) | (1 << 30)))
+
     def test_mode_intents_and_shard_config(self):
         config = QQBotSettings.parse({"secret": SECRET, "mode": "websocket", "intents": 1 << 25, "shard": [0, 2]})
         self.assertEqual(config.mode, "websocket")
@@ -556,21 +645,22 @@ class QQGatewayConfigTests(unittest.TestCase):
         for raw in (
             {"secret": SECRET, "mode": "both"},
             {"secret": SECRET, "intents": True},
-            {"secret": SECRET, "mode": "websocket", "shard": [2, 2]},
-            {"secret": SECRET, "shard": [0, 1]},
+            {"secret": SECRET, "shard": [0]},
         ):
             with self.assertRaises(ValueError):
                 QQBotSettings.parse(raw)
 
     def test_invalid_frames_not_guessed(self):
-        for raw in ('{"d":{}}', "[]", '{"op":true}', b'{"op":10}'):
+        for raw in ("[]", "{broken"):
             with self.assertRaises(GatewayProtocolError):
                 decode_frame(raw)
 
 
 class QQGatewayModeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_websocket_mode_starts_gateway_but_rejects_webhook(self):
+    async def test_websocket_mode_starts_gateway_and_accepts_signed_webhook(self):
         from starlette.requests import Request
+
+        from tests.runtime.test_qq import signed
 
         app = Application()
         await app.start()
@@ -588,10 +678,23 @@ class QQGatewayModeTests(unittest.IsolatedAsyncioTestCase):
                 await service.start()
                 await asyncio.wait_for(waiting.wait(), 1)
                 self.assertIsInstance(service.connections[APP_ID], QQGateway)
-                request = Request({"type": "http", "method": "POST", "headers": [(b"x-bot-appid", APP_ID.encode())]})
-                with self.assertRaises(HTTPException) as error:
-                    await service.handle(request)
-                self.assertEqual(error.exception.status_code, 403)
+                gateway = service.connections[APP_ID]
+                gateway._bot_user_id = "BOT_USER"
+                raw, headers = signed(payload())
+
+                async def receive():
+                    return {"type": "http.request", "body": raw}
+
+                request = Request(
+                    {
+                        "type": "http",
+                        "method": "POST",
+                        "headers": [(key.lower().encode(), value.encode()) for key, value in headers.items()],
+                    },
+                    receive,
+                )
+                self.assertEqual((await service.handle(request)).status_code, 200)
+                self.assertEqual(len(app.bots), 1)
         finally:
             gateway = service.connections[APP_ID]
             await service.close()

@@ -197,6 +197,7 @@ export interface QQBotPayload {
   mode: 'webhook' | 'websocket'
   bot_user_id: string
   intents: number
+  verify_webhook?: boolean
   api_base?: string
   auth_url?: string
   gateway_url?: string | null

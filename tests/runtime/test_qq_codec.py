@@ -1,4 +1,4 @@
-"""QQ 事件和配置契约可在没有第三方包的解释器中使用。"""
+"""QQ 事件字段契约在独立运行时中的映射。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timezone
 
 from fxbot.core import SessionTarget
-from fxbot.platforms.qq.codec import opaque_id, identifier, parse_event
+from fxbot.platforms.qq.codec import parse_event
 from fxbot.platforms.qq.config import QQBotSettings
 
 
@@ -38,11 +38,11 @@ class QQCodecIndependenceTests(unittest.TestCase):
                 "timestamp": 0,
             },
         }
-        for value in (True, False, 1.5, -1, 253402300800, None, "1784276757", "2026-11-16T10:00:00"):
+        for value in (True, False, None, "not-a-time"):
             frame["d"]["timestamp"] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_event(frame, bot_id="123")
-        for value in (0, 1784276757, "2026-11-16T10:00:00+08:00"):
+        for value in (0, 1.5, -1, 1784276757, "1784276757", "2026-11-16T10:00:00", "2026-11-16T10:00:00+08:00"):
             frame["d"]["timestamp"] = value
             self.assertIsNotNone(parse_event(frame, bot_id="123").occurred_at.tzinfo)
 
@@ -67,12 +67,23 @@ class QQCodecIndependenceTests(unittest.TestCase):
     def test_credentials_not_exposed_by_repr(self):
         config = QQBotSettings("never-print-secret")
         self.assertNotIn("never-print-secret", repr(config))
-        with self.assertRaises(ValueError):
-            QQBotSettings.parse({"secret": "x", "verify": False})
+        self.assertFalse(QQBotSettings.parse({"secret": "x", "verify_webhook": False}).verify_webhook)
 
-    def test_identity_and_message_id_have_distinct_validation(self):
-        self.assertEqual(opaque_id("base64/id=1:event"), "base64/id=1:event")
-        with self.assertRaises(ValueError):
-            identifier("../target")
-        with self.assertRaises(ValueError):
-            opaque_id("invalid\nid")
+    def test_ids_have_no_extra_format_length_or_nonempty_constraint(self):
+        for value in ("", "../target", "invalid\nid", "身份" * 1024):
+            event = parse_event(
+                {
+                    "op": 0,
+                    "t": "GROUP_MEMBER_REMOVE",
+                    "id": value,
+                    "d": {
+                        "group_openid": value,
+                        "member_openid": value,
+                        "timestamp": 0,
+                    },
+                },
+                bot_id="app",
+            )
+            self.assertEqual(event.event_id, value)
+            self.assertEqual(event.user_id, value)
+            self.assertEqual(event.target.target_id, value)

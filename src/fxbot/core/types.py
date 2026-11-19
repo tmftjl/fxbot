@@ -94,8 +94,10 @@ class SessionTarget:
 
     def __post_init__(self) -> None:
         """拒绝缺失的身份和无法识别的目标类型。"""
-        if not all(isinstance(value, str) and value for value in (self.platform, self.bot_id, self.target_id)):
-            raise ValueError("会话目标必须包含非空的平台、Bot 和目标 ID")
+        if not all(isinstance(value, str) and value for value in (self.platform, self.bot_id)):
+            raise ValueError("会话目标必须包含非空的平台和 Bot")
+        if not isinstance(self.target_id, str):
+            raise ValueError("会话目标 ID 必须是字符串")
         if self.kind not in {"private", "group", "guild", "channel"}:
             raise ValueError("不支持的会话目标类型")
 
