@@ -93,18 +93,21 @@ def media_value(data: Any) -> str | bytes | None:
 
 
 def wire_media_reference(value: Any) -> str | None:
-    """把平台媒体来源归一为 gsuid 的 link:// 或 base64://。"""
+    """把平台媒体来源归一为 gsuid 的裸 URL 或 base64://。"""
     if isinstance(value, bytes):
         return "base64://" + base64.b64encode(value).decode("ascii")
     if not isinstance(value, str) or not value:
         return None
-    if value.startswith(("link://", "base64://")):
+    if value.startswith("link://"):
+        value = value[len("link://") :]
+    if value.startswith("base64://"):
         return value
     if value.startswith("data:"):
         decoded = _decode_base64(value)
         return None if decoded is None else "base64://" + base64.b64encode(decoded).decode("ascii")
     if value.startswith(("http://", "https://")):
-        return "link://" + value
+        # gsuid 下游插件会直接使用图片数据，HTTP 地址保持裸 URL。
+        return value
     decoded = _decode_base64(value)
     if decoded is not None:
         return "base64://" + base64.b64encode(decoded).decode("ascii")

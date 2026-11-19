@@ -147,8 +147,37 @@ class InboundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.type for item in receive.content], ["text", "at", "image", "reply"])
         self.assertEqual(receive.content[0].data, "你好")
         self.assertEqual(receive.content[1].data, "999")
-        self.assertEqual(receive.content[2].data, "link://https://img.example.test/a.jpg")
+        self.assertEqual(receive.content[2].data, "https://img.example.test/a.jpg")
         self.assertEqual(receive.content[3].data, "m0")
+
+    async def test_all_inbound_media_urls_stay_bare_for_downstream_plugins(self) -> None:
+        message = Message(
+            [
+                MessageSegment.image("https://media.example.test/a.jpg"),
+                MessageSegment.voice("https://media.example.test/a.mp3"),
+                MessageSegment.audio("https://media.example.test/b.mp3"),
+                MessageSegment("video", {"file": "https://media.example.test/c.mp4"}),
+                MessageSegment("file", {"file": "https://media.example.test/d.zip", "name": "d.zip"}),
+            ]
+        )
+        receive = await build_receive(
+            make_event(message=message),
+            bot=BotStub(PLATFORM, BOT_ID),
+            services=ServicesStub(),
+            reply_image=False,
+        )
+        assert receive is not None
+        self.assertEqual([item.type for item in receive.content], ["image", "record", "record", "video", "file"])
+        self.assertEqual(
+            [item.data for item in receive.content],
+            [
+                "https://media.example.test/a.jpg",
+                "https://media.example.test/a.mp3",
+                "https://media.example.test/b.mp3",
+                "https://media.example.test/c.mp4",
+                "d.zip|https://media.example.test/d.zip",
+            ],
+        )
 
     async def test_quoted_images_follow_reply_image_config(self) -> None:
         bot = BotStub(PLATFORM, BOT_ID)
@@ -167,7 +196,7 @@ class InboundTests(unittest.IsolatedAsyncioTestCase):
         receive = await build_receive(event, bot=bot, services=ServicesStub(), reply_image=True)
         assert receive is not None
         self.assertEqual([item.type for item in receive.content], ["image", "reply", "text"])
-        self.assertEqual(receive.content[0].data, "link://https://img.example.test/quoted.jpg")
+        self.assertEqual(receive.content[0].data, "https://img.example.test/quoted.jpg")
         receive = await build_receive(event, bot=bot, services=ServicesStub(), reply_image=False)
         assert receive is not None
         self.assertEqual([item.type for item in receive.content], ["reply", "text"])
