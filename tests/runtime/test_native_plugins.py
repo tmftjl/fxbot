@@ -849,6 +849,101 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.send.await_count, 3)
         self.assertEqual(bot.send.await_args_list[-1].args[1].segments[0].type, "image")
 
+    def test_douyin_image_note_prefers_images_over_music_play_url(self):
+        from fxbot.plugins.video_parser.parsers import douyin
+
+        result = douyin._build_result(
+            {
+                "desc": "图文正文",
+                "create_time": 1795000000,
+                "author": {
+                    "nickname": "作者",
+                    "avatar_thumb": {"url_list": ["https://avatar/old", "https://avatar/new"]},
+                },
+                "images": [{"url_list": ["https://image/low", "https://image/high"]}],
+                "video": {
+                    "play_addr": {
+                        "uri": "https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/a.mp3",
+                        "url_list": ["https://aweme.snssdk.com/aweme/v1/play/music"],
+                    }
+                },
+                "music": {"is_original_sound": True},
+            },
+            source_url="https://v.douyin.com/test/",
+        )
+        self.assertEqual(result.image_urls, ["https://image/high"])
+        self.assertIsNone(result.video_url)
+        self.assertEqual(result.author_name, "作者")
+        self.assertEqual(result.author_avatar, "https://avatar/new")
+        self.assertEqual(result.text, "图文正文")
+        self.assertIsNotNone(result.published_at)
+
+    def test_weibo_text_only_and_retweet_media_are_preserved(self):
+        from fxbot.plugins.video_parser.parsers import weibo
+
+        text_only = weibo._collect_status(
+            {"text": "只是一段文字", "user": {"screen_name": "作者", "profile_image_url": "//avatar"}},
+            source="https://weibo.com/1/a",
+        )
+        self.assertIsNone(text_only.video_url)
+        self.assertEqual(text_only.image_urls, [])
+        self.assertEqual(text_only.text, "只是一段文字")
+        self.assertEqual(text_only.author_name, "作者")
+
+        reposted = weibo._collect_status(
+            {
+                "text": "转发语",
+                "user": {"screen_name": "转发者"},
+                "retweeted_status": {
+                    "text": "原微博",
+                    "user": {"screen_name": "原作者"},
+                    "pics": [{"large": {"url": "//img.example/one.jpg"}}],
+                },
+            },
+            source="https://weibo.com/1/b",
+        )
+        self.assertEqual(reposted.image_urls, ["https://img.example/one.jpg"])
+        self.assertIn("转发自 @原作者：原微博", reposted.text)
+
+    def test_xhs_note_keeps_author_text_and_timestamp(self):
+        from fxbot.plugins.video_parser.parsers import xiaohongshu
+
+        result = xiaohongshu._result_from_note(
+            {
+                "type": "normal",
+                "title": "标题",
+                "desc": "正文",
+                "time": 1795000000000,
+                "user": {"nickname": "作者", "avatar": "https://avatar"},
+                "imageList": [{"urlSizeLarge": "https://image"}],
+            },
+            source_url="https://www.xiaohongshu.com/explore/1",
+            discovery=True,
+        )
+        self.assertEqual(result.image_urls, ["https://image"])
+        self.assertEqual(result.text, "正文")
+        self.assertEqual(result.author_name, "作者")
+        self.assertIsNotNone(result.published_at)
+
+    def test_bilibili_codec_rank_reads_enum_tuple(self):
+        from types import SimpleNamespace
+
+        from bilibili_api.video import VideoCodecs
+
+        from fxbot.plugins.video_parser.parsers import bilibili
+
+        stream = SimpleNamespace(video_quality=80, video_codecs=VideoCodecs.AVC)
+        self.assertEqual(bilibili._video_stream_rank(stream), (80, 3))
+
+    def test_douyin_video_uses_uri_instead_of_signed_url_list(self):
+        from fxbot.plugins.video_parser.parsers import douyin
+
+        self.assertEqual(
+            douyin._video_url({"uri": "video-id", "url_list": ["https://expired"]}),
+            "https://aweme.snssdk.com/aweme/v1/play/?video_id=video-id&ratio=1080p&line=0",
+        )
+        self.assertIsNone(douyin._video_url({"uri": "https://music/a.mp3", "url_list": []}))
+
     async def test_download_failure_without_backup_does_not_keep_partial_file(self):
         import httpx
 
@@ -938,10 +1033,10 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             bilibili._preferred_urls(stream),
-            ["https://example.com/backup", "https://example.com/primary"],
+            ["https://example.com/primary", "https://example.com/backup"],
         )
 
-    async def test_image_batch_waits_for_other_download_before_failure_cleanup(self):
+    async def test_image_batch_skips_failed_items_and_keeps_the_rest(self):
         from fxbot.plugins.video_parser import downloader
 
         completed = []
@@ -954,12 +1049,22 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             return self.root / "two.jpg"
 
         with patch.object(downloader, "download_file", side_effect=download):
+            paths = await downloader.download_images(
+                VideoResult("test", "test", image_urls=["https://example.com/1", "https://example.com/2"]),
+                directory=self.root,
+            )
+        self.assertEqual(completed, ["https://example.com/2"])
+        self.assertEqual(paths, [self.root / "two.jpg"])
+
+    async def test_image_batch_raises_only_when_all_items_fail(self):
+        from fxbot.plugins.video_parser import downloader
+
+        with patch.object(downloader, "download_file", side_effect=downloader.DownloadError("fake")):
             with self.assertRaises(downloader.DownloadError):
                 await downloader.download_images(
-                    VideoResult("test", "test", image_urls=["https://example.com/1", "https://example.com/2"]),
+                    VideoResult("test", "test", image_urls=["https://example.com/1"]),
                     directory=self.root,
                 )
-        self.assertEqual(completed, ["https://example.com/2"])
 
     async def test_ffmpeg_cancel_kills_and_joins_process(self):
         from fxbot.plugins.video_parser import downloader
@@ -1015,6 +1120,16 @@ class NativeValidationTests(unittest.TestCase):
         for url in ("https://www.bilibili.com/video/BV1xx411c7mD", "https://b23.tv/test", "av123456"):
             self.assertTrue(can_parse_url(url))
         self.assertEqual(find_url("观看 av123456"), "av123456")
+        self.assertEqual(
+            find_url("BV1xx411c7mD 2"),
+            "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+        )
+        self.assertEqual(find_url("看 weibo.com/123/abc"), "https://weibo.com/123/abc")
+        self.assertEqual(
+            find_url("看 www.xiaohongshu.com/explore/abc?xsec_token=x"),
+            "https://www.xiaohongshu.com/explore/abc?xsec_token=x",
+        )
+        self.assertEqual(find_url("xhslink.cn/abc"), "https://xhslink.cn/abc")
 
     def test_configuration_does_not_coerce_bool_or_full_session_keys(self):
         for cfg in (

@@ -8,6 +8,8 @@ from math import ceil
 from time import time
 from uuid import uuid4
 from typing import Any
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 
 import httpx
@@ -74,16 +76,18 @@ async def _parse_article(article_id: str, *, source: str) -> VideoResult:
     parsed = _ArticleContentParser()
     parsed.feed(str(data.get("content") or ""))
     image_urls = parsed.image_urls
-    if not image_urls:
-        raise ParseError("微博文章没有可发送的媒体")
     user = data.get("userinfo") or {}
+    if not image_urls and not parsed.text:
+        raise ParseError("微博文章没有可发送的媒体")
     return VideoResult(
         platform="微博",
         title=str(data.get("title") or (parsed.text[:40] if parsed.text else "微博文章")),
         image_urls=image_urls,
-        cover_url=image_urls[0],
+        cover_url=image_urls[0] if image_urls else None,
         source_url=str(data.get("url") or source),
-        text=str(user.get("screen_name") or ""),
+        text=parsed.text,
+        author_name=str(user.get("screen_name") or ""),
+        author_avatar=_normalize_scheme(user.get("profile_image_url")),
         headers=HEADERS.copy(),
     )
 
@@ -105,6 +109,8 @@ async def _parse_fid(fid: str, *, source: str) -> VideoResult:
     video_url = _normalize_scheme(next(iter((play.get("urls") or {}).values()), None) or play.get("stream_url"))
     if not video_url:
         raise ParseError("微博视频页没有视频直链")
+    reward = play.get("reward") or {}
+    author = reward.get("user") or {}
     return VideoResult(
         platform="微博",
         title=str(play.get("title") or "微博视频"),
@@ -113,6 +119,9 @@ async def _parse_fid(fid: str, *, source: str) -> VideoResult:
         duration=float(play.get("duration_time")) if play.get("duration_time") else None,
         source_url=source,
         text=_strip_html(str(play.get("text") or "")),
+        author_name=str(author.get("name") or ""),
+        author_avatar=_normalize_scheme(author.get("profile_image_url")),
+        published_at=_weibo_time(play.get("real_date")),
         headers=HEADERS.copy(),
     )
 
@@ -126,6 +135,9 @@ async def _parse_status(wid: str, *, source: str) -> VideoResult:
         "origin": "https://m.weibo.cn",
         "x-requested-with": "XMLHttpRequest",
         "mweibo-pwa": "1",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
     }
     url = f"https://m.weibo.cn/statuses/show?id={wid}&_={int(time() * 1000)}"
     async with httpx.AsyncClient(
@@ -136,49 +148,73 @@ async def _parse_status(wid: str, *, source: str) -> VideoResult:
         verify=False,
     ) as client:
         response = await client.get(url, headers=headers)
+        if response.status_code in {403, 418}:
+            raise ParseError("微博接口触发风控，请稍后重试或配置 Cookie")
         if response.status_code != 200:
             raise ParseError(f"微博接口返回 {response.status_code}")
-        data = response.json().get("data") or {}
+        if "application/json" not in response.headers.get("content-type", ""):
+            raise ParseError("微博接口返回非 JSON 数据")
+        try:
+            data = response.json().get("data") or {}
+        except ValueError as exc:
+            raise ParseError("微博接口返回无效数据") from exc
     return _collect_status(data, source=source)
 
 
 def _collect_status(data: dict[str, Any], *, source: str) -> VideoResult:
-    """从微博状态构造结果。"""
+    """从微博状态构造结果；转发内容并入正文和媒体。"""
     page = data.get("page_info") or {}
     media = page.get("media_info") or {}
     urls = page.get("urls") or {}
     video_url = urls.get("mp4_720p_mp4") or urls.get("mp4_hd_mp4") or urls.get("mp4_ld_mp4")
-    video_url = video_url or media.get("stream_url") or media.get("stream_urls_hd")
+    video_url = video_url or media.get("stream_urls_hd") or media.get("stream_url")
     user = data.get("user") or {}
-    title = page.get("title") or _strip_html(str(data.get("text") or ""))[:40] or "微博视频"
+    text = _strip_html(str(data.get("text") or ""))
+    title = str(page.get("title") or text[:40] or "微博")
     cover = (page.get("page_pic") or {}).get("url")
+    image_urls = _image_urls(data.get("pics") or [])
 
-    if not video_url:
-        image_urls = _image_urls(data.get("pics") or [])
-        if image_urls:
-            return VideoResult(
-                platform="微博",
-                title=str(title or "微博图文"),
-                image_urls=image_urls,
-                cover_url=_normalize_scheme(cover) or image_urls[0],
-                source_url=source,
-                text=str(user.get("screen_name") or ""),
-                headers=HEADERS.copy(),
-            )
-        if isinstance(data.get("retweeted_status"), dict):
-            return _collect_status(data["retweeted_status"], source=source)
+    repost_data = data.get("retweeted_status")
+    if isinstance(repost_data, dict):
+        try:
+            repost = _collect_status(repost_data, source=source)
+        except ParseError:
+            repost = None
+        if repost is not None:
+            author = repost.author_name or "原微博"
+            repost_text = repost.text or ""
+            text = f"{text}\n\n转发自 @{author}：{repost_text}".strip()
+            image_urls.extend(url for url in repost.image_urls if url not in image_urls)
+            if not video_url and repost.video_url:
+                video_url = repost.video_url
+                cover = cover or repost.cover_url
+
+    if not video_url and not image_urls and not text:
         raise ParseError("该微博没有可发送的媒体")
-
     return VideoResult(
         platform="微博",
-        title=str(title),
-        video_url=_normalize_scheme(video_url) or str(video_url),
-        cover_url=_normalize_scheme(cover),
+        title=title,
+        video_url=_normalize_scheme(video_url) or (str(video_url) if video_url else None),
+        image_urls=image_urls,
+        cover_url=_normalize_scheme(cover) or (image_urls[0] if image_urls else None),
         duration=float(media.get("duration")) if media.get("duration") else None,
         source_url=source,
-        text=str(user.get("screen_name") or ""),
+        text=text,
+        author_name=str(user.get("screen_name") or ""),
+        author_avatar=_normalize_scheme(user.get("profile_image_url")),
+        published_at=_weibo_time(data.get("created_at")),
         headers=HEADERS.copy(),
     )
+
+
+def _weibo_time(value: Any) -> datetime | None:
+    """解析微博英文时间。"""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _strip_html(text: str) -> str:

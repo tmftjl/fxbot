@@ -24,7 +24,11 @@ DEFAULTS: dict[str, Any] = {
         "use_cookie": False,
         "cookie": "",
     },
+    "xiaohongshu": {
+        "use_cookie": False,
+        "cookie": "",
+    },
     "network": {
-        "proxy": "http://127.0.0.1:7890",
+        "proxy": "",
     },
 }

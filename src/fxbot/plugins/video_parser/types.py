@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from dataclasses import field, dataclass
 
 
@@ -20,6 +21,9 @@ class VideoResult:
     audio_url: str | None = None
     video_backup_urls: list[str] = field(default_factory=list)
     audio_backup_urls: list[str] = field(default_factory=list)
+    author_name: str = ""
+    author_avatar: str = ""
+    published_at: datetime | None = None
     headers: dict[str, str] = field(default_factory=dict)
 
     @property

@@ -292,10 +292,16 @@ async def download_images(result: VideoResult, *, directory: Path | None = None)
         download_file(url, suffix=".jpg", headers=result.headers, directory=directory) for url in result.image_urls
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    paths: list[Path] = []
+    failures = 0
     for result_or_error in results:
         if isinstance(result_or_error, BaseException):
-            raise result_or_error
-    paths = [path for path in results if path is not None]
+            failures += 1
+            logger.opt(exception=result_or_error).warning("[video_parser] 图片下载失败，已跳过")
+            continue
+        paths.append(result_or_error)
+    if failures:
+        logger.warning("[video_parser] 图片下载完成，失败 {} 张，成功 {} 张", failures, len(paths))
     if not paths:
         raise DownloadError("图片下载失败")
     return paths

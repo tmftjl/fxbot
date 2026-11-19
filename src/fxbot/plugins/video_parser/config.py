@@ -57,6 +57,11 @@ def cfg_douyin() -> dict[str, Any]:
     return get_config()["douyin"]
 
 
+def cfg_xiaohongshu() -> dict[str, Any]:
+    """获取小红书请求配置。"""
+    return get_config().get("xiaohongshu") or {}
+
+
 def is_global_enabled() -> bool:
     """判断全局解析是否启用。"""
     return cfg_general()["global_enabled"]

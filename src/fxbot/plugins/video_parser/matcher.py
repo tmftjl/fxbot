@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+from pathlib import Path
 
 import httpx
 from loguru import logger
@@ -12,9 +13,16 @@ from fxbot.core.errors import ActionFailed
 
 from . import state, config
 from ...core import Event, Message, Capability, HandlerContext, MessageSegment
-from .sender import send_image_result, send_video_result
+from .sender import send_media_result
 from .parsers import ParseError, find_url, parse_url, can_parse_url
-from .downloader import DownloadError, download_video, download_images, create_download_dir, cleanup_download_dir
+from .downloader import (
+    DownloadError,
+    download_file,
+    download_video,
+    download_images,
+    create_download_dir,
+    cleanup_download_dir,
+)
 from ...core.plugin import on_regex, on_message
 from ...core.application import Application
 from ...permission.authorization import Authorizer
@@ -65,24 +73,36 @@ class VideoParser:
                 "video_parser:parse", context.event
             ):
                 return
+            video_path = None
+            image_paths: list[Path] = []
+            audio_path = None
             if result.video_url:
                 if Capability.VIDEO not in context.bot.capabilities:
                     await context.finish("当前平台不支持视频发送")
-                path = await download_video(result, directory=directory)
-                if not self.application.is_registered(context.bot) or not await self.authorizer.check(
-                    "video_parser:parse", context.event
-                ):
-                    return
-                await send_video_result(context, result, path)
-            elif result.image_urls:
-                paths = await download_images(result, directory=directory)
-                if not self.application.is_registered(context.bot) or not await self.authorizer.check(
-                    "video_parser:parse", context.event
-                ):
-                    return
-                await send_image_result(context, result, paths)
-            else:
+                video_path = await download_video(result, directory=directory)
+            elif result.audio_url:
+                audio_path = await download_file(
+                    result.audio_url,
+                    suffix=".mp3",
+                    headers=result.headers,
+                    directory=directory,
+                    backup_urls=result.audio_backup_urls,
+                )
+            if result.image_urls:
+                image_paths = await download_images(result, directory=directory)
+            if video_path is None and audio_path is None and not image_paths and not result.text:
                 raise ParseError("解析结果没有可发送媒体")
+            if not self.application.is_registered(context.bot) or not await self.authorizer.check(
+                "video_parser:parse", context.event
+            ):
+                return
+            await send_media_result(
+                context,
+                result,
+                video_path=video_path,
+                image_paths=image_paths,
+                audio_path=audio_path,
+            )
             message_id = processing.get("message_id")
             if message_id is not None:
                 try:
@@ -95,6 +115,9 @@ class VideoParser:
         except httpx.HTTPError:
             logger.opt(exception=True).warning("视频平台请求失败")
             await context.send("解析失败：平台请求未完成")
+        except ValueError:
+            logger.opt(exception=True).warning("视频平台返回数据格式无效")
+            await context.send("解析失败：平台返回数据无效")
         finally:
             cleanup_download_dir(directory)
             self.downloads.discard(directory)

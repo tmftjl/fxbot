@@ -127,6 +127,27 @@ def get_ui_schema() -> dict[str, Any]:
                 ],
             },
             {
+                "key": "video_parser.xiaohongshu",
+                "title": "小红书",
+                "schemas": [
+                    {
+                        "field": "use_cookie",
+                        "label": "使用 Cookie",
+                        "component": "Switch",
+                        "default": DEFAULTS["xiaohongshu"]["use_cookie"],
+                        "helpMessage": "开启后请求小红书页面时携带下方 Cookie，可减少登录/风控导致的空笔记。",
+                    },
+                    {
+                        "field": "cookie",
+                        "label": "小红书 Cookie",
+                        "component": "Input",
+                        "default": DEFAULTS["xiaohongshu"]["cookie"],
+                        "helpMessage": "从浏览器开发者工具复制 Cookie。Cookie 属于登录凭据，请勿分享。",
+                        "componentProps": {"placeholder": "a1=...; web_session=..."},
+                    },
+                ],
+            },
+            {
                 "key": "video_parser.network",
                 "title": "网络",
                 "schemas": [

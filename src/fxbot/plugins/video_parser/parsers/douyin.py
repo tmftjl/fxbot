@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+import json
 import asyncio
 import subprocess
 from typing import Any
 from pathlib import Path
+from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx
@@ -25,6 +27,7 @@ from .common import (
     extract_json,
 )
 from ..config import cfg_douyin
+from ....utils.tz import SHANGHAI_TZ
 
 DOUYIN_API_HEADERS = {
     "User-Agent": (
@@ -102,39 +105,87 @@ def _find_item(data: Any) -> dict[str, Any] | None:
 
 
 def _build_result(item: dict[str, Any], *, source_url: str) -> VideoResult:
-    """把抖音作品对象转换为统一结果。"""
+    """把抖音作品对象转换为统一结果，图文必须优先于视频字段。"""
     video = item.get("video") or {}
-    play_addr = video.get("play_addr") or {}
-    video_url = first(play_addr.get("url_list"))
     author = item.get("author") or {}
     title = str(item.get("desc") or "抖音内容")
+    metadata = {
+        "author_name": str(author.get("nickname") or ""),
+        "author_avatar": _last_url(author.get("avatar_thumb")),
+        "published_at": _timestamp(item.get("create_time")),
+        "text": title,
+    }
 
-    if not video_url:
-        image_urls = _image_urls(item.get("images") or [])
-        if not image_urls:
-            raise ParseError("抖音页面没有可发送的媒体")
+    image_urls = _image_urls(item.get("images") or [])
+    if image_urls:
         return VideoResult(
             platform="抖音",
             title=title,
             image_urls=image_urls,
             cover_url=image_urls[0],
+            audio_url=_music_url(item.get("music")),
             source_url=source_url,
-            text=str(author.get("nickname") or ""),
             headers=IOS_HEADERS.copy(),
+            **metadata,
         )
 
-    video_url = str(video_url).replace("playwm", "play")
+    video_url = _video_url(video.get("play_addr") or {})
+    if not video_url:
+        raise ParseError("抖音页面没有可发送的媒体")
     cover = video.get("cover") or {}
     return VideoResult(
         platform="抖音",
         title=title,
         video_url=video_url,
-        cover_url=first(cover.get("url_list")),
+        cover_url=_last_url(cover),
         duration=(float(video.get("duration")) / 1000) if video.get("duration") else None,
         source_url=source_url,
-        text=str(author.get("nickname") or ""),
         headers=IOS_HEADERS.copy(),
+        **metadata,
     )
+
+
+def _last_url(value: Any) -> str | None:
+    """读取图片/头像地址列表中的最后一个稳定地址。"""
+    if not isinstance(value, dict):
+        return None
+    urls = value.get("url_list")
+    if not isinstance(urls, list) or not urls:
+        return None
+    return str(urls[-1]) if urls[-1] else None
+
+
+def _timestamp(value: Any) -> datetime | None:
+    """把抖音 Unix 秒时间转为带时区时间。"""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        return None
+    return datetime.fromtimestamp(value, SHANGHAI_TZ)
+
+
+def _video_url(play_addr: dict[str, Any]) -> str | None:
+    """优先用 play_addr.uri 构造稳定视频地址，音乐 URI 不作为视频。"""
+    uri = play_addr.get("uri")
+    if isinstance(uri, str) and uri and not uri.startswith(("http://", "https://")):
+        return f"https://aweme.snssdk.com/aweme/v1/play/?video_id={uri}&ratio=1080p&line=0"
+    url = first(play_addr.get("url_list"))
+    return str(url).replace("playwm", "play") if url else None
+
+
+def _music_url(music: Any) -> str | None:
+    """提取非原声背景音乐地址。"""
+    if not isinstance(music, dict) or music.get("is_original_sound") is not False:
+        return None
+    play_url = music.get("play_url") or {}
+    uri = play_url.get("uri") if isinstance(play_url, dict) else None
+    if isinstance(uri, str) and uri:
+        return uri
+    extra = music.get("extra")
+    try:
+        data = json.loads(extra) if isinstance(extra, str) else {}
+    except ValueError:
+        return None
+    value = data.get("original_song_url") if isinstance(data, dict) else None
+    return str(value) if value else None
 
 
 async def _parse_detail_api(video_id: str, *, source_url: str) -> VideoResult:
@@ -265,46 +316,40 @@ async def _parse_slides(video_id: str, *, source_url: str) -> VideoResult:
     if not isinstance(item, dict):
         raise ParseError("抖音图文接口没有作品信息")
 
-    dynamic_urls = _dynamic_urls(item.get("images") or [])
-    if dynamic_urls:
-        video = item.get("video") or {}
-        cover = video.get("cover") or {}
-        author = item.get("author") or {}
-        return VideoResult(
-            platform="抖音",
-            title=str(item.get("desc") or "抖音图文"),
-            video_url=dynamic_urls[0],
-            cover_url=first(cover.get("url_list")),
-            source_url=source_url,
-            text=str(author.get("nickname") or ""),
-            headers=ANDROID_HEADERS.copy(),
-        )
-
-    image_urls = _image_urls(item.get("images") or [])
-    if not image_urls:
+    images = item.get("images") or []
+    dynamic_urls = _dynamic_urls(images)
+    image_urls = _image_urls(images)
+    if not dynamic_urls and not image_urls:
         raise ParseError("抖音图文接口没有图片")
 
+    video = item.get("video") or {}
+    cover = video.get("cover") or {}
     author = item.get("author") or {}
     return VideoResult(
         platform="抖音",
         title=str(item.get("desc") or "抖音图文"),
+        video_url=dynamic_urls[0] if dynamic_urls else None,
         image_urls=image_urls,
-        cover_url=image_urls[0],
+        cover_url=_last_url(cover) or (image_urls[0] if image_urls else None),
+        audio_url=_music_url(item.get("music")),
         source_url=source_url,
-        text=str(author.get("nickname") or ""),
+        author_name=str(author.get("nickname") or ""),
+        author_avatar=_last_url(author.get("avatar_thumb")),
+        published_at=_timestamp(item.get("create_time")),
+        text=str(item.get("desc") or ""),
         headers=ANDROID_HEADERS.copy(),
     )
 
 
 def _image_urls(images: list[object]) -> list[str]:
-    """提取抖音图文图片。"""
+    """提取抖音图文图片，优先使用列表末尾的稳定地址。"""
     urls: list[str] = []
     for image in images:
         if not isinstance(image, dict):
             continue
-        url = first(image.get("url_list"))
+        url = _last_url(image)
         if url:
-            urls.append(str(url))
+            urls.append(url)
     return urls
 
 
@@ -317,8 +362,7 @@ def _dynamic_urls(images: list[object]) -> list[str]:
         video = image.get("video")
         if not isinstance(video, dict):
             continue
-        play_addr = video.get("play_addr") or {}
-        url = first(play_addr.get("url_list"))
+        url = _video_url(video.get("play_addr") or {})
         if url:
-            urls.append(str(url).replace("playwm", "play"))
+            urls.append(url)
     return urls

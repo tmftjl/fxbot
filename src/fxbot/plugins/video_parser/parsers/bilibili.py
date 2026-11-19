@@ -8,6 +8,7 @@ import asyncio
 import inspect
 from typing import Any
 from pathlib import Path
+from datetime import datetime
 from collections.abc import Callable, Awaitable
 
 from loguru import logger
@@ -15,6 +16,7 @@ from loguru import logger
 from .base import ParseError
 from ..types import VideoResult
 from .common import COMMON_HEADERS, redirect_url
+from ....utils.tz import SHANGHAI_TZ
 from ....utils.paths import data_dir
 
 COOKIE_PATH: Path = data_dir("video_parser") / "bilibili_cookies.json"
@@ -67,6 +69,11 @@ async def parse(url: str) -> VideoResult:
     read = re.search(r"bilibili\.com/read/cv(?P<id>\d+)", url)
     if read:
         return await _parse_article(int(read.group("id")), source=url)
+
+    if "live.bilibili.com/" in url:
+        raise ParseError("暂不支持 B 站直播解析")
+    if "favlist" in url:
+        raise ParseError("暂不支持 B 站收藏夹解析")
 
     raise ParseError("无法识别 B 站链接")
 
@@ -158,6 +165,7 @@ async def _parse_video(*, bvid: str | None = None, avid: int | None = None, page
             raise ParseError(f"B 站下载流解析失败：{type(exc).__name__}: {detail}") from exc
         raise ParseError(f"B 站下载流解析失败：{type(exc).__name__}") from exc
 
+    owner = info.get("owner") or {}
     return VideoResult(
         platform="B站",
         title=title,
@@ -168,7 +176,10 @@ async def _parse_video(*, bvid: str | None = None, avid: int | None = None, page
         cover_url=cover,
         duration=duration,
         source_url=source,
-        text=str((info.get("owner") or {}).get("name") or ""),
+        text=str(info.get("desc") or ""),
+        author_name=str(owner.get("name") or ""),
+        author_avatar=str(owner.get("face") or ""),
+        published_at=_bili_time(info.get("pubdate")),
         headers=BILI_HEADERS.copy(),
     )
 
@@ -197,9 +208,7 @@ def _select_download_urls(
         video_urls = _preferred_urls(video_stream)
         if not video_urls:
             raise ParseError("B 站没有可下载的视频流")
-        audio_streams = [
-            stream for stream in streams if isinstance(stream, audio_stream_type) and _stream_urls(stream)
-        ]
+        audio_streams = [stream for stream in streams if isinstance(stream, audio_stream_type) and _stream_urls(stream)]
         audio_stream = max(audio_streams, key=_audio_stream_rank) if audio_streams else None
         audio_urls = _preferred_urls(audio_stream) if audio_stream is not None else []
         return video_urls[0], audio_urls[0] if audio_urls else None, video_urls[1:], audio_urls[1:]
@@ -228,19 +237,17 @@ def _stream_urls(stream: Any) -> list[str]:
 
 
 def _preferred_urls(stream: Any) -> list[str]:
-    """优先使用镜像备用地址，PCDN 主地址放到最后。"""
-    urls = _stream_urls(stream)
-    return urls[1:] + urls[:1] if len(urls) > 1 else urls
+    """保持接口返回顺序：主地址优先，备用地址随后。"""
+    return _stream_urls(stream)
 
 
 def _video_stream_rank(stream: Any) -> tuple[int, int]:
     """给视频流排序，允许依赖返回未知编码。"""
     codec = getattr(stream, "video_codecs", None)
-    codec_value = str(getattr(codec, "value", "") or "").lower()
-    return (
-        _enum_int(getattr(stream, "video_quality", None)),
-        VIDEO_CODEC_RANK.get(codec_value, 0),
-    )
+    raw = getattr(codec, "value", codec)
+    values = raw if isinstance(raw, (list, tuple, set)) else (raw,)
+    codec_rank = max((VIDEO_CODEC_RANK.get(str(value).lower(), 0) for value in values if value), default=0)
+    return (_enum_int(getattr(stream, "video_quality", None)), codec_rank)
 
 
 def _audio_stream_rank(stream: Any) -> tuple[int, int]:
@@ -263,6 +270,13 @@ def _enum_int(value: Any) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 0
+
+
+def _bili_time(value: Any) -> datetime | None:
+    """把 B 站 Unix 秒时间转为带时区时间。"""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        return None
+    return datetime.fromtimestamp(value, SHANGHAI_TZ)
 
 
 async def _parse_dynamic_or_opus(dynamic_id: int, *, source: str) -> VideoResult:
@@ -314,9 +328,14 @@ async def _parse_bili_opus(opus: Any, *, source: str) -> VideoResult:
     text_parts: list[str] = []
     image_urls: list[str] = []
     author = ""
+    avatar = ""
+    published_at = None
     for module in modules:
-        if module.get("module_author"):
-            author = str((module.get("module_author") or {}).get("name") or "")
+        module_author = module.get("module_author") or {}
+        if module_author:
+            author = str(module_author.get("name") or "")
+            avatar = str(module_author.get("face") or "")
+            published_at = _bili_time(module_author.get("pub_ts"))
         content = module.get("module_content") or {}
         for paragraph in content.get("paragraphs") or []:
             text = paragraph.get("text") or {}
@@ -328,15 +347,19 @@ async def _parse_bili_opus(opus: Any, *, source: str) -> VideoResult:
             for image in pic.get("pics") or []:
                 if isinstance(image, dict) and image.get("url"):
                     image_urls.append(str(image["url"]))
-    if not image_urls:
-        raise ParseError("B站图文没有图片")
+    body = "\n".join(text_parts)
+    if not image_urls and not body:
+        raise ParseError("B站图文没有可发送的内容")
     return VideoResult(
         platform="B站",
-        title=str(title or (text_parts[0][:40] if text_parts else "B站图文")),
+        title=str(title or (body[:40] if body else "B站图文")),
         image_urls=image_urls,
-        cover_url=image_urls[0],
+        cover_url=image_urls[0] if image_urls else None,
         source_url=source,
-        text=author,
+        text=body,
+        author_name=author,
+        author_avatar=avatar,
+        published_at=published_at,
         headers=BILI_HEADERS.copy(),
     )
 
@@ -353,21 +376,30 @@ async def _result_from_dynamic(item: dict[str, Any], *, source: str) -> VideoRes
     opus = major.get("opus") or {}
     pics = opus.get("pics") or []
     image_urls = [str(pic["url"]) for pic in pics if isinstance(pic, dict) and pic.get("url")]
-    title = (
+    body = str(
         opus.get("title")
         or ((opus.get("summary") or {}).get("text"))
         or ((dynamic.get("desc") or {}).get("text"))
-        or "B站动态"
+        or ""
     )
-    if not image_urls:
+    orig = item.get("orig")
+    if not image_urls and isinstance(orig, dict):
+        result = await _result_from_dynamic(orig, source=source)
+        if body:
+            result.text = f"{body}\n\n{result.text}".strip()
+        return result
+    if not image_urls and not body:
         raise ParseError("B站动态没有可发送的媒体")
     return VideoResult(
         platform="B站",
-        title=str(title),
+        title=body[:40] or "B站动态",
         image_urls=image_urls,
-        cover_url=image_urls[0],
+        cover_url=image_urls[0] if image_urls else None,
         source_url=source,
-        text=str(author.get("name") or ""),
+        text=body,
+        author_name=str(author.get("name") or ""),
+        author_avatar=str(author.get("face") or ""),
+        published_at=_bili_time(author.get("pub_ts")),
         headers=BILI_HEADERS.copy(),
     )
 

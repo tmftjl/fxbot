@@ -33,15 +33,29 @@ def _video_source(context: HandlerContext, video_path: Path) -> bytes | str:
     return video_path.resolve().as_uri()
 
 
-async def send_video_result(context: HandlerContext, result: VideoResult, video_path: Path) -> None:
+async def send_media_result(
+    context: HandlerContext,
+    result: VideoResult,
+    *,
+    video_path: Path | None = None,
+    image_paths: list[Path] | None = None,
+    audio_path: Path | None = None,
+) -> None:
+    """按摘要、封面、视频、图片、音频的顺序发送解析结果。"""
     messages = [Message.text(_summary(result))]
     if result.cover_url and cfg_general()["send_cover"]:
         messages.append(Message([MessageSegment.image(result.cover_url)]))
-    messages.append(Message([MessageSegment("video", {"file": _video_source(context, video_path)})]))
+    if video_path is not None:
+        messages.append(Message([MessageSegment("video", {"file": _video_source(context, video_path)})]))
+    messages.extend(Message([MessageSegment.image(path.read_bytes())]) for path in image_paths or [])
+    if audio_path is not None:
+        messages.append(Message([MessageSegment.voice(audio_path.read_bytes())]))
     await _deliver(context, messages)
+
+
+async def send_video_result(context: HandlerContext, result: VideoResult, video_path: Path) -> None:
+    await send_media_result(context, result, video_path=video_path)
 
 
 async def send_image_result(context: HandlerContext, result: VideoResult, image_paths: list[Path]) -> None:
-    messages = [Message.text(_summary(result))]
-    messages.extend(Message([MessageSegment.image(path.read_bytes())]) for path in image_paths)
-    await _deliver(context, messages)
+    await send_media_result(context, result, image_paths=image_paths)

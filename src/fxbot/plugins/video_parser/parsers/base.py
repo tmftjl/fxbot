@@ -11,10 +11,13 @@ from ..config import cfg_platforms
 
 URL_RE = re.compile(
     r"https?://[^\s<>\"']+|"
-    r"(?:v\.douyin|jx\.douyin|jingxuan\.douyin|v\.kuaishou|xhslink)\.com/[A-Za-z0-9._?%&+=/#@-]+|"
+    r"(?:v\.douyin|jx\.douyin|jingxuan\.douyin|v\.kuaishou)\.com/[A-Za-z0-9._?%&+=/#@-]+|"
+    r"xhslink\.(?:com|cn)/[A-Za-z0-9._?%&+=/#@-]+|"
     r"(?:v\.m\.)?chenzhongtech\.com/fw/[A-Za-z0-9._?%&+=/#@-]+|"
     r"mapp\.api\.weibo\.cn/fx/[A-Za-z0-9]+\.html|"
-    r"(?:b23\.tv|bili2233\.cn)/[A-Za-z0-9._?%&+=/#@-]+"
+    r"(?:b23\.tv|bili2233\.cn)/[A-Za-z0-9._?%&+=/#@-]+|"
+    r"(?:[A-Za-z0-9-]+\.)*(?:bilibili\.com|weibo\.com|weibo\.cn|xiaohongshu\.com|"
+    r"xhslink\.com|xhslink\.cn|douyin\.com|kuaishou\.com)/[A-Za-z0-9._?%&+=/#@-]+"
 )
 SUPPORTED_URL_MARKERS = (
     "douyin.com",
@@ -24,6 +27,7 @@ SUPPORTED_URL_MARKERS = (
     "chenzhongtech.com",
     "xiaohongshu.com",
     "xhslink.com",
+    "xhslink.cn",
     "weibo.com",
     "weibo.cn",
     "mapp.api.weibo.cn",
@@ -47,12 +51,14 @@ def find_url(text: str) -> str | None:
             url = url if url.startswith("http") else f"https://{url}"
             if _is_supported_url(url):
                 return url
-    bv = re.search(r"\bBV[0-9A-Za-z]{10}\b", text)
+    bv = re.search(r"\b(?P<bvid>BV[0-9A-Za-z]{10})\b(?:\s+(?P<page>\d{1,3}))?", text)
     if bv:
-        return bv.group(0)
-    av = re.search(r"\bav\d{6,}\b", text, re.IGNORECASE)
+        page = bv.group("page")
+        return f"https://www.bilibili.com/video/{bv.group('bvid')}?p={page}" if page else bv.group("bvid")
+    av = re.search(r"\b(?P<avid>av\d{6,})\b(?:\s+(?P<page>\d{1,3}))?", text, re.IGNORECASE)
     if av:
-        return av.group(0)
+        page = av.group("page")
+        return f"https://www.bilibili.com/video/{av.group('avid')}?p={page}" if page else av.group("avid")
     return None
 
 
@@ -73,7 +79,7 @@ def _platform_for_url(url: str) -> str | None:
     groups = {
         "douyin": ("douyin.com", "iesdouyin.com"),
         "kuaishou": ("kuaishou.com", "chenzhongtech.com"),
-        "xiaohongshu": ("xiaohongshu.com", "xhslink.com"),
+        "xiaohongshu": ("xiaohongshu.com", "xhslink.com", "xhslink.cn"),
         "weibo": ("weibo.com", "weibo.cn"),
         "bilibili": ("bilibili.com", "b23.tv", "bili2233.cn"),
     }

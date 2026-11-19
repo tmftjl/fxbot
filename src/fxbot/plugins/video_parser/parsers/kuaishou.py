@@ -25,39 +25,38 @@ async def parse(url: str) -> VideoResult:
     if photo is None:
         raise ParseError("快手页面没有视频信息")
 
-    video_url = _cdn_url(first(photo.get("mainMvUrls")))
-    if not video_url:
-        image_urls = _atlas_urls(photo)
-        if not image_urls:
-            raise ParseError("快手页面没有可发送的媒体")
-        return VideoResult(
-            platform="快手",
-            title=str(photo.get("caption") or "快手图集"),
-            image_urls=image_urls,
-            cover_url=image_urls[0],
-            source_url=resolved,
-            text=str(photo.get("userName") or ""),
-            headers=HEADERS.copy(),
-        )
+    video_urls = _cdn_urls(photo.get("mainMvUrls"))
+    image_urls = _atlas_urls(photo)
+    if not video_urls and not image_urls:
+        raise ParseError("快手页面没有可发送的媒体")
 
+    title = str(photo.get("caption") or ("快手视频" if video_urls else "快手图集"))
+    cover_urls = _cdn_urls(photo.get("coverUrls"))
+    author = str(photo.get("userName") or "").replace("\u3164", "").strip()
     return VideoResult(
         platform="快手",
-        title=str(photo.get("caption") or "快手视频"),
-        video_url=video_url,
-        cover_url=_cdn_url(first(photo.get("coverUrls"))),
+        title=title,
+        video_url=video_urls[0] if video_urls else None,
+        video_backup_urls=video_urls[1:],
+        image_urls=image_urls,
+        cover_url=cover_urls[-1] if cover_urls else (image_urls[0] if image_urls else None),
         duration=(float(photo.get("duration")) / 1000) if photo.get("duration") else None,
         source_url=resolved,
-        text=str(photo.get("userName") or ""),
+        author_name=author,
+        text=title,
         headers=HEADERS.copy(),
     )
 
 
-def _cdn_url(item: object) -> str | None:
-    """提取快手 CDN URL。"""
-    if not isinstance(item, dict):
-        return None
-    value = item.get("url")
-    return str(value) if value else None
+def _cdn_urls(items: object) -> list[str]:
+    """提取快手 CDN 主地址和备用地址。"""
+    if not isinstance(items, list):
+        return []
+    urls: list[str] = []
+    for item in items:
+        if isinstance(item, dict) and item.get("url"):
+            urls.append(str(item["url"]))
+    return list(dict.fromkeys(urls))
 
 
 def _atlas_urls(photo: dict[str, object]) -> list[str]:

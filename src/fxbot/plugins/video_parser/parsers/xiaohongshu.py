@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from datetime import datetime
 
 from .base import ParseError
 from ..types import VideoResult
@@ -15,6 +16,8 @@ from .common import (
     extract_json,
     redirect_url,
 )
+from ..config import cfg_xiaohongshu
+from ....utils.tz import SHANGHAI_TZ
 
 HEADERS = {
     **COMMON_HEADERS,
@@ -36,9 +39,21 @@ IOS_HEADERS = {
 }
 
 
+def _headers(base: dict[str, str]) -> dict[str, str]:
+    """按配置注入小红书 Cookie。"""
+    headers = base.copy()
+    settings = cfg_xiaohongshu()
+    cookie = str(settings.get("cookie") or "").strip()
+    if settings.get("use_cookie"):
+        if not cookie:
+            raise ParseError("已启用小红书 Cookie，但 Cookie 配置为空")
+        headers["Cookie"] = cookie
+    return headers
+
+
 async def parse(url: str) -> VideoResult:
     """解析小红书视频或图文。"""
-    resolved = await redirect_url(url, headers=IOS_HEADERS) if "xhslink.com" in url else url
+    resolved = await redirect_url(url, headers=_headers(IOS_HEADERS)) if "xhslink." in url else url
     matched = re.search(
         r"(?:explore|discovery/item)/(?P<query>(?P<id>[0-9a-zA-Z]+)(?:\?[^#\s]+)?)",
         resolved,
@@ -58,7 +73,7 @@ async def parse(url: str) -> VideoResult:
 
 async def _parse_explore(url: str, note_id: str) -> VideoResult:
     """解析 explore 页面。"""
-    html = await get_text(url, headers=HEADERS)
+    html = await get_text(url, headers=_headers(HEADERS))
     state = extract_json(html, r"window\.__INITIAL_STATE__=(.*?)</script>", undefined_to_null=True)
     detail_map = ((state.get("note") or {}).get("noteDetailMap")) or {}
     note = ((detail_map.get(note_id) or {}).get("note")) or {}
@@ -69,7 +84,7 @@ async def _parse_explore(url: str, note_id: str) -> VideoResult:
 
 async def _parse_discovery(url: str) -> VideoResult:
     """解析 discovery 页面。"""
-    html = await get_text(url, headers=IOS_HEADERS)
+    html = await get_text(url, headers=_headers(IOS_HEADERS))
     state = extract_json(html, r"window\.__INITIAL_STATE__=(.*?)</script>", undefined_to_null=True)
     container = state.get("noteData") or {}
     note = ((container.get("data") or {}).get("noteData")) or {}
@@ -92,11 +107,14 @@ def _result_from_note(note: dict[str, Any], *, source_url: str, discovery: bool)
     cover = None
     image = first(images)
     if isinstance(image, dict):
-        cover = image.get("urlDefault") or image.get("urlSizeLarge") or image.get("url")
+        cover = image.get("urlSizeLarge") or image.get("urlDefault") or image.get("url")
 
-    nickname = user.get("nickname") or user.get("nickName") or ""
+    nickname = str(user.get("nickname") or user.get("nickName") or "")
+    avatar = str(user.get("avatar") or user.get("image") or "")
     timestamp = note.get("time") if discovery else None
+    published_at = _published_at(timestamp)
     title = str(note.get("title") or note.get("desc") or "小红书笔记")
+    body = str(note.get("desc") or "")
 
     if note.get("type") == "video" and isinstance(note.get("video"), dict):
         video_url, duration = _video_url_and_duration(note["video"])
@@ -109,7 +127,10 @@ def _result_from_note(note: dict[str, Any], *, source_url: str, discovery: bool)
             cover_url=cover,
             duration=duration,
             source_url=source_url,
-            text=str(nickname or timestamp or ""),
+            text=body,
+            author_name=nickname,
+            author_avatar=avatar,
+            published_at=published_at,
             headers=HEADERS.copy(),
         )
 
@@ -122,9 +143,20 @@ def _result_from_note(note: dict[str, Any], *, source_url: str, discovery: bool)
         cover_url=cover,
         image_urls=image_urls,
         source_url=source_url,
-        text=str(nickname or timestamp or ""),
+        text=body,
+        author_name=nickname,
+        author_avatar=avatar,
+        published_at=published_at,
         headers=HEADERS.copy(),
     )
+
+
+def _published_at(value: Any) -> datetime | None:
+    """把小红书毫秒时间戳转为带时区时间。"""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        return None
+    seconds = value / 1000 if value > 1_000_000_000_000 else value
+    return datetime.fromtimestamp(seconds, SHANGHAI_TZ)
 
 
 def _video_url_and_duration(video: dict[str, Any]) -> tuple[str | None, float | None]:
