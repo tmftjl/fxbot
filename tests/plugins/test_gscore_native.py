@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 import asyncio
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
+from base64 import b64encode
 from typing import Any
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
+
+from PIL import Image
 
 from fxbot.core import (
     Event,
@@ -40,6 +44,13 @@ PLATFORM = "onebot11"
 BOT_ID = "100"
 USER_ID = "200"
 GROUP_ID = "300"
+
+
+def png_source(color: str = "red") -> str:
+    """生成用于长图渲染的 16x16 PNG data URI。"""
+    buffer = BytesIO()
+    Image.new("RGB", (16, 16), color).save(buffer, format="PNG")
+    return "base64://" + b64encode(buffer.getvalue()).decode("ascii")
 
 
 class ApplicationStub:
@@ -276,6 +287,105 @@ class DownlinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.segments[3].data["custom_template_id"], "t1")
         self.assertEqual(message.segments[3].data["params"], [{"key": "title", "values": ["标题"]}])
         self.assertEqual(message.segments[4].data, {"id": "kb1"})
+
+    async def test_qqgroup_long_text_node_is_merged_into_one_passive_message(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "node-result"})
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[WireMessage("node", [WireMessage("text", str(index)) for index in range(10)])],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertEqual(bot.send.await_count, 1)
+        message = bot.send.await_args.args[1]
+        self.assertEqual(message.plain_text(), "\n".join(str(index) for index in range(10)))
+        self.assertTrue(any(segment.type == "qq:passive" for segment in message.segments))
+
+    async def test_qqgroup_alternating_text_images_pair_into_passive_messages(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "node-result"})
+        content = []
+        for index in range(4):
+            content.append(WireMessage("text", f"第{index}段"))
+            content.append(WireMessage("image", png_source()))
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[WireMessage("node", content)],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertEqual(bot.send.await_count, 4)
+        for index, call in enumerate(bot.send.await_args_list):
+            message = call.args[1]
+            self.assertEqual(message.plain_text(), f"第{index}段")
+            self.assertTrue(any(segment.type == "image" for segment in message.segments))
+            self.assertTrue(any(segment.type == "qq:passive" for segment in message.segments))
+
+    async def test_qqgroup_many_images_are_rendered_as_long_images(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "node-result"})
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[WireMessage("node", [WireMessage("image", png_source()) for _ in range(7)])],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertEqual(bot.send.await_count, 1)
+        message = bot.send.await_args.args[1]
+        self.assertTrue(any(segment.type == "qq:passive" for segment in message.segments))
+        images = [segment for segment in message.segments if segment.type == "image"]
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0].data["file"].startswith(b"\x89PNG"))
+
+    async def test_qqgroup_dozens_of_images_fit_in_at_most_five_pages(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "node-result"})
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[WireMessage("node", [WireMessage("image", png_source()) for _ in range(30)])],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertGreaterEqual(bot.send.await_count, 1)
+        self.assertLessEqual(bot.send.await_count, 5)
+        for call in bot.send.await_args_list:
+            self.assertTrue(any(segment.type == "image" for segment in call.args[1].segments))
+            self.assertTrue(any(segment.type == "qq:passive" for segment in call.args[1].segments))
+
+    async def test_qqgroup_node_forward_is_sent_as_separate_messages(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "node-result"})
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            content=[
+                WireMessage(
+                    "node",
+                    [
+                        {"type": "text", "data": "第一段"},
+                        {"type": "image", "data": "https://media.example.test/node.jpg"},
+                    ],
+                )
+            ],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertEqual(bot.send.await_count, 2)
+        self.assertEqual(bot.send.await_args_list[0].args[1].plain_text(), "第一段")
+        self.assertEqual(bot.send.await_args_list[1].args[1].segments[0].type, "image")
+        self.assertEqual(
+            bot.send.await_args_list[1].args[1].segments[0].data["file"],
+            "https://media.example.test/node.jpg",
+        )
 
     async def test_qq_login_reply_omits_mentions_in_group_and_c2c(self) -> None:
         text = "[鸣潮]【神上园凛】特征码【105044421】登录成功!"

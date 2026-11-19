@@ -11,6 +11,7 @@ from fxbot.platforms.qq.message import keyboard, markdown as qq_markdown
 
 from .base import CoreAdapter, ReceiveScope, outbound_file, outbound_media
 from ..models import Message as WireMessage, MessageSend
+from .qq_render import render_pages
 
 ADVANCED_SEGMENTS = {"markdown", "template_markdown", "template_buttons", "buttons"}
 MEDIA_SEGMENTS = {"image", "record", "video", "file"}
@@ -28,6 +29,7 @@ def _remote_url(source: Any) -> str | None:
 class QQAdapter(CoreAdapter):
     key = "qq"
     name = "QQ 官方"
+    PASSIVE_REPLY_LIMIT = 5
 
     def platform_matches(self, platform: str) -> bool:
         return platform == "qq"
@@ -83,6 +85,78 @@ class QQAdapter(CoreAdapter):
             if segment.type == "group" and segment.data is not None:
                 return str(segment.data)
         return None
+
+    @staticmethod
+    def _passive_target(target: SessionTarget) -> bool:
+        """普通群与 C2C 使用 msg_id + msg_seq 的被动回复额度。"""
+        return target.kind == "group" or (target.kind == "private" and not target.target_id.startswith("dms/"))
+
+    @staticmethod
+    def _pair_text_images(frames: list[list[WireMessage]]) -> list[list[WireMessage]]:
+        """把文字贴到相邻图片消息里，并合并连续文本。"""
+        paired: list[list[WireMessage]] = []
+        pending: list[WireMessage] = []
+        text_length = 0
+
+        def flush() -> None:
+            nonlocal pending, text_length
+            if pending:
+                paired.append(pending)
+                pending = []
+                text_length = 0
+
+        for frame in frames:
+            if frame and all(segment.type == "text" for segment in frame):
+                length = sum(
+                    len(segment.data) if isinstance(segment.data, str) else len(str(segment.data or ""))
+                    for segment in frame
+                )
+                if pending and text_length + length > 1900:
+                    flush()
+                if pending:
+                    pending.append(WireMessage("text", "\n"))
+                    text_length += 1
+                pending.extend(frame)
+                text_length += length
+            elif len(frame) == 1 and frame[0].type == "image":
+                pending.append(frame[0])
+                paired.append(pending)
+                pending = []
+                text_length = 0
+            else:
+                flush()
+                paired.append(frame)
+        flush()
+        return paired
+
+    @staticmethod
+    def _truncate_frames(frames: list[list[WireMessage]]) -> list[list[WireMessage]]:
+        """无法渲染时保留前 5 帧，并在最后一条说明剩余数量。"""
+        if len(frames) <= QQAdapter.PASSIVE_REPLY_LIMIT:
+            return frames
+        kept = [list(frame) for frame in frames[: QQAdapter.PASSIVE_REPLY_LIMIT]]
+        omitted = len(frames) - len(kept)
+        kept[-1].append(WireMessage("text", f"\n[另有 {omitted} 条内容因 QQ 限制未发送]"))
+        return kept
+
+    async def prepare_frames(
+        self, bot: BotClient, target: SessionTarget, msg: MessageSend, frames: list[list[WireMessage]]
+    ) -> list[list[WireMessage]]:
+        """被动回复超过上限时配对文字图片，必要时渲染为长图。"""
+        if not msg.msg_id or not self._passive_target(target) or len(frames) <= self.PASSIVE_REPLY_LIMIT:
+            return frames
+        paired = self._pair_text_images(frames)
+        if len(paired) <= self.PASSIVE_REPLY_LIMIT:
+            return paired
+        try:
+            pages = await render_pages(paired)
+        except Exception:
+            logger.opt(exception=True).warning("[gscore] QQ 混合内容长图渲染失败，改为截断发送")
+            pages = None
+        if pages:
+            return [[WireMessage("image", page)] for page in pages[: self.PASSIVE_REPLY_LIMIT]]
+        logger.warning("[gscore] QQ 被动回复超过 5 条且无法渲染长图，截断剩余内容")
+        return self._truncate_frames(paired)
 
     def build_message(
         self, bot: BotClient, target: SessionTarget, msg: MessageSend, frame: list[WireMessage]

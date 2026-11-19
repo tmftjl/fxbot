@@ -512,6 +512,12 @@ class CoreAdapter(Adapter):
             frames.append(current)
         return frames
 
+    async def prepare_frames(
+        self, bot: BotClient, target: SessionTarget, msg: MessageSend, frames: list[list[WireMessage]]
+    ) -> list[list[WireMessage]]:
+        """平台可在发送前调整帧分组，默认保持原样。"""
+        return frames
+
     def build_message(
         self, bot: BotClient, target: SessionTarget, msg: MessageSend, frame: list[WireMessage]
     ) -> CoreMessage | None:
@@ -575,7 +581,8 @@ class CoreAdapter(Adapter):
                 continue
             self.check_passive(bot, target, msg, services)
             await self.apply_controls(bot, target, msg)
-            for frame in self.frames(msg.content):
+            frames = await self.prepare_frames(bot, target, msg, self.frames(msg.content))
+            for frame in frames:
                 message = self.build_message(bot, target, msg, frame)
                 if message is None or not message.segments:
                     continue
