@@ -171,7 +171,12 @@ class QQClient:
             elif part.type in _FILE_TYPES:
                 source = part.data.get("file", part.data.get("url"))
                 kind = "audio" if part.type == "voice" else part.type
-                media[(kind, isinstance(source, bytes))] = (source, part.data.get("name") or "default")
+                name = part.data.get("name")
+                if isinstance(source, Path):
+                    # 原版 file_video(Path) 的行为：读字节并沿用真实文件名。
+                    name = name or source.name
+                    source = source.read_bytes()
+                media[(kind, isinstance(source, bytes))] = (source, name or "default")
             elif part.type.startswith("qq:"):
                 name = part.type.removeprefix("qq:")
                 if name in {

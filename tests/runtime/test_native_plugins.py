@@ -857,7 +857,19 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.send.await_count, 3)
         self.assertEqual(bot.send.await_args_list[0].args[1].plain_text(), "bilibili | 测试")
         self.assertEqual(bot.send.await_args_list[1].args[1].segments[0].type, "image")
-        self.assertEqual(bot.send.await_args_list[2].args[1].segments[0].data["file"], b"fake-video")
+        video_data = bot.send.await_args_list[2].args[1].segments[0].data
+        self.assertEqual(video_data["file"], path)
+        self.assertNotIn("name", video_data)
+
+        bot.send.reset_mock()
+        with patch(
+            "fxbot.plugins.video_parser.sender.cfg_general",
+            return_value={"send_cover": False, "use_base64": True},
+        ):
+            await send_video_result(context, VideoResult("bilibili", "测试"), path)
+        video_data = bot.send.await_args_list[-1].args[1].segments[0].data
+        self.assertEqual(video_data["file"], b"fake-video")
+        self.assertEqual(video_data["name"], "video.mp4")
 
         bot.send.reset_mock()
         await send_image_result(context, VideoResult("bilibili", "图集"), [path, path])

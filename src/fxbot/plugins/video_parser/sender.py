@@ -31,11 +31,17 @@ async def _deliver(context: HandlerContext, messages: list[Message]) -> None:
         await context.send(message)
 
 
-def _video_source(context: HandlerContext, video_path: Path) -> bytes | str:
-    """QQ 官方客户端只接受字节或 URL，本地视频直接读字节发送。"""
-    if cfg_general()["use_base64"] or context.bot.platform == "qq":
-        return video_path.read_bytes()
-    return video_path.resolve().as_uri()
+def _video_segment(context: HandlerContext, video_path: Path) -> MessageSegment:
+    """与原版一致：本地路径交给平台读取；开启 base64 时内联字节。"""
+    if cfg_general()["use_base64"]:
+        data: dict[str, object] = {"file": video_path.read_bytes()}
+        if context.bot.platform == "qq":
+            # QQ 官方按文件名识别富媒体类型，字节内联时需要显式带上文件名。
+            data["name"] = video_path.name
+        return MessageSegment("video", data)
+    if context.bot.platform == "qq":
+        return MessageSegment("video", {"file": video_path})
+    return MessageSegment("video", {"file": video_path.resolve().as_uri()})
 
 
 async def send_media_result(
@@ -51,7 +57,7 @@ async def send_media_result(
     if result.cover_url and cfg_general()["send_cover"]:
         messages.append(Message([MessageSegment.image(result.cover_url)]))
     if video_path is not None:
-        messages.append(Message([MessageSegment("video", {"file": _video_source(context, video_path)})]))
+        messages.append(Message([_video_segment(context, video_path)]))
     messages.extend(Message([MessageSegment.image(path.read_bytes())]) for path in image_paths or [])
     if audio_path is not None:
         messages.append(Message([MessageSegment.voice(audio_path.read_bytes())]))

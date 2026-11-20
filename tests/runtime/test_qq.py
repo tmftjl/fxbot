@@ -467,6 +467,19 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(upload.kwargs["upload"], True)
         self.assertNotIn("upload", send.kwargs)
 
+    async def test_local_path_video_upload_keeps_real_file_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            path.write_bytes(b"v" * (10 * 1024 * 1024 + 1))
+            with patch(
+                "fxbot.platforms.qq.actions.upload", AsyncMock(return_value={"file_info": "media-info"})
+            ) as upload:
+                await self.bot.send(self.event.target, Message([MessageSegment("video", {"file": path})]))
+        file_type, file_name, content = upload.await_args.args[3:6]
+        self.assertEqual(file_type, 2)
+        self.assertEqual(file_name, "clip.mp4")
+        self.assertEqual(len(content), 10 * 1024 * 1024 + 1)
+
     async def test_slow_media_upload_does_not_block_other_targets(self):
         started = asyncio.Event()
         release = asyncio.Event()
