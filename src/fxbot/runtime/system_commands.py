@@ -1,8 +1,9 @@
-"""核心进程控制命令：重启、关机、更新并重启。"""
+"""核心管理命令：重启、关机、更新，以及按命令维度的拉黑/拉白。"""
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 import json
 import time
@@ -10,6 +11,7 @@ import atexit
 import shutil
 import signal
 import asyncio
+from copy import deepcopy
 from pathlib import Path
 from collections.abc import Callable
 
@@ -24,6 +26,7 @@ from ..core.commands import on_regex
 from ..core.permission import Permission
 from ..core.application import Application
 from ..permission.identity import is_superuser_event
+from ..permission.storage import get_storage
 
 _FLAG_FILE = data_dir("system") / "restart_flag.json"
 _FLAG_TTL_SECONDS = 600
@@ -284,6 +287,127 @@ async def _send_report(context: HandlerContext, lines: list[str]) -> None:
     await context.send(text if len(text) <= 2000 else text[:1999] + "…")
 
 
+_MIN_TARGET_DIGITS = 5
+_TARGET_PATTERN = rf"(?<!\d)\d{{{_MIN_TARGET_DIGITS},}}(?!\d)"
+# 「拉黑」后面贴着命令名也可以；排除「踢」开头的群管拉黑踢，避免抢占原命令。
+_BLACKLIST_PATTERN = r"^[#＃]拉黑(?!踢)\s*(.*)"
+_UNBLACKLIST_PATTERN = r"^[#＃]拉白\s*(.*)"
+
+
+class _CommandLookupError(ValueError):
+    """目标命令无法唯一解析，直接回给超级用户。"""
+
+
+def _plugin_name(application: Application, namespace: str) -> str:
+    """插件显示名；核心命名空间没有插件元数据时退回内部名。"""
+    plugin = application.plugin_metadata.get(namespace)
+    return str(plugin.name) if plugin is not None else namespace
+
+
+def _command_label(application: Application, namespace: str, command: str) -> str:
+    """用「插件显示名:命令显示名（内部键）」展示，便于核对。"""
+    display = str(application.command_metadata.get(namespace, {}).get(command, command))
+    return f"{_plugin_name(application, namespace)}:{display}（{namespace}:{command}）"
+
+
+def _resolve_command(application: Application, spec: str) -> tuple[str, str]:
+    """按命令显示名或内部名解析唯一的插件命令，拒绝整个插件。"""
+    key = spec.strip().lstrip("#＃/").strip().lower()
+    if not key:
+        raise _CommandLookupError("请指定命令名，例如：#拉黑 点歌 @某人")
+    found: dict[tuple[str, str], None] = {}
+    plugin_keys: set[str] = set()
+    for namespace, commands in application.command_metadata.items():
+        plugin_name = _plugin_name(application, namespace)
+        prefixes = {namespace.lower(), plugin_name.strip().lower()}
+        plugin_keys.update(item for item in prefixes if item)
+        for name, display in commands.items():
+            display = str(display).strip()
+            labels = {name.lower(), display.lower(), f"{namespace.lower()}:{name.lower()}"}
+            for prefix in prefixes:
+                if prefix:
+                    labels.add(f"{prefix}:{name.lower()}")
+                    labels.add(f"{prefix}:{display.lower()}")
+            if key in labels:
+                found[(namespace, name)] = None
+    if not found:
+        if key in plugin_keys:
+            raise _CommandLookupError(f"「{spec.strip()}」是插件，请指定具体命令；不能整个插件拉黑或拉白。")
+        raise _CommandLookupError(
+            f"没有找到命令「{spec.strip()}」。可以用 #拉黑 插件:命令 @某人，例如 #拉黑 娱乐:今日运势 @某人"
+        )
+    if len(found) > 1:
+        options = "、".join(_command_label(application, *item) for item in found)
+        raise _CommandLookupError(f"「{spec.strip()}」匹配到多个命令：{options}。请用 插件:命令 指定。")
+    return next(iter(found))
+
+
+def _split_targets(event: Event, text: str) -> tuple[list[str], str]:
+    """@ 与回复目标不进入纯文本，因此位置无关；文本里的长数字按 QQ 号处理。"""
+    targets = [
+        str(segment.data["user_id"])
+        for segment in event.message.segments
+        if segment.type == "mention" and segment.data.get("user_id") is not None
+    ]
+    if event.reply is not None and event.reply.user_id:
+        targets.append(str(event.reply.user_id))
+    targets.extend(re.findall(_TARGET_PATTERN, text))
+    bot = str(event.bot_id)
+    unique = [user for user in dict.fromkeys(targets) if user and user != bot]
+    rest = re.sub(_TARGET_PATTERN, " ", text)
+    return unique, " ".join(rest.split())
+
+
+async def _moderate_command(application: Application, context: HandlerContext, *, remove: bool) -> None:
+    """按单个命令维护用户黑名单；两个方向共用一个入口。"""
+    targets, spec = _split_targets(context.event, context.match.group(1))
+    try:
+        namespace, command = _resolve_command(application, spec)
+    except _CommandLookupError as exc:
+        await context.send(str(exc))
+        return
+    label = _command_label(application, namespace, command)
+    if not targets:
+        await context.send("请 @ 目标用户、回复目标消息，或者填写至少 5 位数字的 QQ 号。")
+        return
+    try:
+        storage = get_storage()
+        data = deepcopy(storage.load())
+        node = data.get("sub_plugins", {}).get(namespace)
+        if not isinstance(node, dict) or not isinstance(node.get("top"), dict):
+            await context.send(f"「{label}」不经过权限配置，无法单独拉黑或拉白。")
+            return
+        commands = node.get("commands")
+        entry = commands.get(command) if isinstance(commands, dict) else None
+        if not isinstance(entry, dict):
+            await context.send(f"权限配置里没有「{label}」的命令条目，无法单独拉黑或拉白。")
+            return
+        blacklist = entry.setdefault("blacklist", {})
+        users = blacklist.setdefault("users", []) if isinstance(blacklist, dict) else None
+        if not isinstance(users, list):
+            await context.send(f"「{label}」的黑名单用户列表格式不正确，请在后台权限页修正。")
+            return
+        changed: list[str] = []
+        for user in targets:
+            if remove:
+                if user in users:
+                    users.remove(user)
+                    changed.append(user)
+            elif user not in users:
+                users.append(user)
+                changed.append(user)
+        if not changed:
+            detail = "本来就不在黑名单里" if remove else "已经在黑名单里"
+            await context.send(f"「{label}」无需{'解除拉黑' if remove else '拉黑'}：{'、'.join(targets)}{detail}。")
+            return
+        storage.save(data)
+    except Exception:
+        logger.opt(exception=True).error("保存命令黑名单失败: {} -> {}", namespace, command)
+        await context.send(f"保存「{label}」的权限配置失败，请查看后台日志。")
+        return
+    await context.send(f"已对「{label}」{'解除拉黑' if remove else '拉黑'}：{'、'.join(changed)}。")
+
+
 async def _restart(context: HandlerContext) -> None:
     logger.warning("超级用户触发 Bot 重启: {}", context.event.user_id)
     try:
@@ -366,15 +490,24 @@ async def _update(context: HandlerContext) -> None:
 
 
 def install(application: Application, configuration: ConfigManager) -> None:
-    """注册核心进程命令；不属于插件，也不读取插件权限存储。"""
+    """注册核心管理命令；不属于插件，拉黑/拉白只改目标命令的权限条目。"""
     atexit.register(reexec_if_pending)
     application.resource(_start_notifier(application), _noop)
     owner = Permission.for_event(superuser_check(configuration))
+
+    async def blacklist(context: HandlerContext) -> None:
+        await _moderate_command(application, context, remove=False)
+
+    async def unblacklist(context: HandlerContext) -> None:
+        await _moderate_command(application, context, remove=True)
+
     definitions = []
     for name, label, pattern, handler in (
         ("restart", "重启", r"^[#＃]重启$", _restart),
         ("shutdown", "关机", r"^[#＃]关机$", _shutdown),
         ("update", "更新并重启", r"^[#＃]更新$", _update),
+        ("blacklist", "按命令拉黑", _BLACKLIST_PATTERN, blacklist),
+        ("unblacklist", "按命令拉白", _UNBLACKLIST_PATTERN, unblacklist),
     ):
         matcher = on_regex(pattern, name=name, display_name=label, priority=1, block=True, permission=owner)
         matcher.handle()(handler)

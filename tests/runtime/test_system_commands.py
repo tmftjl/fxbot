@@ -12,9 +12,12 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, AsyncMock, patch
 
-from fxbot.core import Message, SessionTarget, HandlerContext
+from fxbot.core import Event, Message, MessageSegment, ReplyTarget, SessionTarget, HandlerContext
+from fxbot.core.application import Application
+from fxbot.core.matching import MatchResult, regex_match
+from fxbot.permission.policy import FeaturePolicy
+from fxbot.permission.types import PermLevel, PermContext, perm_entry_default
 from fxbot.runtime import processes, system_commands as system
-from fxbot.core.matching import MatchResult
 
 
 class StubConfig:
@@ -518,6 +521,158 @@ class ProcessCleanupTests(unittest.TestCase):
         with patch.object(processes.psutil, "Process") as lookup:
             processes.terminate_process(Mock(returncode=0))
         lookup.assert_not_called()
+
+
+class _PermissionStoreStub:
+    def __init__(self, data: dict) -> None:
+        self.data = data
+        self.saves = 0
+
+    def load(self) -> dict:
+        return self.data
+
+    def save(self, data: dict) -> None:
+        # 保持测试里持有的引用同步，模拟真实存储的落盘后读取。
+        self.data.clear()
+        self.data.update(data)
+        self.saves += 1
+
+
+def command_event(text: str, *, mentions=(), reply_user=None, bot_id="100", user="200") -> Event:
+    segments = [MessageSegment.mention(item) for item in mentions]
+    segments.append(MessageSegment.text(text))
+    return Event(
+        event_id="event",
+        message_id="message",
+        event_type="message",
+        platform="onebot11",
+        bot_id=bot_id,
+        user_id=user,
+        user_name="超管",
+        target=SessionTarget("onebot11", bot_id, "group", "300"),
+        message=Message(segments),
+        reply=ReplyTarget("quoted", reply_user) if reply_user else None,
+    )
+
+
+class CommandBlacklistTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.application = Application()
+        self.application.command_metadata.update(
+            {
+                "entertain": {"today": "今日运势", "draw": "抽签"},
+                "chat": {"context": "记录群聊上下文"},
+            }
+        )
+        self.application.plugin_metadata["entertain"] = SimpleNamespace(name="娱乐")
+        self.data = {
+            "top": perm_entry_default(),
+            "sub_plugins": {
+                "entertain": {
+                    "top": perm_entry_default(),
+                    "commands": {
+                        "today": perm_entry_default(),
+                        "draw": perm_entry_default(),
+                    },
+                }
+            },
+        }
+        self.store = _PermissionStoreStub(self.data)
+        self.enterContext(patch.object(system, "get_storage", return_value=self.store))
+        self.bot = SimpleNamespace(platform="onebot11", bot_id="100", send=AsyncMock(), capabilities=())
+
+    def context(self, event: Event, argument: str = "") -> HandlerContext:
+        return HandlerContext(self.bot, event, MatchResult(argument, (argument,)))
+
+    def blacklisted(self, command: str = "today") -> list[str]:
+        return self.data["sub_plugins"]["entertain"]["commands"][command]["blacklist"]["users"]
+
+    async def moderate(self, event: Event, argument: str, *, remove: bool = False) -> str:
+        await system._moderate_command(self.application, self.context(event, argument), remove=remove)
+        return self.bot.send.await_args.args[1].plain_text()
+
+    async def test_mention_target_can_appear_before_or_after_the_command(self) -> None:
+        reply = await self.moderate(command_event("拉黑 今日运势", mentions=("777",)), "今日运势")
+        self.assertIn("已对", reply)
+        self.assertEqual(self.blacklisted(), ["777"])
+        self.assertEqual(self.store.saves, 1)
+
+    async def test_qq_number_and_reply_target_are_accepted(self) -> None:
+        event = command_event("拉黑 今日运势 123456")
+        await self.moderate(event, "今日运势 123456")
+        self.assertEqual(self.blacklisted(), ["123456"])
+        event = command_event("拉黑 今日运势", reply_user="888")
+        await self.moderate(event, "今日运势")
+        self.assertEqual(self.blacklisted(), ["123456", "888"])
+
+    async def test_bot_mention_is_not_a_target(self) -> None:
+        event = command_event("拉黑 今日运势", mentions=("100", "777"))
+        await self.moderate(event, "今日运势")
+        self.assertEqual(self.blacklisted(), ["777"])
+
+    async def test_unblacklist_only_touches_the_named_command(self) -> None:
+        self.blacklisted("today").extend(["777", "888"])
+        self.blacklisted("draw").append("777")
+        event = command_event("拉白 今日运势", mentions=("777",))
+        reply = await self.moderate(event, "今日运势", remove=True)
+        self.assertIn("解除拉黑", reply)
+        self.assertEqual(self.blacklisted("today"), ["888"])
+        self.assertEqual(self.blacklisted("draw"), ["777"])
+
+    async def test_internal_prefixed_and_display_names_all_resolve(self) -> None:
+        for spec in ("today", "entertain:today", "娱乐:today", "娱乐:今日运势", "#今日运势"):
+            self.assertEqual(system._resolve_command(self.application, spec), ("entertain", "today"))
+
+    async def test_blacklist_is_enforced_by_feature_policy(self) -> None:
+        await self.moderate(command_event("拉黑 今日运势", mentions=("777",)), "今日运势")
+        policy = FeaturePolicy()
+
+        def context(user: str) -> PermContext:
+            return PermContext(
+                user_id=SessionTarget("onebot11", "100", "private", user).key(),
+                group_id=None,
+                user_level=PermLevel.MEMBER,
+                is_group=False,
+                is_private=True,
+            )
+
+        self.assertFalse(await policy.evaluate(self.data, "entertain:today", context("777")))
+        self.assertTrue(await policy.evaluate(self.data, "entertain:today", context("999")))
+        self.assertTrue(await policy.evaluate(self.data, "entertain:draw", context("777")))
+
+    async def test_unknown_whole_plugin_and_core_commands_are_rejected(self) -> None:
+        reply = await self.moderate(command_event("拉黑 不存在", mentions=("777",)), "不存在")
+        self.assertIn("没有找到命令", reply)
+        reply = await self.moderate(command_event("拉黑 娱乐", mentions=("777",)), "娱乐")
+        self.assertIn("是插件", reply)
+        reply = await self.moderate(command_event("拉黑 记录群聊上下文", mentions=("777",)), "记录群聊上下文")
+        self.assertIn("不经过权限配置", reply)
+        self.assertEqual(self.store.saves, 0)
+
+    async def test_ambiguous_display_name_lists_candidates(self) -> None:
+        self.application.command_metadata["useful"] = {"today": "今日运势"}
+        with self.assertRaises(system._CommandLookupError) as caught:
+            system._resolve_command(self.application, "今日运势")
+        self.assertIn("多个命令", str(caught.exception))
+        self.assertIn("entertain:today", str(caught.exception))
+        self.assertIn("useful:today", str(caught.exception))
+
+    async def test_missing_target_reports_how_to_supply_one(self) -> None:
+        reply = await self.moderate(command_event("拉黑 今日运势"), "今日运势")
+        self.assertIn("请 @ 目标用户", reply)
+        self.assertEqual(self.store.saves, 0)
+
+    async def test_blacklist_command_allows_tight_spelling_without_swallowing_kick(self) -> None:
+        matcher = regex_match(system._BLACKLIST_PATTERN)
+        for text in ("#拉黑今日运势", "#拉黑 今日运势"):
+            self.assertEqual(matcher(command_event(text)).group(1), "今日运势")
+        # @ 段不进入纯文本，@ 在命令前面时紧贴也能解析出命令名。
+        self.assertEqual(matcher(command_event("#拉黑今日运势", mentions=("777",))).group(1), "今日运势")
+        self.assertIsNone(matcher(command_event("#拉黑踢 @777")))
+        self.assertIsNone(matcher(command_event("#拉黑踢出")))
+        self.assertEqual(
+            regex_match(system._UNBLACKLIST_PATTERN)(command_event("#拉白今日运势")).group(1), "今日运势"
+        )
 
 
 if __name__ == "__main__":
