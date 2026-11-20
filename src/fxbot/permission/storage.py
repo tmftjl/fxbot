@@ -13,6 +13,11 @@ from ..utils.paths import config_dir
 from ..config.storage import ConfigStorage
 
 
+def _fingerprint(data: dict[str, Any]) -> str:
+    """只用于判重，排序后紧凑序列化，不受缩进和插入顺序影响。"""
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 class PermissionStorage:
     """权限配置文件存储。"""
 
@@ -20,6 +25,7 @@ class PermissionStorage:
         self._path = config_dir() / "permissions.json"
         self._cache_key = ("permissions",)
         self._dirty = False
+        self._persisted: str | None = None
 
     @property
     def path(self) -> Path:
@@ -39,6 +45,7 @@ class PermissionStorage:
         """从磁盘读取权限配置。"""
         data = json.loads(self._path.read_text(encoding="utf-8"))
         validate_permissions(data)
+        self._persisted = _fingerprint(data)
         return data
 
     def load(self) -> dict[str, Any]:
@@ -58,6 +65,7 @@ class PermissionStorage:
         storage.write(data)
         cache.set(self._cache_key, data)
         self._dirty = False
+        self._persisted = _fingerprint(data)
 
     def mark_dirty(self, data: dict[str, Any]) -> None:
         """标记权限配置为待写入。"""
@@ -66,10 +74,17 @@ class PermissionStorage:
         self._dirty = True
 
     def flush(self) -> None:
-        """写入待保存的权限配置。"""
+        """写入待保存的权限配置。
+
+        指纹只与上次成功读取或写入的快照比较，用于跳过本进程内无意义的重复写入；
+        不检测外部对文件的实时修改，也不提供并发写入保护。
+        """
         if self._dirty:
             data = cache.get(self._cache_key)
             if data is not None:
+                if _fingerprint(data) == self._persisted:
+                    self._dirty = False
+                    return
                 self.save(data)
 
 

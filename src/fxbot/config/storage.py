@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import sys
 import json
+import time
 from typing import Any
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -12,6 +14,11 @@ from loguru import logger
 
 from .errors import ConfigFormatError
 from ..utils.paths import config_dir
+
+# 仅 Windows 上杀毒或索引服务短暂占用目标文件时重试原子替换。
+# 同步重试最多占住调用线程约 200ms，只发生在启动和配置保存路径。
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_SECONDS = 0.05
 
 
 class ConfigStorage:
@@ -56,7 +63,16 @@ class ConfigStorage:
             with NamedTemporaryFile(mode="wb", dir=self.path.parent, delete=False) as temporary:
                 temporary_path = Path(temporary.name)
                 temporary.write(content)
-            os.replace(temporary_path, self.path)
+            for attempt in range(_REPLACE_ATTEMPTS):
+                try:
+                    os.replace(temporary_path, self.path)
+                    break
+                except PermissionError:
+                    # 非 Windows 平台的权限不足是真实错误，不在占用场景内，立即抛出。
+                    if sys.platform != "win32" or attempt + 1 >= _REPLACE_ATTEMPTS:
+                        raise
+                    logger.debug("[Config] 原子替换被拒绝，重试写入: {}", self.path)
+                    time.sleep(_REPLACE_BACKOFF_SECONDS)
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
