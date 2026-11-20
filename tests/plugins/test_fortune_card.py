@@ -87,6 +87,13 @@ class FortuneCardTests(unittest.TestCase):
         self.assertIn("data:image/png;base64,", markup)
         self.assertIn("<svg", markup)
 
+    def test_bundled_fonts_are_embedded(self) -> None:
+        markup = fortune.build_card_html("200", RECORD, "群友")
+        self.assertIn("@font-face", markup)
+        self.assertEqual(markup.count("data:font/woff2;base64,"), 2)
+        self.assertIn("'FortuneSans'", markup)
+        self.assertIn("'FortuneKai'", markup)
+
     def test_real_avatar_bytes_override_initial_avatar(self) -> None:
         buffer = io.BytesIO()
         Image.new("RGB", (16, 16), (10, 20, 30)).save(buffer, format="JPEG")

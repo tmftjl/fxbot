@@ -190,6 +190,11 @@ def image_bytes(image: Image.Image) -> bytes:
 
 
 _TEMPLATE_PATH = RESOURCE_DIR / "fortune_card.html"
+_FONT_FILES = (
+    ("FortuneSans", RESOURCE_DIR / "fortune_sans.woff2"),
+    ("FortuneKai", RESOURCE_DIR / "fortune_kai.woff2"),
+)
+_FONT_FACE_RULE: str | None = None
 _DEFAULT_BG_PATH = RESOURCE_DIR / "fortune_bg.jpg"
 _DEFAULT_BG: bytes | None = None
 _TEMPLATE_CACHE: str | None = None
@@ -465,6 +470,26 @@ async def _fetch_avatar_bytes(bot: Any, user_id: str) -> bytes | None:
     return data
 
 
+def _font_face_rule() -> str:
+    """把随包字体以 data URI 内联，Linux 上不依赖系统字体。"""
+    global _FONT_FACE_RULE
+    if _FONT_FACE_RULE is None:
+        rules: list[str] = []
+        for family, path in _FONT_FILES:
+            try:
+                payload = base64.b64encode(path.read_bytes()).decode()
+            except OSError:
+                logger.opt(exception=True).debug("[Fortune] 字体读取失败：{}", path.name)
+                continue
+            rules.append(
+                f"@font-face{{font-family:'{family}';"
+                f"src:url(data:font/woff2;base64,{payload}) format('woff2');"
+                "font-display:swap;}"
+            )
+        _FONT_FACE_RULE = "".join(rules)
+    return _FONT_FACE_RULE
+
+
 def _template() -> str:
     global _TEMPLATE_CACHE
     if _TEMPLATE_CACHE is None:
@@ -515,7 +540,7 @@ def build_card_html(
             logger.opt(exception=True).debug("[Fortune] 背景图无法识别，使用渐变兜底")
 
     values = {
-        "font_face_rule": "",
+        "font_face_rule": _font_face_rule(),
         "theme_color": theme,
         "background_image": background_image,
         "avatar_url": avatar_url or _avatar_uri(nickname, theme),
