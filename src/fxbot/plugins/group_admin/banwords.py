@@ -285,7 +285,9 @@ async def matches_banword(context):
     return await banwords(context.app_services).rule(context.event)
 
 
-intercept_matcher = on_message(name="banword_interceptor", scene="group", priority=0, rule=matches_banword)
+intercept_matcher = on_message(
+    name="banword_interceptor", display_name="违禁词拦截", scene="group", priority=0, rule=matches_banword
+)
 
 
 @intercept_matcher.handle()

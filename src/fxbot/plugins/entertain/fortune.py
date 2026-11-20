@@ -216,7 +216,9 @@ def _get_or_create_today_fortune(user_id: str) -> tuple[dict[str, Any], bool]:
     return record, True
 
 
-handle_matcher = on_regex(r"^([#＃]|/)(?:今日运势|运势|抽签)", name="today", level="all")
+handle_matcher = on_regex(
+    r"^([#＃]|/)(?:今日运势|运势|抽签)", name="today", display_name="今日运势", level="all"
+)
 
 
 @handle_matcher.handle()

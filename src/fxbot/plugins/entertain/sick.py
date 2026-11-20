@@ -10,7 +10,7 @@ from ...utils.http import get_shared_async_client
 from ...core.plugin import on_regex
 from ...core.router import HandlerContext
 
-handle_matcher = on_regex(r"^(?:#|＃|/)?发病语录", name="get", level="all")
+handle_matcher = on_regex(r"^(?:#|＃|/)?发病语录", name="get", display_name="发病语录", level="all")
 
 
 @handle_matcher.handle()

@@ -256,7 +256,7 @@ async def show_box(context):
     await box.handle(context)
 
 
-joined_matcher = on_event("member_joined", name="increase_box", scene="group", priority=12)
+joined_matcher = on_event("member_joined", name="increase_box", display_name="入群抽盒", scene="group", priority=12)
 
 
 @joined_matcher.handle()

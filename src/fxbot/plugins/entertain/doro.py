@@ -10,7 +10,9 @@ from ...utils.http import get_shared_async_client
 from ...core.plugin import on_regex
 from ...core.router import HandlerContext
 
-handle_matcher = on_regex(r"^[#＃]?(?:抽取|随机)?(?:今日)?doro结局", name="draw", level="all")
+handle_matcher = on_regex(
+    r"^[#＃]?(?:抽取|随机)?(?:今日)?doro结局", name="draw", display_name="doro结局", level="all"
+)
 
 
 @handle_matcher.handle()

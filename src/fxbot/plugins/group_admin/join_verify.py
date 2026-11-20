@@ -258,7 +258,7 @@ async def joined(context):
     await context.service(verification).joined(context)
 
 
-left_matcher = on_event("member_left", name="left", scene="group", priority=0)
+left_matcher = on_event("member_left", name="left", display_name="退群清理", scene="group", priority=0)
 
 
 @left_matcher.handle()
@@ -270,7 +270,9 @@ async def has_pending(context):
     return context.service(verification).has_pending(context.event)
 
 
-answer_matcher = on_message(name="verification_answer", scene="group", priority=1, rule=has_pending)
+answer_matcher = on_message(
+    name="verification_answer", display_name="入群验证回答", scene="group", priority=1, rule=has_pending
+)
 
 
 @answer_matcher.handle()
