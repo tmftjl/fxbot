@@ -428,9 +428,8 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             patch.object(fortune, "USER_DATA_FILE", path),
             patch.object(fortune, "_USER_FORTUNES", {}),
             patch.object(fortune, "_JRYS_DATA", [{"fortuneSummary": "吉"}]),
-            patch.object(fortune, "_get_background_image", return_value=None),
-            patch.object(fortune, "_generate_fortune_canvas") as render,
-            patch.object(fortune, "image_bytes", return_value=b"png"),
+            patch.object(fortune, "_fetch_background_bytes", AsyncMock(return_value=None)),
+            patch.object(fortune, "render_card_bytes", AsyncMock(return_value=b"png")) as render,
         ):
             await fortune.handle(self.context())
             await fortune.handle(HandlerContext(OneBot11Client("101", AsyncMock()), other, MatchResult("")))
@@ -445,9 +444,7 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 tools.fortune, "_get_or_create_today_fortune", return_value=({"fortune": {}}, False)
             ) as get_record,
-            patch.object(tools.fortune, "_get_background_image", return_value=None),
-            patch.object(tools.fortune, "_generate_fortune_canvas"),
-            patch.object(tools.fortune, "image_bytes", return_value=b"png"),
+            patch.object(tools.fortune, "render_card_bytes", AsyncMock(return_value=b"png")),
         ):
             await tools.get_fortune_tool(Mock(), Mock())
         get_record.assert_called_once_with("200")

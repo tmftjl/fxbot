@@ -40,9 +40,11 @@ async def authorized(ctx, rt, feature):
 async def get_fortune_tool(ctx: ToolContext, rt: ToolRuntime, nickname: str = "您") -> str:
     event, bot = await authorized(ctx, rt, "entertain:today")
     data, _ = fortune._get_or_create_today_fortune(event.user_id)
-    image = fortune._generate_fortune_canvas(nickname, data, await fortune._get_background_image())
+    image = await fortune.render_card_bytes(
+        event.user_id, data, event.user_name or nickname, bot=bot
+    )
     await authorized(ctx, rt, "entertain:today")
-    await bot.send(event.target, Message([MessageSegment.image(fortune.image_bytes(image))]))
+    await bot.send(event.target, Message([MessageSegment.image(image)]))
     return str(data["fortune"].get("fortuneSummary", "今日运势已发送"))
 
 

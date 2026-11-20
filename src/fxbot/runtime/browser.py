@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import asyncio
 import subprocess
+from typing import Any
 
 from loguru import logger
 
@@ -76,12 +77,16 @@ class BrowserRenderer:
         load_timeout: float = 15.0,
         screenshot_timeout: float = 15.0,
         full_page: bool = True,
+        viewport: dict[str, int] | None = None,
     ) -> bytes:
         """渲染 HTML 并返回 PNG；selector 命中时只截该元素。"""
         async with self._semaphore:
             browser = await self._ensure_browser()
             try:
-                page = await browser.new_page(device_scale_factor=max(float(scale or 1.0), 0.1))
+                options: dict[str, Any] = {"device_scale_factor": max(float(scale or 1.0), 0.1)}
+                if viewport is not None:
+                    options["viewport"] = viewport
+                page = await browser.new_page(**options)
             except Exception as exc:
                 raise BrowserRenderError("创建页面失败") from exc
             try:
