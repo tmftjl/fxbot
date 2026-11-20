@@ -520,6 +520,61 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["ext_info"], {"ref_idx": "REFIDX_SENT"})
 
+    async def test_group_quote_without_ref_index_still_reads_msg_elements(self):
+        source = payload("GROUP_MESSAGE_CREATE", content="<@quoted_user> #撅")
+        source["d"].update(
+            message_type=103,
+            message_scene={"source": "test", "ext": ["msg_idx=REFIDX_CURRENT"]},
+            mentions=[
+                {
+                    "scope": "single",
+                    "id": "quoted_user",
+                    "is_you": False,
+                    "member_openid": "QUOTED",
+                    "bot": False,
+                    "username": "quoted",
+                }
+            ],
+            msg_elements=[
+                {
+                    "msg_idx": "REFIDX_QUOTED",
+                    "content": "",
+                    "attachments": [
+                        {
+                            "url": "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=quoted",
+                            "content_type": "image/jpeg",
+                        }
+                    ],
+                    "author": {"id": "quoted_user", "member_openid": "QUOTED", "username": "quoted author"},
+                }
+            ],
+        )
+        event = parse_event(source, bot_id=APP_ID)
+        self.assertIsNotNone(event.reply)
+        self.assertEqual(event.reply.message_id, "REFIDX_QUOTED")
+        self.assertEqual(event.reply.user_id, "QUOTED")
+        self.assertEqual(event.message.plain_text(), "#撅")
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(quoted.message_id, "REFIDX_QUOTED")
+        self.assertEqual([segment.type for segment in quoted.message.segments], ["image"])
+        self.http.request.assert_not_awaited()
+
+    async def test_group_quote_matches_element_when_ref_index_is_temporary(self):
+        source = payload("GROUP_MESSAGE_CREATE", content="#撅")
+        source["d"].update(
+            message_type=103,
+            message_scene={
+                "source": "test",
+                "ext": ["ref_msg_idx=TMP_00000000-0000-0000-0000-000000000000", "msg_idx=REFIDX_CURRENT"],
+            },
+            msg_elements=[{"msg_idx": "REFIDX_QUOTED", "content": "quoted text"}],
+        )
+        event = parse_event(source, bot_id=APP_ID)
+        self.assertIsNotNone(event.reply)
+        self.assertEqual(event.reply.message_id, "REFIDX_QUOTED")
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(quoted.message.plain_text(), "quoted text")
+
     async def test_large_bytes_use_multipart_upload_not_inline_base64(self):
         self.bot.actions.post_group_upload = AsyncMock(return_value={"file_info": "large"})
         self.http.request.return_value = {"id": "sent"}
