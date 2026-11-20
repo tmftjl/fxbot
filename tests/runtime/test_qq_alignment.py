@@ -575,6 +575,26 @@ class QQAPITests(unittest.IsolatedAsyncioTestCase):
         quoted = await self.bot.get_reply(event)
         self.assertEqual(quoted.message.plain_text(), "quoted text")
 
+    async def test_group_quote_with_temporary_index_still_reads_element_content(self):
+        source = payload("GROUP_MESSAGE_CREATE", content="#撅")
+        source["d"].update(
+            message_type=103,
+            message_scene={
+                "source": "test",
+                "ext": [
+                    "msg_idx=REFIDX_CURRENT",
+                    "auth_token=test",
+                    "ref_msg_idx=TMP_00000000-0000-0000-0000-000000000000",
+                ],
+            },
+            msg_elements=[{"content": "quoted text"}],
+        )
+        event = parse_event(source, bot_id=APP_ID)
+        self.assertIsNotNone(event.reply)
+        self.assertEqual(event.reply.message_id, "TMP_00000000-0000-0000-0000-000000000000")
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(quoted.message.plain_text(), "quoted text")
+
     async def test_large_bytes_use_multipart_upload_not_inline_base64(self):
         self.bot.actions.post_group_upload = AsyncMock(return_value={"file_info": "large"})
         self.http.request.return_value = {"id": "sent"}

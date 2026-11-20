@@ -59,3 +59,46 @@ class QQRecentReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quoted.message.plain_text(), "original text")
         self.assertEqual(quoted.sender_id, "MEMBER_OPENID")
         self.assertEqual(quoted.sender_name, "昵称")
+
+    async def test_quote_elements_are_not_cached_as_own_indices(self) -> None:
+        source = payload("GROUP_MESSAGE_CREATE", content="#撅")
+        source["d"].update(
+            group_openid="CACHE_QUOTE",
+            message_type=103,
+            message_scene={"source": "test", "ext": ["msg_idx=REFIDX_CURRENT"]},
+            msg_elements=[{"msg_idx": "REFIDX_QUOTED", "content": "被引用的原文"}],
+        )
+        remember_event(self.bot, parse_event(source, bot_id=APP_ID))
+
+        quoted_source = payload("GROUP_MESSAGE_CREATE", content="question")
+        quoted_source["d"].update(
+            group_openid="CACHE_QUOTE",
+            message_type=103,
+            message_scene={"source": "test", "ext": ["ref_msg_idx=REFIDX_QUOTED"]},
+            msg_elements=[],
+        )
+        event = parse_event(quoted_source, bot_id=APP_ID)
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(quoted.message.plain_text(), "")
+
+    async def test_quote_element_content_wins_over_cache(self) -> None:
+        source = payload("GROUP_MESSAGE_CREATE", content="original text")
+        source["d"].update(
+            group_openid="CACHE_TMP",
+            message_scene={"source": "test", "ext": ["msg_idx=REFIDX_ORIGINAL"]},
+        )
+        remember_event(self.bot, parse_event(source, bot_id=APP_ID))
+
+        quoted_source = payload("GROUP_MESSAGE_CREATE", content="question")
+        quoted_source["d"].update(
+            group_openid="CACHE_TMP",
+            message_type=103,
+            message_scene={
+                "source": "test",
+                "ext": ["ref_msg_idx=TMP_00000000-0000-0000-0000-000000000000"],
+            },
+            msg_elements=[{"msg_idx": "REFIDX_ORIGINAL", "content": "element text"}],
+        )
+        event = parse_event(quoted_source, bot_id=APP_ID)
+        quoted = await self.bot.get_reply(event)
+        self.assertEqual(quoted.message.plain_text(), "element text")

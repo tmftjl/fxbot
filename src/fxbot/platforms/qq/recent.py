@@ -42,7 +42,9 @@ def _indices(event: Event) -> list[str]:
     values = [_ext_value(event, "msg_idx")]
     if data.get("msg_idx") is not None:
         values.append(str(data["msg_idx"]))
-    if not _ext_value(event, "ref_msg_idx"):
+    # message_type=103 时 msg_elements 放的是被引用消息，不能当成本条消息的索引；
+    # 其它类型（如并行消息、聊天记录）里才是本条消息自己的元素。
+    if data.get("message_type") != 103:
         elements = data.get("msg_elements")
         if isinstance(elements, list):
             values.extend(
@@ -57,7 +59,9 @@ def _reply_index(event: Event) -> str:
     quoted = event.metadata.get("qq_reply")
     if isinstance(quoted, dict) and quoted.get("msg_idx") is not None:
         return str(quoted["msg_idx"])
-    return _ext_value(event, "ref_msg_idx")
+    index = _ext_value(event, "ref_msg_idx")
+    # TMP_ 是引用侧临时索引，永远不可能命中按 REFIDX/msg_idx 建立的缓存
+    return "" if index.startswith("TMP_") else index
 
 
 def _images(message: Message) -> list[str | bytes]:
