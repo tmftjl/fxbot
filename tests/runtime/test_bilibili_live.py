@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import asyncio
 import tempfile
@@ -12,6 +13,8 @@ from pathlib import Path
 from dataclasses import replace
 from unittest.mock import Mock, AsyncMock, patch
 
+import httpx
+from PIL import Image
 from fastapi.testclient import TestClient
 
 from fxbot.core import Message, SessionTarget
@@ -33,7 +36,7 @@ from tests.migration.test_onebot11 import payload
 from fxbot.permission.authorization import Authorizer
 from fxbot.plugins.bilibili_live.store import LiveStore
 from fxbot.plugins.bilibili_live.client import LiveRoomSnapshot, BilibiliLiveError
-from fxbot.plugins.bilibili_live.scheduler import LivePoller
+from fxbot.plugins.bilibili_live.scheduler import LivePoller, _cover_bytes
 
 ROOM = LiveRoomSnapshot(123, 456, "主播", "标题", "分区", "", 0, "")
 FIRST = SessionTarget("onebot11", "100", "group", "300")
@@ -402,6 +405,82 @@ class LivePollerTests(unittest.IsolatedAsyncioTestCase):
         self.notifications.send = AsyncMock(side_effect=send)
         self.assertEqual(await self.poller.check_and_push(), 0)
         self.assertEqual(self.store.subscriptions(), ())
+
+
+    async def test_cover_failure_does_not_block_text_delivery(self) -> None:
+        self.fetch.return_value = replace(ROOM, live_status=1, cover="https://example.test/cover.jpg")
+        self.notifications.send.return_value = True
+        with patch(
+            "fxbot.plugins.bilibili_live.scheduler._cover_bytes", AsyncMock(return_value=None)
+        ) as cover:
+            self.assertEqual(await self.poller.check_and_push(), 2)
+        cover.assert_awaited_once()
+        self.assertTrue(self.store.room_state(123).delivered)
+        sent = [call.args[2] for call in self.notifications.send.await_args_list]
+        self.assertTrue(sent)
+        self.assertTrue(all(message.segments[0].type == "text" for message in sent))
+        self.notifications.send.reset_mock()
+        self.assertEqual(await self.poller.check_and_push(), 0)
+        self.notifications.send.assert_not_awaited()
+
+    async def test_cover_is_sent_after_text_and_failure_is_not_retried(self) -> None:
+        self.fetch.return_value = replace(ROOM, live_status=1, cover="https://example.test/cover.jpg")
+
+        async def deliver(feature, target, message, *, valid):
+            return message.segments[0].type == "text"
+
+        self.notifications.send = AsyncMock(side_effect=deliver)
+        with patch(
+            "fxbot.plugins.bilibili_live.scheduler._cover_bytes",
+            AsyncMock(return_value=b"\xff\xd8\xff\xd9"),
+        ):
+            self.assertEqual(await self.poller.check_and_push(), 2)
+        self.assertTrue(self.store.room_state(123).delivered)
+        calls = self.notifications.send.await_args_list
+        for target_id in ("300", "200"):
+            kinds = [
+                call.args[2].segments[0].type for call in calls if call.args[1].target_id == target_id
+            ]
+            self.assertEqual(kinds, ["text", "image"])
+        self.notifications.send.reset_mock()
+        self.assertEqual(await self.poller.check_and_push(), 0)
+        self.notifications.send.assert_not_awaited()
+
+
+class LiveCoverTests(unittest.IsolatedAsyncioTestCase):
+    """封面只负责附加体验，下载或转码失败不能影响文字通知。"""
+
+    async def test_cover_is_downloaded_and_converted_to_jpeg(self) -> None:
+        buffer = io.BytesIO()
+        Image.new("RGBA", (1400, 900), (10, 20, 30, 128)).save(buffer, format="PNG")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=buffer.getvalue(), headers={"content-type": "image/png"})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(client.aclose)
+        with patch(
+            "fxbot.plugins.bilibili_live.scheduler.get_shared_async_client",
+            AsyncMock(return_value=client),
+        ):
+            data = await _cover_bytes("https://example.test/cover.png")
+        self.assertIsNotNone(data)
+        assert data is not None
+        with Image.open(io.BytesIO(data)) as image:
+            self.assertEqual(image.format, "JPEG")
+            self.assertEqual(max(image.size), 1080)
+
+    async def test_cover_download_failure_returns_none(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(client.aclose)
+        with patch(
+            "fxbot.plugins.bilibili_live.scheduler.get_shared_async_client",
+            AsyncMock(return_value=client),
+        ):
+            self.assertIsNone(await _cover_bytes("https://example.test/missing.jpg"))
 
 
 class LiveCommandTests(unittest.IsolatedAsyncioTestCase):

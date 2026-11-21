@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import io
 import asyncio
 from collections.abc import Callable, Awaitable
 
+import httpx
 from loguru import logger
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .store import LiveStore, Subscription
 from ...core import Message, SessionTarget, MessageSegment
-from .client import LiveRoomSnapshot, BilibiliLiveError, fetch_room
+from .client import LiveRoomSnapshot, BilibiliLiveError, fetch_room, BILI_HEADERS
+from ...utils.http import get_shared_async_client
 from ...runtime.notifications import NotificationService
 
 CHECK_INTERVAL_SECONDS = 60
 MAX_CONCURRENCY = 4
+COVER_MAX_EDGE = 1080
 RoomFetcher = Callable[..., Awaitable[LiveRoomSnapshot]]
 
 
@@ -23,6 +28,32 @@ def _push_text(room: LiveRoomSnapshot) -> str:
         lines.append(f"开播时间：{room.live_time}")
     lines.append(room.url)
     return "\n".join(lines)
+
+
+async def _cover_bytes(url: str) -> bytes | None:
+    """自行下载并转成 JPEG，避免平台客户端处理外链图片失败。"""
+    if not url:
+        return None
+    try:
+        client = await get_shared_async_client()
+        response = await client.get(url, headers=BILI_HEADERS, timeout=15, follow_redirects=True)
+        response.raise_for_status()
+        with Image.open(io.BytesIO(response.content)) as image:
+            image = ImageOps.exif_transpose(image)
+            image.thumbnail((COVER_MAX_EDGE, COVER_MAX_EDGE))
+            if image.mode in {"RGBA", "LA", "P"}:
+                rgba = image.convert("RGBA")
+                background = Image.new("RGB", rgba.size, (255, 255, 255))
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                image = background
+            else:
+                image = image.convert("RGB")
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=85, optimize=True)
+            return buffer.getvalue()
+    except (httpx.HTTPError, UnidentifiedImageError, OSError, ValueError):
+        logger.opt(exception=True).debug("[bilibili_live] 封面处理失败，改为纯文本推送")
+        return None
 
 
 class LivePoller:
@@ -110,25 +141,37 @@ class LivePoller:
                 current = self.store.room_state(room.room_id)
                 if current is not None and current.delivered:
                     continue
-                segments = [MessageSegment.text(_push_text(room))]
-                if room.cover:
-                    segments.append(MessageSegment.image(room.cover))
-                for sub in subscriptions:
-                    if not self._pending(sub, room.room_id):
-                        continue
+                text = Message([MessageSegment.text(_push_text(room))])
+                pending = [sub for sub in subscriptions if self._pending(sub, room.room_id)]
+                cover: bytes | None = None
+                cover_loaded = False
+                for sub in pending:
                     for bot in sender.application.bots:
                         target = SessionTarget(bot.platform, bot.bot_id, sub.kind, sub.target_id)
                         sent = await sender.send(
                             "bilibili_live",
                             target,
-                            Message(segments),
+                            text,
                             valid=lambda sub=sub, rid=room.room_id: self._pending(sub, rid),
                         )
-                        if sent:
-                            pushed += 1
-                            if self._subscribed(sub, room.room_id):
-                                self.store.mark_target_delivered(room.room_id, sub.key)
-                            break
+                        if not sent:
+                            continue
+                        pushed += 1
+                        if self._subscribed(sub, room.room_id):
+                            self.store.mark_target_delivered(room.room_id, sub.key)
+                        # 封面只是附带信息：文字送达后才尝试，失败不回滚也不重试。
+                        if room.cover:
+                            if not cover_loaded:
+                                cover = await _cover_bytes(room.cover)
+                                cover_loaded = True
+                            if cover is not None:
+                                await sender.send(
+                                    "bilibili_live",
+                                    target,
+                                    Message([MessageSegment.image(cover)]),
+                                    valid=lambda sub=sub, rid=room.room_id: self._subscribed(sub, rid),
+                                )
+                        break
                 remaining = self.store.subscriptions(room.room_id)
                 if remaining and all(not self.store.target_pending(room.room_id, sub.key) for sub in remaining):
                     self.store.mark_delivered(room.room_id)
