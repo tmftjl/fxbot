@@ -70,9 +70,17 @@ class FortuneCardTests(unittest.TestCase):
 
     def test_good_and_bad_activities_never_share_a_group(self) -> None:
         groups = {name: group for name, group in fortune._GOOD + fortune._BAD}
+        counts = {2: 0, 3: 0}
         for index in range(300):
             good, bad = fortune._activities(f"user-{index}")
-            self.assertNotEqual(groups[good], groups[bad])
+            self.assertIn(len(good), (2, 3))
+            self.assertIn(len(bad), (2, 3))
+            self.assertEqual(len(set(good)), len(good))
+            self.assertEqual(len(set(bad)), len(bad))
+            self.assertFalse({groups[name] for name in good} & {groups[name] for name in bad})
+            counts[len(good)] += 1
+            counts[len(bad)] += 1
+        self.assertTrue(all(counts.values()), counts)
 
     def test_card_html_fills_tokens_and_escapes_user_text(self) -> None:
         record = {

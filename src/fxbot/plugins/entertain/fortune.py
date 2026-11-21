@@ -373,13 +373,19 @@ def _lucky(seed: str) -> dict[str, Any]:
     }
 
 
-def _activities(seed: str) -> tuple[str, str]:
-    """宜忌各取一项且组别互斥，杜绝“宜早睡、忌熬夜”式矛盾。"""
+def _activities(seed: str) -> tuple[list[str], list[str]]:
+    """宜忌各取两到三项且组别互斥，杜绝“宜早睡、忌熬夜”式矛盾。"""
     rng = random.Random(seed + ":yiji")
-    good, group = rng.choice(_GOOD)
-    candidates = [item for item in _BAD if item[1] != group] or list(_BAD)
-    bad, _ = rng.choice(candidates)
-    return good, bad
+    good_items = rng.sample(_GOOD, rng.choice((2, 3)))
+    good_groups = {item[1] for item in good_items}
+    bad_pool = [item for item in _BAD if item[1] not in good_groups] or list(_BAD)
+    bad_items = rng.sample(bad_pool, min(rng.choice((2, 3)), len(bad_pool)))
+    return [name for name, _ in good_items], [name for name, _ in bad_items]
+
+
+def _activity_items(names: list[str]) -> str:
+    """宜忌词条渲染为可换行的文字条目，避免三项挤成一行溢出。"""
+    return "".join(f'<span class="item">{html.escape(name)}</span>' for name in names)
 
 
 def _radar_svg(dims: dict[str, float], color: str, size: int = 320) -> str:
@@ -411,7 +417,9 @@ def _radar_svg(dims: dict[str, float], color: str, size: int = 320) -> str:
             f'<text x="{cx + (radius + 24) * math.cos(angle):.1f}" '
             f'y="{cy + (radius + 22) * math.sin(angle):.1f}" text-anchor="middle" '
             f'dominant-baseline="middle" font-size="16" font-weight="800" fill="#fff">'
-            f"{html.escape(axis)}</text>"
+            f"{html.escape(axis)}"
+            f'<tspan dx="5" font-size="17" fill="#ffffff" opacity="0.8">{round(value * 100)}</tspan>'
+            "</text>"
         )
     return (
         f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" '
@@ -502,11 +510,11 @@ def _gradient_uri() -> str:
     global _GRADIENT_URI
     if _GRADIENT_URI is None:
         width, height = 1080, 1920
-        image = Image.new("RGB", (width, height), "#14101f")
+        image = Image.new("RGB", (width, height), "#241d3a")
         draw = ImageDraw.Draw(image)
         for y in range(height):
             t = y / (height - 1)
-            draw.line([(0, y), (width, y)], fill=(int(20 + 30 * t), int(17 + 18 * t), int(40 + 44 * t)))
+            draw.line([(0, y), (width, y)], fill=(int(36 + 50 * t), int(30 + 40 * t), int(58 + 80 * t)))
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=88)
         _GRADIENT_URI = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
@@ -528,6 +536,8 @@ def build_card_html(
     lucky = _lucky(seed)
     good, bad = _activities(seed)
     theme = lucky["hex"]
+    good_items = _activity_items(good)
+    bad_items = _activity_items(bad)
 
     avatar_url = _image_data_uri(avatar) if avatar else None
     background_image = _gradient_uri()
@@ -561,8 +571,8 @@ def build_card_html(
         "lucky_color": html.escape(lucky["color"]),
         "lucky_number": str(lucky["number"]),
         "lucky_direction": html.escape(lucky["direction"]),
-        "good_activities": html.escape(good),
-        "bad_activities": html.escape(bad),
+        "good_activities": good_items,
+        "bad_activities": bad_items,
         "current_date": today_str("%Y.%m.%d"),
     }
     return _template().format(**values)
