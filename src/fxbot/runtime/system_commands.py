@@ -11,6 +11,7 @@ import atexit
 import shutil
 import signal
 import asyncio
+import hashlib
 from copy import deepcopy
 from pathlib import Path
 from collections.abc import Callable
@@ -35,6 +36,8 @@ _GIT_QUERY_TIMEOUT_SECONDS = 15
 _PROCESS_CLOSE_TIMEOUT_SECONDS = 5
 _REPORT_TIMEOUT_SECONDS = 5
 _DOCKER_APP = Path("/app")
+_DEPS_FILES = ("pyproject.toml", "uv.lock")
+_DEPS_STAMP_FILE = data_dir("system") / "deps.sha256"
 _UP_TO_DATE_MARKERS = ("already up to date", "already up-to-date", "已经是最新")
 
 _PENDING_ARGV: list[str] | None = None
@@ -63,6 +66,41 @@ def _docker_repo() -> Path | None:
 def _git_root() -> Path:
     """容器内优先使用挂载仓库，其他部署使用项目根目录。"""
     return _docker_repo() or project_root()
+
+
+def _deps_fingerprint(repo: Path) -> str | None:
+    """依赖文件哈希；读不到依赖文件时返回 None，按“需要同步”处理。"""
+    digest = hashlib.sha256()
+    try:
+        for name in _DEPS_FILES:
+            digest.update((repo / name).read_bytes())
+            digest.update(b"\0")
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _deps_changed(repo: Path) -> bool:
+    """与上次成功同步的指纹比较；没有指纹（首次或上次失败）视为需要同步。"""
+    fingerprint = _deps_fingerprint(repo)
+    if fingerprint is None:
+        return True
+    try:
+        return _DEPS_STAMP_FILE.read_text(encoding="utf-8").strip() != fingerprint
+    except OSError:
+        return True
+
+
+def _write_deps_stamp(repo: Path) -> None:
+    """同步成功后记录依赖指纹，放在数据目录里，容器重启也不会丢。"""
+    fingerprint = _deps_fingerprint(repo)
+    if fingerprint is None:
+        return
+    try:
+        _DEPS_STAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DEPS_STAMP_FILE.write_text(fingerprint, encoding="utf-8")
+    except OSError:
+        logger.opt(exception=True).warning("写入依赖指纹失败")
 
 
 def _restart_argv() -> list[str]:
@@ -277,6 +315,27 @@ async def _sync_docker_dependencies() -> tuple[bool, str]:
     return code == 0, output
 
 
+async def _sync_project_dependencies(repo: Path) -> tuple[bool, str]:
+    """非容器部署直接在本项目环境里同步依赖；没装 uv 时跳过并由用户自行管理。"""
+    try:
+        code, output = await _run_command(
+            "uv",
+            "sync",
+            "--frozen",
+            "--inexact",
+            cwd=repo,
+            timeout=_UPDATE_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        logger.warning("未找到 uv，跳过依赖同步: {}", repo)
+        return True, "未找到 uv，跳过依赖同步"
+    except TimeoutError:
+        return False, "依赖同步超时"
+    except OSError as error:
+        return False, str(error)
+    return code == 0, output
+
+
 async def _send_report(context: HandlerContext, lines: list[str]) -> None:
     if Capability.FORWARD_SEND in context.bot.capabilities:
         await context.bot.capabilities.require(Capability.FORWARD_SEND).send_forward(
@@ -443,6 +502,7 @@ async def _update(context: HandlerContext) -> None:
         return
     await context.send("正在更新 FxBot，稍等。")
     restart_ready = False
+    repo = (_docker_repo() if docker else None) or project_root()
 
     def prepare_restart() -> None:
         nonlocal restart_ready
@@ -451,9 +511,14 @@ async def _update(context: HandlerContext) -> None:
         restart_ready = True
 
     def on_pull_success() -> None:
-        # 容器需要先同步依赖，不能在这一步承诺重启。
-        if not docker:
+        # 依赖没变就立刻承诺重启：后面的日志读取、报告发送即使被取消，代码也已更新。
+        if not _deps_changed(repo):
             prepare_restart()
+
+    async def sync_dependencies() -> tuple[bool, str]:
+        if docker:
+            return await _sync_docker_dependencies()
+        return await _sync_project_dependencies(repo)
 
     try:
         ok, output, logs = await _git_pull(on_pull_success)
@@ -462,23 +527,25 @@ async def _update(context: HandlerContext) -> None:
             await _send_report(context, ["FxBot 更新失败。", "git pull 返回错误，完整信息已记录到后台日志。"])
             return
         status = "没有新提交" if _already_up_to_date(output) else "更新完成"
-        if docker:
-            # Git 已是最新也要执行：上次依赖同步可能失败或被取消。
-            synced, detail = await _sync_docker_dependencies()
+        if not restart_ready:
+            # 依赖指纹变化（或首次/上次同步失败）才跑 uv sync，纯代码更新直接重启。
+            synced, detail = await sync_dependencies()
             if not synced:
-                logger.error("容器依赖同步失败: {}", _truncate(detail))
+                logger.error("依赖同步失败: {}", _truncate(detail))
+                hint = "；Windows 下请先关闭 Bot 再手动执行 uv sync" if os.name == "nt" else ""
                 await asyncio.wait_for(
                     _send_report(
                         context,
                         [
                             "FxBot 依赖同步失败，本次没有重启。",
-                            "仓库代码已拉取，但依赖还没就绪。处理后台日志里的错误后，再发一次 #更新 即可。",
+                            f"仓库代码已拉取，但依赖还没就绪{hint}。处理后台日志里的错误后，再发一次 #更新 即可。",
                             *logs,
                         ],
                     ),
                     timeout=_REPORT_TIMEOUT_SECONDS,
                 )
                 return
+            _write_deps_stamp(repo)
             prepare_restart()
         try:
             await asyncio.wait_for(_send_report(context, [f"FxBot {status}。", *logs]), timeout=_REPORT_TIMEOUT_SECONDS)

@@ -164,6 +164,8 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(setattr, system, "_PENDING_ARGV", None)
         self.enterContext(patch.object(system, "_docker_deployment", return_value=False))
+        # 默认按“依赖未变化”走纯代码更新；需要同步的用例单独把指纹改成变化。
+        self.enterContext(patch.object(system, "_deps_changed", return_value=False))
         self.event = make_event()
 
     def context(self, bot=None) -> HandlerContext:
@@ -269,6 +271,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(system, "_docker_deployment", return_value=True),
             patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_deps_changed", return_value=True),
             patch.object(system, "_git_pull", self.successful_pull("updated")),
             patch.object(system, "_sync_docker_dependencies", AsyncMock(return_value=(True, ""))) as sync,
             patch.object(system, "_send_report", AsyncMock()),
@@ -290,6 +293,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(system, "_docker_deployment", return_value=True),
             patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_deps_changed", return_value=True),
             patch.object(system, "_git_pull", AsyncMock(side_effect=pull)),
             patch.object(
                 system, "_sync_docker_dependencies", AsyncMock(side_effect=[(False, "install failed"), (True, "")])
@@ -323,6 +327,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(system, "_docker_deployment", return_value=True),
             patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_deps_changed", return_value=True),
             patch.object(system, "_git_pull", self.successful_pull()),
             patch.object(system, "_sync_docker_dependencies", AsyncMock(side_effect=sync)),
             patch.object(system, "_send_report", report),
@@ -335,6 +340,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(system, "_docker_deployment", return_value=True),
             patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_deps_changed", return_value=True),
             patch.object(system, "_git_pull", self.successful_pull()),
             patch.object(system, "_sync_docker_dependencies", AsyncMock(side_effect=asyncio.CancelledError())),
             patch.object(system, "_send_report", AsyncMock()) as report,
@@ -351,6 +357,7 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(system, "_docker_deployment", return_value=True),
             patch.object(system, "_docker_repo", return_value=Path("/repo")),
+            patch.object(system, "_deps_changed", return_value=True),
             patch.object(system, "_git_pull", self.successful_pull()),
             patch.object(system, "_sync_docker_dependencies", AsyncMock(return_value=(True, ""))),
             patch.object(system, "_send_report", AsyncMock(side_effect=TimeoutError())),
@@ -373,6 +380,36 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         exit_process.assert_not_called()
         pending.assert_not_called()
 
+    async def test_changed_dependencies_sync_before_restart(self) -> None:
+        with (
+            patch.object(system, "_deps_changed", return_value=True),
+            patch.object(system, "_git_pull", self.successful_pull()),
+            patch.object(system, "_sync_project_dependencies", AsyncMock(return_value=(True, "synced"))) as sync,
+            patch.object(system, "_write_deps_stamp") as stamp,
+            patch.object(system, "_send_report", AsyncMock()),
+            patch.object(system, "_request_exit") as exit_process,
+        ):
+            await system._update(self.context())
+        sync.assert_awaited_once()
+        stamp.assert_called_once()
+        exit_process.assert_called_once()
+        self.assertIsNotNone(system._PENDING_ARGV)
+
+    async def test_dependency_failure_does_not_restart(self) -> None:
+        with (
+            patch.object(system, "_deps_changed", return_value=True),
+            patch.object(system, "_git_pull", self.successful_pull()),
+            patch.object(system, "_sync_project_dependencies", AsyncMock(return_value=(False, "uv failed"))),
+            patch.object(system, "_write_deps_stamp") as stamp,
+            patch.object(system, "_send_report", AsyncMock()) as report,
+            patch.object(system, "_request_exit") as exit_process,
+        ):
+            await system._update(self.context())
+        stamp.assert_not_called()
+        exit_process.assert_not_called()
+        self.assertIsNone(system._PENDING_ARGV)
+        self.assertIn("依赖同步失败", report.await_args.args[1][0])
+
     async def test_update_success_reports_and_restarts(self) -> None:
         context = self.context()
         with (
@@ -385,6 +422,35 @@ class SystemCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没有新提交", report.await_args.args[1][0])
         exit_process.assert_called_once()
         pending.assert_called_once()
+
+
+class DependencyFingerprintTests(unittest.TestCase):
+    """依赖指纹只在文件变化后要求同步。"""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.repo = root / "repo"
+        self.repo.mkdir()
+        for name in ("pyproject.toml", "uv.lock"):
+            (self.repo / name).write_text(f"# {name}\n", encoding="utf-8")
+        self.enterContext(patch.object(system, "_DEPS_STAMP_FILE", root / "deps.sha256"))
+
+    def test_missing_stamp_requires_sync(self) -> None:
+        self.assertTrue(system._deps_changed(self.repo))
+
+    def test_successful_stamp_skips_until_files_change(self) -> None:
+        system._write_deps_stamp(self.repo)
+        self.assertFalse(system._deps_changed(self.repo))
+        (self.repo / "uv.lock").write_text("# changed\n", encoding="utf-8")
+        self.assertTrue(system._deps_changed(self.repo))
+
+    def test_missing_dependency_file_forces_sync(self) -> None:
+        system._write_deps_stamp(self.repo)
+        self.assertFalse(system._deps_changed(self.repo))
+        (self.repo / "uv.lock").unlink()
+        self.assertTrue(system._deps_changed(self.repo))
 
 
 class DockerDependencyTests(unittest.IsolatedAsyncioTestCase):
