@@ -520,8 +520,13 @@ async def _update(context: HandlerContext) -> None:
             return await _sync_docker_dependencies()
         return await _sync_project_dependencies(repo)
 
+    started = time.monotonic()
+    pulled = started
+    reported: float | None = None
+    sync_label = "skip"
     try:
         ok, output, logs = await _git_pull(on_pull_success)
+        pulled = time.monotonic()
         if not ok:
             logger.error("git pull 失败: {}", _truncate(output))
             await _send_report(context, ["FxBot 更新失败。", "git pull 返回错误，完整信息已记录到后台日志。"])
@@ -529,7 +534,9 @@ async def _update(context: HandlerContext) -> None:
         status = "没有新提交" if _already_up_to_date(output) else "更新完成"
         if not restart_ready:
             # 依赖指纹变化（或首次/上次同步失败）才跑 uv sync，纯代码更新直接重启。
+            sync_started = time.monotonic()
             synced, detail = await sync_dependencies()
+            sync_label = f"{time.monotonic() - sync_started:.1f}s"
             if not synced:
                 logger.error("依赖同步失败: {}", _truncate(detail))
                 hint = "；Windows 下请先关闭 Bot 再手动执行 uv sync" if os.name == "nt" else ""
@@ -547,12 +554,21 @@ async def _update(context: HandlerContext) -> None:
                 return
             _write_deps_stamp(repo)
             prepare_restart()
+        reported = time.monotonic()
         try:
             await asyncio.wait_for(_send_report(context, [f"FxBot {status}。", *logs]), timeout=_REPORT_TIMEOUT_SECONDS)
         except Exception:
             logger.opt(exception=True).warning("更新成功通知未完成，仍执行重启")
     finally:
         if restart_ready:
+            report_seconds = 0.0 if reported is None else time.monotonic() - reported
+            logger.info(
+                "[Update] 阶段耗时: 拉取={:.1f}s 同步={} 报告={:.1f}s 合计={:.1f}s",
+                pulled - started,
+                sync_label,
+                report_seconds,
+                time.monotonic() - started,
+            )
             _request_exit()
 
 
