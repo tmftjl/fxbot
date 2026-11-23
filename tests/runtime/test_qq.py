@@ -480,6 +480,31 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(file_name, "clip.mp4")
         self.assertEqual(len(content), 10 * 1024 * 1024 + 1)
 
+    async def test_video_over_direct_limit_uses_chunked_upload(self):
+        self.api.request.side_effect = [{"id": "reply"}]
+        content = b"v" * (5 * 1024 * 1024 + 1)
+        with patch(
+            "fxbot.platforms.qq.actions.upload", AsyncMock(return_value={"file_info": "media-info"})
+        ) as upload:
+            await self.bot.send(
+                self.event.target, Message([MessageSegment("video", {"file": content, "name": "clip.mp4"})])
+            )
+        self.assertEqual(upload.await_args.args[3], 2)
+        self.assertEqual(upload.await_args.args[4], "clip.mp4")
+        self.assertEqual(self.api.request.await_args.kwargs["json"]["media"], {"file_info": "media-info"})
+
+    async def test_video_within_direct_limit_uses_file_data(self):
+        self.api.request.side_effect = [{"file_info": "media-info"}, {"id": "reply"}]
+        content = b"v" * (4 * 1024 * 1024)
+        await self.bot.send(
+            self.event.target, Message([MessageSegment("video", {"file": content, "name": "clip.mp4"})])
+        )
+        upload, send = self.api.request.await_args_list
+        self.assertEqual(upload.args[1], "/v2/groups/GROUP_OPENID/files")
+        self.assertEqual(upload.kwargs["json"]["file_type"], 2)
+        self.assertIn("file_data", upload.kwargs["json"])
+        self.assertEqual(send.kwargs["json"]["media"], {"file_info": "media-info"})
+
     async def test_slow_media_upload_does_not_block_other_targets(self):
         started = asyncio.Event()
         release = asyncio.Event()

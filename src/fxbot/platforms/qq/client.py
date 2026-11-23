@@ -24,6 +24,8 @@ from .message import markdown
 from ...core.context import current_event_context
 
 _FILE_TYPES: dict[str, Literal[1, 2, 3, 4]] = {"image": 1, "video": 2, "audio": 3, "voice": 3, "file": 4}
+# 官方 file_data 直传上限 5MB，超过必须走分片上传（否则 40093011）。
+DIRECT_UPLOAD_LIMIT = 5 * 1024 * 1024
 _EVENT_REPLY_TYPES = {
     "INTERACTION_CREATE",
     "GROUP_ADD_ROBOT",
@@ -249,7 +251,7 @@ class QQClient:
                 )
                 source, file_name = media[key]
                 file_type = _FILE_TYPES[key[0]]
-                if isinstance(source, bytes) and len(source) > 10 * 1024 * 1024:
+                if isinstance(source, bytes) and len(source) > DIRECT_UPLOAD_LIMIT:
                     action = self.actions.post_group_upload if route == "v2/groups" else self.actions.post_c2c_upload
                     uploaded = await action(target_id, file_type, file_name, source, False)
                 else:
