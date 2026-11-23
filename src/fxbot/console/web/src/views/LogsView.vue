@@ -750,10 +750,14 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 
-.badge-trace,
-.badge-debug {
+.badge-trace {
   background: var(--color-bg-tertiary);
   color: var(--color-text-tertiary);
+}
+
+.badge-debug {
+  background: color-mix(in srgb, var(--color-debug) 14%, transparent);
+  color: var(--color-debug);
 }
 
 .badge-info {

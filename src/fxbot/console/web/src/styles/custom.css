@@ -16,6 +16,7 @@
   --color-warning: #d98b1b;
   --color-danger: #d94a4a;
   --color-info: #64748b;
+  --color-debug: #7c3aed;
 
   --color-bg: #ffffff;
   --color-bg-secondary: #ffffff;
@@ -153,6 +154,7 @@ html.dark {
   --color-primary-light: #3b82f6;
   --color-primary-dark: #2563eb;
   --color-primary-soft: #10243f;
+  --color-debug: #a78bfa;
 
   --color-bg: #020817;
   --color-bg-secondary: #0b1120;
