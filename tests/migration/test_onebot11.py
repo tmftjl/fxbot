@@ -6,7 +6,7 @@ import unittest
 from copy import deepcopy
 from unittest.mock import AsyncMock
 
-from fxbot.core import Message, SessionTarget, MessageSegment, UnsupportedCapability, current_event
+from fxbot.core import Capability, Message, SessionTarget, MessageSegment, UnsupportedCapability, current_event
 from fxbot.core.router import Router
 from fxbot.platforms.onebot11 import OneBot11Client, parse_event, parse_message, encode_message
 
@@ -193,6 +193,15 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             result = await client.send(target, Message.text("hello"))
             self.assertEqual(result, {"message_id": 88})
             sender.assert_awaited_with(action, {key: 200, "message": [{"type": "text", "data": {"text": "hello"}}]})
+
+    async def test_forward_send_uses_longer_timeout(self) -> None:
+        sender = AsyncMock(return_value={"message_id": 88})
+        client = OneBot11Client("100", sender)
+        target = SessionTarget("onebot11", "100", "group", "200")
+        await client.capabilities.require(Capability.FORWARD_SEND).send_forward(target, [Message.text("转发")])
+        self.assertEqual(sender.await_args.args[0], "send_group_forward_msg")
+        # 合并转发要等平台上传视频，超时单独放宽，普通动作仍用连接默认值。
+        self.assertEqual(sender.await_args.kwargs["timeout"], 120.0)
 
     async def test_invalid_targets_never_reach_sender(self) -> None:
         sender = AsyncMock()

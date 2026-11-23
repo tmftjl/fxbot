@@ -46,8 +46,8 @@ class ActionBroker:
         """返回当前待完成请求数。"""
         return len(self._requests)
 
-    async def call(self, action: str, params: dict[str, Any]) -> Any:
-        """执行一次动作，超时和断连均不自动重试。"""
+    async def call(self, action: str, params: dict[str, Any], *, timeout: float | None = None) -> Any:
+        """执行一次动作，超时和断连均不自动重试；timeout 可覆盖连接默认值。"""
         if self._offline.done():
             raise BotOffline("Bot 离线")
         if self.pending_count >= self._capacity:
@@ -66,7 +66,9 @@ class ActionBroker:
         self._requests[echo] = request
         try:
             done, _ = await asyncio.wait(
-                (execution, self._offline), timeout=self._timeout, return_when=asyncio.FIRST_COMPLETED
+                (execution, self._offline),
+                timeout=self._timeout if timeout is None else timeout,
+                return_when=asyncio.FIRST_COMPLETED,
             )
             if self._offline.done():
                 raise BotOffline("Bot 离线")

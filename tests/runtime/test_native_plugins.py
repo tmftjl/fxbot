@@ -87,7 +87,7 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.roles = {"100": "owner", "200": "owner", "400": "member"}
         self.calls = []
 
-        async def send(action, params):
+        async def send(action, params, **kwargs):
             self.calls.append((action, params))
             if action == "get_group_member_info":
                 user = str(params["user_id"])

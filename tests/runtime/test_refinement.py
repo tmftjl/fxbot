@@ -121,6 +121,16 @@ class ActionCancellationTests(unittest.IsolatedAsyncioTestCase):
             await request
 
 
+class ActionTimeoutOverrideTests(unittest.IsolatedAsyncioTestCase):
+    async def test_call_timeout_can_be_shortened_per_request(self):
+        async def send(packet):
+            await asyncio.Event().wait()
+
+        broker = ActionBroker(send, timeout=30, capacity=1)
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(broker.call("slow", {}, timeout=0.05), timeout=5)
+
+
 class QQResponseBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.api = QQHTTP("app", "secret", SimpleNamespace())

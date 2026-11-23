@@ -70,11 +70,11 @@ class ProtocolConnection:
         self.application.register(self.client, close=self.close)
         self._started = True
 
-    async def call(self, action: str, params: dict[str, Any]) -> Any:
-        """仅允许运行中的已登记连接提交动作。"""
+    async def call(self, action: str, params: dict[str, Any], *, timeout: float | None = None) -> Any:
+        """仅允许运行中的已登记连接提交动作，可覆盖单项动作的超时。"""
         if not self._started or self._closing is not None or self.application.state is not ApplicationState.RUNNING:
             raise BotOffline("Bot 离线")
-        return await self.actions.call(action, params)
+        return await self.actions.call(action, params, timeout=timeout)
 
     def receive(self, payload: Any) -> None:
         """只在协议输入边界处理消息格式及尚未支持的能力。"""

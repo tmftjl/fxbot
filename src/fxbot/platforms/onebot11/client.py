@@ -19,8 +19,10 @@ from ...core import (
     UnsupportedCapability,
 )
 
-ActionSender = Callable[[str, dict[str, Any]], Awaitable[Any]]
+ActionSender = Callable[..., Awaitable[Any]]
 FileUploader = Callable[[SessionTarget, Path, str], Awaitable[Any]]
+# 合并转发要等 NapCat 把视频/图片上传到 QQ，明显慢于普通动作。
+FORWARD_TIMEOUT = 120.0
 
 
 class OneBot11Client:
@@ -55,13 +57,15 @@ class OneBot11Client:
         if file_uploader is not None:
             self.capabilities = self.capabilities.provide(Capability.FILE, self)
 
-    async def call(self, action: str, **params: Any) -> Any:
+    async def call(self, action: str, timeout: float | None = None, **params: Any) -> Any:
         """发送协议动作，网络鉴权与响应关联由传输层负责。"""
         if not isinstance(action, str) or not action:
             raise ValueError("动作名称不能为空")
         data = _copy(params)
         json.dumps(data, allow_nan=False)
-        return await self._sender(action, data)
+        if timeout is None:
+            return await self._sender(action, data)
+        return await self._sender(action, data, timeout=timeout)
 
     def avatar_url(self, user_id: str) -> str:
         return f"https://q1.qlogo.cn/g?b=qq&nk={_id(user_id)}&s=640"
@@ -237,6 +241,7 @@ class OneBot11Client:
         group = target.kind == "group"
         return await self.call(
             "send_group_forward_msg" if group else "send_private_forward_msg",
+            timeout=FORWARD_TIMEOUT,
             **{"group_id" if group else "user_id": int(_id(target.target_id)), "messages": nodes},
         )
 

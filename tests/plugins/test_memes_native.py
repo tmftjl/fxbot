@@ -178,7 +178,7 @@ class MemeRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.calls: list[tuple[str, dict]] = []
 
-        async def send(action, params):
+        async def send(action, params, **kwargs):
             self.calls.append((action, params))
             return {"message_id": len(self.calls)}
 

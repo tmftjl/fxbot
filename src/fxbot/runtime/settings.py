@@ -20,7 +20,7 @@ class Settings:
     token: str = field(default="", repr=False)
     host: str = "127.0.0.1"
     port: int = 8683
-    action_timeout: float = 15.0
+    action_timeout: float = 30.0
     max_pending: int = 128
     close_timeout: float = 5.0
     qq_bots: Mapping[str, QQBotSettings] = field(default_factory=dict, repr=False)
