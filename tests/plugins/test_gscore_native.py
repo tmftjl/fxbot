@@ -305,6 +305,91 @@ class DownlinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.plain_text(), "\n".join(str(index) for index in range(10)))
         self.assertTrue(any(segment.type == "qq:passive" for segment in message.segments))
 
+    async def test_qqgroup_group_marker_after_node_is_not_sent(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "node-result"})
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[
+                WireMessage("node", [WireMessage("text", "第一段"), WireMessage("image", png_source())]),
+                WireMessage("group", "group-openid"),
+            ],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        # group 标记只是会话上下文，不能单独成帧；否则会发出 content 为空的被动回复。
+        self.assertEqual(bot.send.await_count, 2)
+        for call in bot.send.await_args_list:
+            message = call.args[1]
+            self.assertTrue(any(segment.type != "qq:passive" for segment in message.segments))
+
+    async def test_qqgroup_frame_without_content_is_skipped(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "empty"})
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[WireMessage("at", "member-1"), WireMessage("group", "group-openid")],
+        )
+        result = await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertIsNone(result.recall_id)
+        bot.send.assert_not_awaited()
+
+    async def test_qqgroup_node_text_lines_become_one_message(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "login-result"})
+        lines = [
+            "[鸣潮] 您的id为【3226795632】",
+            "完成后将刷新全部面板，无需立即刷新",
+            " https://996hhh1.tmfdggb.top/waves/i/yEhlBYtd7y_E9mzZk_S-dg",
+            "3分钟内有效",
+        ]
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[WireMessage("node", [WireMessage("text", line) for line in lines]), WireMessage("group", "group-openid")],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        # QQ 官方没有合并转发，node 的多段文本压成一条，一句话一行。
+        self.assertEqual(bot.send.await_count, 1)
+        message = bot.send.await_args.args[1]
+        self.assertEqual(message.plain_text(), "\n".join(lines))
+        self.assertEqual([segment.type for segment in message.segments], ["qq:passive", "text"])
+
+    async def test_qqgroup_node_text_keeps_existing_newlines(self) -> None:
+        bot = BotStub("qq", "appid", {"message_id": "login-result"})
+        msg = MessageSend(
+            bot_id="qqgroup",
+            bot_self_id="appid",
+            target_type="group",
+            target_id="group-openid",
+            msg_id="passive-id",
+            content=[
+                WireMessage(
+                    "node",
+                    [
+                        WireMessage("text", "[鸣潮] 您的id为【3226795632】\n"),
+                        WireMessage("text", "完成后将刷新全部面板，无需立即刷新\n"),
+                        WireMessage("text", "3分钟内有效"),
+                    ],
+                )
+            ],
+        )
+        await dispatch_outgoing(ServicesStub(bots=(bot,)), msg)
+        self.assertEqual(bot.send.await_count, 1)
+        message = bot.send.await_args.args[1]
+        # 原文已经带换行，不能再多补，否则会多出空行。
+        self.assertEqual(
+            message.plain_text(),
+            "[鸣潮] 您的id为【3226795632】\n完成后将刷新全部面板，无需立即刷新\n3分钟内有效",
+        )
+
     async def test_onebot_node_uses_native_forward_message(self) -> None:
         sender = AsyncMock(return_value={"message_id": "forward-result"})
         bot = OneBot11Client("100", sender)

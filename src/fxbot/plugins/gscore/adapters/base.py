@@ -30,6 +30,8 @@ from ..models import Message as WireMessage, MessageSend, MessageReceive
 
 COMMAND_PREFIXES = ("#", "＃", "/")
 CONTROL_TYPES = {"excute_delete_message", "excute_ban_user"}
+# gsuid 给群目标下发时会在 content 末尾附带 ``group`` 会话标记，它不是可发送内容。
+MARKER_TYPES = {"group"}
 ROLES = {"owner", "admin", "member"}
 META_NAMES = {"member_joined": "user_join_group", "member_left": "user_exit_group"}
 
@@ -493,7 +495,7 @@ class CoreAdapter(Adapter):
         frames: list[list[WireMessage]] = []
         current: list[WireMessage] = []
         for segment in content:
-            if segment.type in CONTROL_TYPES:
+            if segment.type in CONTROL_TYPES or segment.type in MARKER_TYPES:
                 continue
             if segment.type == "node":
                 if current:

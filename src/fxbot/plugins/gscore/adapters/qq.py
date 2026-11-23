@@ -9,12 +9,24 @@ from loguru import logger
 from fxbot.core import Event, Message as CoreMessage, BotClient, SessionTarget, MessageSegment
 from fxbot.platforms.qq.message import keyboard, markdown as qq_markdown
 
-from .base import CoreAdapter, ReceiveScope, outbound_file, outbound_media
+from .base import (
+    CONTROL_TYPES,
+    MARKER_TYPES,
+    CoreAdapter,
+    ReceiveScope,
+    _node_item,
+    outbound_file,
+    outbound_media,
+)
 from ..models import Message as WireMessage, MessageSend
 from .qq_render import render_pages
 
 ADVANCED_SEGMENTS = {"markdown", "template_markdown", "template_buttons", "buttons"}
 MEDIA_SEGMENTS = {"image", "record", "video", "file"}
+# 这些段只携带被动回复 ID 或引用，不产生 content，QQ 官方接口会拒绝纯空 content。
+_NON_CONTENT_SEGMENTS = {"qq:passive", "reply"}
+# 单条文本的安全长度，超过后拆成多条被动回复。
+TEXT_LIMIT = 1900
 
 
 def _remote_url(source: Any) -> str | None:
@@ -111,7 +123,7 @@ class QQAdapter(CoreAdapter):
                     len(segment.data) if isinstance(segment.data, str) else len(str(segment.data or ""))
                     for segment in frame
                 )
-                if pending and text_length + length > 1900:
+                if pending and text_length + length > TEXT_LIMIT:
                     flush()
                 if pending:
                     pending.append(WireMessage("text", "\n"))
@@ -128,6 +140,59 @@ class QQAdapter(CoreAdapter):
                 paired.append(frame)
         flush()
         return paired
+
+    def frames(self, content: list[WireMessage]) -> list[list[WireMessage]]:
+        """QQ 官方不支持合并转发：node 内的连续文本压成一条，图片仍单独成帧。"""
+        frames: list[list[WireMessage]] = []
+        current: list[WireMessage] = []
+
+        def flush_current() -> None:
+            nonlocal current
+            if current:
+                frames.append(current)
+                current = []
+
+        def flush_text(text: str) -> None:
+            """原文自带换行就沿用；超过 TEXT_LIMIT 才按行拆成多条。"""
+            while len(text) > TEXT_LIMIT:
+                cut = text.rfind("\n", 0, TEXT_LIMIT)
+                cut = cut + 1 if cut > 0 else TEXT_LIMIT
+                frames.append([WireMessage("text", text[:cut])])
+                text = text[cut:]
+            if text:
+                frames.append([WireMessage("text", text)])
+
+        for segment in content:
+            if segment.type in CONTROL_TYPES or segment.type in MARKER_TYPES:
+                continue
+            if segment.type != "node":
+                current.append(segment)
+                continue
+            flush_current()
+            if not isinstance(segment.data, list):
+                logger.debug("[gscore] node 数据不是数组，已跳过")
+                continue
+            merged = ""
+            for item in segment.data:
+                converted = _node_item(item)
+                if converted is None:
+                    continue
+                if converted.type == "text":
+                    data = converted.data
+                    text = data if isinstance(data, str) else "" if data is None else str(data)
+                    if not text:
+                        continue
+                    # 只在两段之间缺少换行时补一个，避免原文已带换行时多出空行。
+                    if merged and not merged.endswith("\n") and not text.startswith("\n"):
+                        merged += "\n"
+                    merged += text
+                    continue
+                flush_text(merged)
+                merged = ""
+                frames.append([converted])
+            flush_text(merged)
+        flush_current()
+        return frames
 
     @staticmethod
     def _truncate_frames(frames: list[list[WireMessage]]) -> list[list[WireMessage]]:
@@ -223,6 +288,11 @@ class QQAdapter(CoreAdapter):
                 continue
             else:
                 logger.debug("[gscore] QQ 不支持下行消息段: {}", kind)
+        # QQ 官方要求 content 非空；只剩被动 ID/引用时会报 40034030。
+        # gsuid 的 ``group`` 标记在 node 展开后常单独成帧，必须整帧丢弃。
+        if not any(segment.type not in _NON_CONTENT_SEGMENTS for segment in segments):
+            logger.debug("[gscore] QQ 帧没有可发送内容，已跳过: {}", [segment.type for segment in frame])
+            return None
         return CoreMessage(segments)
 
     @staticmethod

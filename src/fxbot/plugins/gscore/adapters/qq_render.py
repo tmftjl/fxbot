@@ -149,6 +149,7 @@ def _render(blocks: list[tuple[str, Any, int]], primary, fallback) -> list[bytes
     page = Image.new("RGB", (PAGE_WIDTH, PAGE_HEIGHT), "white")
     draw = ImageDraw.Draw(page)
     y = PAGE_MARGIN
+    max_right = 0
     for kind, value, height in blocks:
         if y + height > PAGE_HEIGHT - PAGE_MARGIN and y > PAGE_MARGIN:
             bottoms.append(y)
@@ -158,8 +159,10 @@ def _render(blocks: list[tuple[str, Any, int]], primary, fallback) -> list[bytes
             y = PAGE_MARGIN
         if kind == "text":
             draw_text_with_fallback(draw, (PAGE_MARGIN, y), value, primary, fallback, fill=(32, 32, 32))
+            max_right = max(max_right, textlength_with_fallback(value, primary, fallback))
         elif kind == "image":
             page.paste(value, (PAGE_MARGIN, y))
+            max_right = max(max_right, value.width)
         y += height
     bottoms.append(y)
     pages.append(page)
@@ -168,17 +171,14 @@ def _render(blocks: list[tuple[str, Any, int]], primary, fallback) -> list[bytes
         bottoms = bottoms[:MAX_PAGES]
         last = pages[-1]
         draw = ImageDraw.Draw(last)
-        draw_text_with_fallback(
-            draw,
-            (PAGE_MARGIN, PAGE_MARGIN),
-            "内容过长，后续内容已截断",
-            primary,
-            fallback,
-            fill=(180, 40, 40),
-        )
+        note = "内容过长，后续内容已截断"
+        draw_text_with_fallback(draw, (PAGE_MARGIN, PAGE_MARGIN), note, primary, fallback, fill=(180, 40, 40))
+        max_right = max(max_right, textlength_with_fallback(note, primary, fallback))
+    # 按实际内容宽度裁掉右侧空白；否则窄图/短文本会在右边留出大片白边。
+    width = min(PAGE_WIDTH, max(1, max_right) + PAGE_MARGIN * 2)
     result: list[bytes] = []
     for image, bottom in zip(pages, bottoms):
-        cropped = image.crop((0, 0, PAGE_WIDTH, min(PAGE_HEIGHT, max(1, bottom + PAGE_MARGIN))))
+        cropped = image.crop((0, 0, width, min(PAGE_HEIGHT, max(1, bottom + PAGE_MARGIN))))
         buffer = io.BytesIO()
         cropped.save(buffer, format="PNG")
         result.append(buffer.getvalue())
