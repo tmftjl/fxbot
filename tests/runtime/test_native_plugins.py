@@ -873,6 +873,56 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.send.await_count, 3)
         self.assertEqual(bot.send.await_args_list[-1].args[1].segments[0].type, "image")
 
+    async def test_video_sender_reports_quota_failure_with_source_link(self):
+        from fxbot.core.capabilities import Capabilities
+        from fxbot.core.errors import ActionFailed
+
+        class QuotaError(ActionFailed):
+            def __init__(self) -> None:
+                self.code = 40093003
+                super().__init__("群文件超过上限")
+
+        path = self.root / "video.mp4"
+        path.write_bytes(b"fake-video")
+        bot = SimpleNamespace(
+            platform="qq",
+            capabilities=Capabilities(),
+            send=AsyncMock(side_effect=[None, QuotaError(), None]),
+        )
+        context = HandlerContext(bot, self.event, MatchResult(""))
+        result = VideoResult("bilibili", "测试", source_url="https://www.bilibili.com/video/BV1xx")
+        with patch(
+            "fxbot.plugins.video_parser.sender.cfg_general",
+            return_value={"send_cover": False, "use_base64": False},
+        ):
+            await send_video_result(context, result, path)
+        self.assertEqual(bot.send.await_count, 3)
+        fallback = bot.send.await_args.args[1].plain_text()
+        self.assertIn("群文件已满", fallback)
+        self.assertIn("https://www.bilibili.com/video/BV1xx", fallback)
+
+    async def test_video_sender_keeps_non_quota_failures(self):
+        from fxbot.core.capabilities import Capabilities
+        from fxbot.core.errors import ActionFailed
+
+        path = self.root / "video.mp4"
+        path.write_bytes(b"fake-video")
+        bot = SimpleNamespace(
+            platform="qq",
+            capabilities=Capabilities(),
+            send=AsyncMock(side_effect=[None, ActionFailed("发送被拒绝")]),
+        )
+        context = HandlerContext(bot, self.event, MatchResult(""))
+        with (
+            patch(
+                "fxbot.plugins.video_parser.sender.cfg_general",
+                return_value={"send_cover": False, "use_base64": False},
+            ),
+            self.assertRaises(ActionFailed),
+        ):
+            await send_video_result(context, VideoResult("bilibili", "测试"), path)
+        self.assertEqual(bot.send.await_count, 2)
+
     def test_douyin_image_note_prefers_images_over_music_play_url(self):
         from fxbot.plugins.video_parser.parsers import douyin
 

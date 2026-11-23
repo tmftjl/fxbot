@@ -4,11 +4,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from loguru import logger
+
 from .types import VideoResult
 from ...core import Message, HandlerContext, MessageSegment
+from ...core.errors import ActionFailed
 from .config import cfg_general
 from ...utils.tz import as_shanghai
 from ...core.capabilities import Capability
+
+# QQ 官方媒体上传配额错误；用户看不到日志，必须回一条可读的原因。
+QUOTA_HINTS = {
+    40093002: "QQ 今日可发送的文件容量已用完，请明天再试或换更小的文件。",
+    40093003: "QQ 群文件已满，请群管理员清理群文件后再试。",
+}
 
 
 def _summary(result: VideoResult) -> str:
@@ -22,13 +31,42 @@ def _summary(result: VideoResult) -> str:
     return "\n".join(lines)
 
 
-async def _deliver(context: HandlerContext, messages: list[Message]) -> None:
-    """能合并转发就合并，否则按原顺序逐条发送。"""
+def _quota_hint(exc: ActionFailed) -> str | None:
+    """只认平台明确的配额错误码，其他失败照常抛出。"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, bool) or not isinstance(code, int):
+        return None
+    return QUOTA_HINTS.get(code)
+
+
+def _fallback_text(result: VideoResult, hint: str) -> str:
+    lines = [f"媒体发送失败：{hint}"]
+    if result.source_url:
+        lines.append(f"原内容：{result.source_url}")
+    return "\n".join(lines)
+
+
+async def _deliver(context: HandlerContext, messages: list[Message], *, result: VideoResult | None = None) -> None:
+    """能合并转发就合并，否则按原顺序逐条发送；配额不足时回一条原因而不是静默失败。"""
     if Capability.FORWARD_SEND in context.bot.capabilities:
         await context.bot.capabilities.require(Capability.FORWARD_SEND).send_forward(context.event.target, messages)
         return
+    hinted = False
     for message in messages:
-        await context.send(message)
+        try:
+            await context.send(message)
+        except ActionFailed as exc:
+            hint = _quota_hint(exc) if result is not None else None
+            if hint is None:
+                raise
+            logger.opt(exception=True).warning("视频解析媒体发送受配额限制: {}", exc)
+            if hinted:
+                continue
+            hinted = True
+            try:
+                await context.send(Message.text(_fallback_text(result, hint)))
+            except ActionFailed:
+                logger.opt(exception=True).debug("视频解析配额提示发送失败")
 
 
 def _video_segment(context: HandlerContext, video_path: Path) -> MessageSegment:
@@ -61,7 +99,7 @@ async def send_media_result(
     messages.extend(Message([MessageSegment.image(path.read_bytes())]) for path in image_paths or [])
     if audio_path is not None:
         messages.append(Message([MessageSegment.voice(audio_path.read_bytes())]))
-    await _deliver(context, messages)
+    await _deliver(context, messages, result=result)
 
 
 async def send_video_result(context: HandlerContext, result: VideoResult, video_path: Path) -> None:
