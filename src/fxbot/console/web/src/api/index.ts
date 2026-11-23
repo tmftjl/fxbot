@@ -288,6 +288,8 @@ export const logsApi = {
     return api.get<LogHistory>(`/logs/history?${params.toString()}`)
   },
   clearHistory: () => api.delete<{ success: boolean }>('/logs/history'),
+  getLevel: () => api.get<{ level: string }>('/logs/level'),
+  setLevel: (level: string) => api.put<{ level: string }>('/logs/level', { level }),
 }
 
 export const cacheApi = {

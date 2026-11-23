@@ -85,7 +85,7 @@ const connected = computed(() => connectionStatus.value === '已连接')
 
 const subtitle = computed(() =>
   mode.value === 'live'
-    ? '实时追踪进程输出，最多回放最近 2000 条'
+    ? '实时追踪进程输出，最多回放最近 2000 条；级别按钮同时设置采集与显示，历史库固定存 INFO 及以上'
     : 'INFO 及以上自动落库，保留 7 天',
 )
 
@@ -222,6 +222,49 @@ const fetchHistory = async (page = historyPage.value) => {
   }
 }
 
+// 左侧级别按钮同时设置显示门槛和服务端采集级别；「全部」等价于采集 DEBUG
+const levelToCapture = (key: LevelFilter): string => {
+  switch (key) {
+    case 'ALL':
+    case 'DEBUG':
+      return 'DEBUG'
+    case 'WARNING':
+      return 'WARNING'
+    case 'ERROR':
+      return 'ERROR'
+    default:
+      return 'INFO'
+  }
+}
+
+const captureToLevel = (value: string): LevelFilter => {
+  const upper = String(value || '').toUpperCase()
+  if (upper === 'DEBUG' || upper === 'TRACE') return 'ALL'
+  if (upper === 'WARNING') return 'WARNING'
+  if (upper === 'ERROR' || upper === 'CRITICAL') return 'ERROR'
+  return 'INFO'
+}
+
+const loadLevel = async () => {
+  try {
+    const res = await logsApi.getLevel()
+    levelFilter.value = captureToLevel(res.level)
+  } catch {
+    // 读取失败保持默认「全部」，不影响日志浏览
+  }
+}
+
+const selectLevel = async (key: LevelFilter) => {
+  const previous = levelFilter.value
+  levelFilter.value = key
+  try {
+    await logsApi.setLevel(levelToCapture(key))
+  } catch (e: any) {
+    levelFilter.value = previous
+    ElMessage.error('切换采集级别失败: ' + (e?.message || e))
+  }
+}
+
 const setMode = (value: LogMode) => {
   if (value === mode.value) {
     // 再点当前分类时强制刷新，避免看起来「点了没反应」
@@ -259,6 +302,7 @@ const clearHistory = async () => {
 
 onMounted(() => {
   connect()
+  loadLevel()
 })
 
 onUnmounted(() => {
@@ -309,7 +353,8 @@ onUnmounted(() => {
             type="button"
             class="chip"
             :class="{ active: levelFilter === item.key }"
-            @click="levelFilter = item.key"
+            title="同时设置显示过滤和服务端采集级别"
+            @click="selectLevel(item.key)"
           >
             {{ item.label }}
           </button>

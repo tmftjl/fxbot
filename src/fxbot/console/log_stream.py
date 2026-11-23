@@ -28,6 +28,19 @@ _QUEUE_SIZE = 1000
 _TIME_FORMAT = "%m-%d %H:%M:%S"
 # 进程标识：seq 每次重启都从 1 重新计数，前端靠它区分「重连补发」和「服务端已重启」
 _BOOT_ID = secrets.token_hex(4)
+# 实时日志采集级别：控制台缓冲区按此过滤，历史落库仍固定 INFO 起
+_LEVELS = ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
+_STDLIB_LEVELS = {
+    "TRACE": 5,
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "SUCCESS": 25,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+_level = "INFO"
+_level_no = logger.level("INFO").no
 
 _lock = threading.Lock()
 _records: deque[dict[str, Any]] = deque(maxlen=_BUFFER_SIZE)
@@ -73,6 +86,8 @@ def _sink(message: Message) -> None:
     """日志处理器的故障只写 stderr，不能递归写回日志本身。"""
     try:
         record = message.record
+        if record["level"].no < _level_no:
+            return
         _append(record["time"], record["level"].name, record["name"] or "", str(message))
     except Exception:
         traceback.print_exc(file=sys.stderr)
@@ -101,6 +116,23 @@ class _LoguruForwarder(logging.Handler):
 
 
 _loguru_forwarder = _LoguruForwarder(level=logging.INFO)
+
+
+def current_level() -> str:
+    """当前实时日志采集级别。"""
+    return _level
+
+
+def set_level(name: str) -> str:
+    """调整实时日志采集级别；只影响控制台缓冲区，落库仍从 INFO 起。"""
+    global _level, _level_no
+    normalized = str(name or "").strip().upper()
+    if normalized not in _LEVELS:
+        raise ValueError("未知日志级别")
+    _level = normalized
+    _level_no = logger.level(normalized).no
+    _loguru_forwarder.setLevel(_STDLIB_LEVELS[normalized])
+    return _level
 
 
 def boot_id() -> str:
@@ -137,24 +169,29 @@ def start() -> None:
     global _sink_id
     if _sink_id is not None:
         raise RuntimeError("日志缓冲已启动")
+    # 处理器挂到 TRACE，实际门槛由 _sink 按当前采集级别过滤，切换级别不用重挂
     _sink_id = logger.add(
         _sink,
-        level="INFO",
+        level="TRACE",
         format="{message}",
         colorize=False,
         backtrace=False,
         diagnose=False,
     )
+    _loguru_forwarder.setLevel(_STDLIB_LEVELS[_level])
     logging.getLogger().addHandler(_loguru_forwarder)
 
 
 def stop() -> None:
     """卸载本应用的处理器并释放订阅，不修改其他日志所有者。"""
-    global _sink_id, _loop
+    global _sink_id, _loop, _level, _level_no
     if _sink_id is not None:
         logger.remove(_sink_id)
         _sink_id = None
     logging.getLogger().removeHandler(_loguru_forwarder)
+    _level = "INFO"
+    _level_no = logger.level("INFO").no
+    _loguru_forwarder.setLevel(_STDLIB_LEVELS[_level])
     with _lock:
         _subscribers.clear()
         _loop = None

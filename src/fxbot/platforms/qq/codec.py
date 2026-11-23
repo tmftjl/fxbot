@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
 
 from yarl import URL
+from loguru import logger
 from pydantic import TypeAdapter
 
 from ...core import Event, Message, ReplyTarget, SessionTarget, MessageSegment
@@ -240,6 +241,72 @@ def _quoted_element(elements: list, reference_index: str | None, current_index: 
     return items[0] if items else None
 
 
+def _log_reply_shape(
+    bot_id: str, event_type: str, data: dict, message: Message, reply: ReplyTarget | None
+) -> None:
+    """临时诊断：打印群消息的引用相关原始字段，确认线上引用形态后删除。"""
+    scene = data.get("message_scene")
+    ext = scene.get("ext") if isinstance(scene, dict) else None
+    scene_log = scene
+    if isinstance(scene, dict) and isinstance(ext, list):
+        # auth_token 不外落，诊断只需要引用索引
+        scene_log = {
+            **scene,
+            "ext": [
+                "auth_token=***" if isinstance(item, str) and item.startswith("auth_token=") else item
+                for item in ext
+            ],
+        }
+    elements = data.get("msg_elements")
+    mentions = data.get("mentions") or []
+    quoteish = (
+        data.get("message_reference") is not None
+        or data.get("message_type") == 103
+        or (isinstance(ext, list) and any(isinstance(item, str) and item.startswith("ref_msg_idx=") for item in ext))
+        or bool(elements)
+    )
+    commandish = any(
+        segment.type == "text" and segment.text_value().lstrip().startswith(("ww", "#", "＃", "/"))
+        for segment in message.segments
+    )
+    if not quoteish and not (mentions and commandish):
+        return
+    element_shapes = []
+    if isinstance(elements, list):
+        for element in elements[:3]:
+            if not isinstance(element, dict):
+                continue
+            attachments = element.get("attachments")
+            element_shapes.append(
+                {
+                    "keys": sorted(element),
+                    "msg_idx": element.get("msg_idx"),
+                    "attachments": len(attachments) if isinstance(attachments, list) else attachments,
+                    "content": str(element.get("content") or "")[:80],
+                }
+            )
+    mention_shapes = [
+        {"id": item.get("id"), "scope": item.get("scope"), "is_you": item.get("is_you")}
+        for item in mentions
+        if isinstance(item, dict)
+    ]
+    logger.debug(
+        "[QQ] 引用诊断 bot={} event={} message_id={} type={} keys={} reference={} scene={} "
+        "elements={} mentions={} segments={} reply={}",
+        bot_id,
+        event_type,
+        data.get("id"),
+        data.get("message_type"),
+        sorted(data),
+        data.get("message_reference"),
+        scene_log,
+        element_shapes,
+        mention_shapes,
+        [(segment.type, segment.text_value()[:40]) for segment in message.segments],
+        reply.message_id if reply is not None else None,
+    )
+
+
 def parse_event(payload: dict, *, bot_id: str, bot_user_id: str = "", bot_username: str | None = None) -> Event:
     if not isinstance(payload, dict) or payload.get("op") != 0 or type(payload.get("op")) is not int:
         raise ValueError("QQ 事件必须为 Dispatch 帧")
@@ -378,6 +445,8 @@ def parse_event(payload: dict, *, bot_id: str, bot_user_id: str = "", bot_userna
         elif reference_index is not None and reply is None:
             # QQ 可能只给引用索引，不回传 msg_elements；缓存仍能补出原文。
             reply = ReplyTarget(reference_index)
+    if target.kind == "group":
+        _log_reply_shape(bot_id, event_type, data, message, reply)
     if target.kind == "group" and event_type != "GROUP_AT_MESSAGE_CREATE":
         for part in message.segments:
             if part.type == "mention" and part.data.get("is_bot"):

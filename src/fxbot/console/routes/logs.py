@@ -6,12 +6,12 @@ import json
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from fastapi import Depends, Request, APIRouter
+from fastapi import Depends, Request, APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ..auth import sse_auth
 from ..log_store import clear as clear_logs, query as query_logs
-from ..log_stream import boot_id, snapshot, subscribe, unsubscribe
+from ..log_stream import boot_id, snapshot, set_level, subscribe, unsubscribe, current_level
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -65,6 +65,22 @@ async def clear_history() -> dict[str, bool]:
     """清空历史日志。"""
     await asyncio.to_thread(clear_logs)
     return {"success": True}
+
+
+@router.get("/level")
+async def get_level() -> dict[str, str]:
+    """读取实时日志采集级别。"""
+    return {"level": current_level()}
+
+
+@router.put("/level")
+async def update_level(payload: dict[str, Any]) -> dict[str, str]:
+    """调整实时日志采集级别；历史落库仍固定 INFO 及以上。"""
+    try:
+        level = set_level(str(payload.get("level") or ""))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="未知日志级别") from None
+    return {"level": level}
 
 
 @router.get("/stream")

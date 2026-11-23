@@ -39,6 +39,28 @@ class ConsoleTests(unittest.TestCase):
                 )
                 self.assertEqual(self.client.get(f"/fxbot/{path}", headers=self.headers).status_code, 200)
 
+    def test_log_capture_level_switches_live_buffer_without_persisting_debug(self) -> None:
+        response = self.client.put("/fxbot/logs/level", headers=self.headers, json={"level": "DEBUG"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"level": "DEBUG"})
+        logger.debug("test-debug-visible-marker")
+        self.assertTrue(any("test-debug-visible-marker" in item["text"] for item in log_stream.snapshot()))
+        log_store.flush()
+        history = self.client.get(
+            "/fxbot/logs/history",
+            headers=self.headers,
+            params={"level": "DEBUG", "keyword": "test-debug-visible-marker"},
+        )
+        self.assertEqual(history.json()["total"], 0)
+
+        response = self.client.put("/fxbot/logs/level", headers=self.headers, json={"level": "INFO"})
+        self.assertEqual(response.json(), {"level": "INFO"})
+        logger.debug("test-debug-hidden-marker")
+        self.assertFalse(any("test-debug-hidden-marker" in item["text"] for item in log_stream.snapshot()))
+
+        response = self.client.put("/fxbot/logs/level", headers=self.headers, json={"level": "NOPE"})
+        self.assertEqual(response.status_code, 400)
+
     def test_plugin_schema_discovery_does_not_start_plugin_entrypoints(self) -> None:
         with patch("importlib.util.spec_from_file_location", side_effect=AssertionError("schema re-import")):
             response = self.client.get("/fxbot/config/tabs", headers=self.headers)
