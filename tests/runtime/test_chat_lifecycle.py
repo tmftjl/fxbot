@@ -86,14 +86,25 @@ class ChatLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("unsubscribe", self.events)
 
     async def test_partial_startup_releases_registered_resources(self) -> None:
-        self.failure = "start:memory"
-        with self.assertRaisesRegex(RuntimeError, "start:memory"):
+        self.failure = "start:images"
+        with self.assertRaisesRegex(RuntimeError, "start:images"):
             await self.app.start()
         self.assertEqual(self.app.state, ApplicationState.STOPPED)
         self.assertIn("stop:memory", self.events)
         self.assertIn("stop:providers", self.events)
         self.assertIn("stop:http", self.events)
         self.assertNotIn("start:writeback", self.events)
+
+    async def test_memory_start_failure_does_not_block_startup(self) -> None:
+        self.failure = "start:memory"
+        await self.app.start()
+        self.assertEqual(self.app.state, ApplicationState.RUNNING)
+        task = self.feature._memory_task
+        self.assertIsNotNone(task)
+        await task
+        self.assertIn("start:memory", self.events)
+        await self.app.stop()
+        self.assertIn("stop:memory", self.events)
 
     async def test_completed_learning_handles_do_not_block_next_start(self) -> None:
         from fxbot.chat.memory.trimmed import TrimmedLearning
