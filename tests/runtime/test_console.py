@@ -147,6 +147,7 @@ class ConsoleTests(unittest.TestCase):
             plugins.json(),
             {
                 "bilibili_live": "B站直播推送",
+                "bot_monitor": "Bot 监控",
                 "cultured": "图库",
                 "entertain": "娱乐",
                 "group_admin": "群管理",
