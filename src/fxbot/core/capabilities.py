@@ -109,6 +109,8 @@ class CapabilityKey(Generic[T]):
 class Capability:
     REPLY = CapabilityKey[ReplyReader]("reply")
     MEDIA = CapabilityKey[MediaResolver]("media")
+    # 平台接受远程 HTTP(S) 媒体来源并由平台侧代下；缺省时应由插件先下载。
+    MEDIA_URL = CapabilityKey[bool]("media_url")
     MEMBER_LOOKUP = CapabilityKey[MemberLookup]("member_lookup")
     GROUP_ROLE = CapabilityKey[GroupRoles]("group_role")
     GROUP_DIRECTORY = CapabilityKey[GroupDirectory]("group_directory")

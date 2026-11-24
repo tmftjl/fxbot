@@ -9,10 +9,12 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from ...core import Message, HandlerContext, MessageSegment
+from ...core import Capability, Message, HandlerContext, MessageSegment
 from .config import load_cfg, face_list, load_all_commands, random_local_image
-from ...utils.http import get_shared_async_client
+from ...utils.http import read_limited, ensure_public_http_url, get_shared_async_client
 from ...core.plugin import on_regex
+
+MAX_GALLERY_BYTES = 20 * 1024 * 1024
 
 
 def _command_names() -> list[str]:
@@ -41,6 +43,29 @@ def _build_picture(url: str, response_text: str | None = None) -> Message:
         parts.append(MessageSegment.text(response_text))
     parts.append(MessageSegment.image(url))
     return Message(parts)
+
+
+async def _download_image(url: str) -> bytes:
+    """平台不代下 URL 时由本机下载图库图片。"""
+    await ensure_public_http_url(url)
+    client = await get_shared_async_client()
+    async with client.stream("GET", url, follow_redirects=True, timeout=30) as response:
+        response.raise_for_status()
+        return await read_limited(response.aiter_bytes(), response.headers.get("content-length"), MAX_GALLERY_BYTES)
+
+
+async def _localize_images(context: HandlerContext, message: Message) -> Message:
+    """平台不接受远程 URL 时先下载成字节，避免腾讯代下被拒（40093007）。"""
+    if Capability.MEDIA_URL in context.bot.capabilities:
+        return message
+    segments: list[MessageSegment] = []
+    for segment in message.segments:
+        source = segment.data.get("file") if segment.type == "image" else None
+        if isinstance(source, str) and source.startswith(("http://", "https://")):
+            segments.append(MessageSegment.image(await _download_image(source)))
+        else:
+            segments.append(segment)
+    return Message(segments)
 
 
 def _create_api_handler(command: dict[str, Any]) -> Callable[[], Any]:
@@ -167,6 +192,11 @@ async def _handle_api_picture(context: HandlerContext) -> None:
                         logger.opt(exception=True).warning(f"[Cultured] API 图库 {name} 请求失败")
                         await context.finish("图库接口请求失败")
                     if result:
+                        try:
+                            result = await _localize_images(context, result)
+                        except Exception:
+                            logger.opt(exception=True).warning(f"[Cultured] 图库图片下载失败: {name}")
+                            await context.finish("图库图片下载失败")
                         await context.finish(result)
                     await context.finish()
     await context.finish()

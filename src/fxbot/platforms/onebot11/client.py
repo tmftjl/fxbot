@@ -40,6 +40,7 @@ class OneBot11Client:
             Capabilities()
             .provide(Capability.REPLY, self)
             .provide(Capability.MEDIA, self)
+            .provide(Capability.MEDIA_URL, True)
             .provide(Capability.MEMBER_LOOKUP, self)
             .provide(Capability.GROUP_ROLE, self)
             .provide(Capability.GROUP_DIRECTORY, self)

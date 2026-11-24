@@ -132,6 +132,29 @@ class CulturedTests(unittest.IsolatedAsyncioTestCase):
         await router.dispatch(self.bot, replace(self.event, message=Message.text("图库更新")))
         self.assertIn("已有图库更新任务", self.bot.send.await_args.args[1].plain_text())
 
+    async def test_api_gallery_downloads_when_platform_rejects_remote_url(self) -> None:
+        from types import SimpleNamespace
+
+        from fxbot.core import Capabilities, HandlerContext, MatchResult, MessageSegment
+
+        bot = SimpleNamespace(platform="qq", bot_id="appid", capabilities=Capabilities(), send=AsyncMock())
+        context = HandlerContext(bot, self.event, MatchResult(""))
+        message = Message([MessageSegment.text("来咯"), MessageSegment.image("https://img.example.test/a.jpg")])
+        with patch.object(cultured, "_download_image", AsyncMock(return_value=b"PNG")):
+            result = await cultured._localize_images(context, message)
+        self.assertEqual(result.segments[0].data["text"], "来咯")
+        self.assertEqual(result.segments[1].data["file"], b"PNG")
+
+    async def test_api_gallery_keeps_remote_url_when_platform_supports_it(self) -> None:
+        from fxbot.core import HandlerContext, MatchResult, MessageSegment
+
+        context = HandlerContext(self.bot, self.event, MatchResult(""))
+        message = Message([MessageSegment.image("https://img.example.test/a.jpg")])
+        with patch.object(cultured, "_download_image", AsyncMock()) as download:
+            result = await cultured._localize_images(context, message)
+        self.assertEqual(result.segments[0].data["file"], "https://img.example.test/a.jpg")
+        download.assert_not_awaited()
+
     def test_build_picture_keeps_optional_prefix_text(self) -> None:
         message = cultured._build_picture("https://img.example.test/a.jpg", "前缀")
         self.assertEqual([segment.type for segment in message.segments], ["text", "image"])

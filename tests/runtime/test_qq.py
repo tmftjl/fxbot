@@ -398,6 +398,10 @@ class QQClientTests(unittest.IsolatedAsyncioTestCase):
         self.bot = QQClient(APP_ID, self.api)
         self.event = parse_event(payload(), bot_id=APP_ID)
 
+    def test_official_bot_does_not_admit_remote_media_urls(self):
+        # 腾讯代下第三方 URL 可能被拒（40093007），插件应先本地下载。
+        self.assertNotIn(Capability.MEDIA_URL, self.bot.capabilities)
+
     def test_avatar_url_uses_qqapp_openid(self):
         self.assertIn(Capability.AVATAR, self.bot.capabilities)
         avatar = self.bot.capabilities.require(Capability.AVATAR)

@@ -32,6 +32,10 @@ class CapabilityContractsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(UnsupportedCapability):
             bot.capabilities.require(Capability.MODERATION)
 
+    async def test_onebot_platforms_admit_remote_media_urls(self):
+        self.assertIn(Capability.MEDIA_URL, OneBot11Client("100", AsyncMock()).capabilities)
+        self.assertIn(Capability.MEDIA_URL, OneBot12Client("bot", "wechat", AsyncMock()).capabilities)
+
     async def test_capability_provider_can_be_separate_from_message_client(self):
         lookup = SimpleNamespace(member_name=AsyncMock(return_value="name"))
         capabilities = Capabilities().provide(Capability.MEMBER_LOOKUP, lookup)
