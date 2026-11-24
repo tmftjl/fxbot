@@ -236,6 +236,7 @@ class GscoreService(Service):
             return
         self._closed = True
         await self.stop_connection()
+        self.mapping.close()
         while True:
             try:
                 self._queue.get_nowait()

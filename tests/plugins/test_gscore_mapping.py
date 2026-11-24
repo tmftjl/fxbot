@@ -58,7 +58,8 @@ class MappingTests(unittest.TestCase):
         config_patcher = patch.object(mapping_module, "get_config", return_value=CONFIG)
         config_patcher.start()
         self.addCleanup(config_patcher.stop)
-        self.mapping = IdentityMap()
+        self.now = 0.0
+        self.mapping = IdentityMap(clock=lambda: self.now)
 
     def onebot(self, second: int, *, text: str = "ww登录", uid: str = "3226795632", name: str = "友利奈绪") -> Event:
         return event("onebot11", "100", "300", uid, "🐯", text, second, nickname=name)
@@ -66,13 +67,15 @@ class MappingTests(unittest.TestCase):
     def qq(self, second: int, *, text: str = "ww登录", openid: str = "A" * 32, name: str = "友利奈绪") -> Event:
         return event("qq", "102445077", "OPENID", openid, name, text, second)
 
-    def test_nickname_match_locks_user_and_five_hits_lock_group(self) -> None:
+    def test_five_nickname_hits_lock_user_and_group(self) -> None:
         for index in range(5):
             second = 1000 + index
             self.assertEqual(self.mapping.observe(self.onebot(second)).action, "forward")
             self.assertEqual(self.mapping.observe(self.qq(second)).action, "drop")
         self.assertEqual(self.mapping._users["A" * 32]["uin"], "3226795632")
+        self.assertEqual(self.mapping._users["A" * 32]["qq_bot"], "102445077")
         self.assertEqual(self.mapping._groups["OPENID"]["onebot_group"], "300")
+        self.assertEqual(self.mapping._groups["OPENID"]["qq_bot"], "102445077")
 
         self.assertEqual(self.mapping.observe(self.onebot(1006)).action, "drop")
         observation = self.mapping.observe(self.qq(1006))
@@ -83,13 +86,63 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(observation.qq_bot, "102445077")
         self.assertEqual(observation.qq_group, "OPENID")
 
-    def test_five_unique_hits_lock_without_nickname_match(self) -> None:
-        for index in range(5):
+    def test_nickname_mismatch_never_locks(self) -> None:
+        for index in range(6):
             second = 2000 + index
             self.mapping.observe(self.onebot(second, name="不同昵称"))
             self.mapping.observe(self.qq(second, name="友利奈绪"))
+        self.assertEqual(self.mapping._users, {})
+        self.assertEqual(self.mapping._groups, {})
+        self.assertEqual(self.mapping._user_hits, {})
+        self.assertEqual(self.mapping._group_hits, {})
+
+    def test_failed_match_resets_streak(self) -> None:
+        for index in range(4):
+            second = 3000 + index
+            self.mapping.observe(self.onebot(second))
+            self.mapping.observe(self.qq(second))
+        self.now = 100
+        self.mapping.observe(self.onebot(3100, text="孤立消息"))
+        self.now = 104
+        self.mapping.observe(self.onebot(3101, text="触发清扫", uid="999"))
+        self.assertEqual(self.mapping._user_hits, {})
+        self.assertEqual(self.mapping._group_hits, {})
+        self.mapping.observe(self.onebot(3102))
+        self.mapping.observe(self.qq(3102))
+        self.assertEqual(self.mapping._users, {})
+        for index in range(4):
+            second = 3103 + index
+            self.mapping.observe(self.onebot(second))
+            self.mapping.observe(self.qq(second))
         self.assertIn("A" * 32, self.mapping._users)
         self.assertIn("OPENID", self.mapping._groups)
+
+    def test_mapped_user_does_not_reset_group_streak(self) -> None:
+        self.mapping._lock_user("A" * 32, "3226795632")
+        for index in range(4):
+            second = 6000 + index
+            self.mapping.observe(self.onebot(second, uid="111", name="友利奈绪"))
+            self.mapping.observe(self.qq(second, openid="B" * 32, name="友利奈绪"))
+        self.now = 100
+        self.mapping.observe(self.onebot(6100, text="孤立消息"))
+        self.now = 104
+        self.mapping.observe(self.onebot(6101, text="触发清扫", uid="999"))
+        self.assertEqual(self.mapping._group_hits.get(("300", "OPENID")), 4)
+        self.mapping.observe(self.onebot(6102, uid="111", name="友利奈绪"))
+        self.mapping.observe(self.qq(6102, openid="B" * 32, name="友利奈绪"))
+        self.assertIn("OPENID", self.mapping._groups)
+
+    def test_hit_counters_survive_restart(self) -> None:
+        for index in range(4):
+            second = 4000 + index
+            self.mapping.observe(self.onebot(second))
+            self.mapping.observe(self.qq(second))
+        self.mapping.close()
+        reloaded = IdentityMap(clock=lambda: self.now)
+        self.assertEqual(reloaded._user_hits[("A" * 32, "3226795632")], 4)
+        reloaded.observe(self.onebot(4004))
+        reloaded.observe(self.qq(4004))
+        self.assertIn("A" * 32, reloaded._users)
 
     def test_ambiguous_window_is_not_learned(self) -> None:
         self.mapping.observe(self.qq(3000, openid="A" * 32, name="友利奈绪"))

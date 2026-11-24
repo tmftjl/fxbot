@@ -17,6 +17,8 @@ from .models import MessageReceive, MessageSend
 HIT_LIMIT = 5
 WINDOW_SECONDS = 10.0
 ROUTE_TTL = 900.0
+MATCH_GRACE = 3.0
+SAVE_INTERVAL = 2.0
 MAP_FILE = data_dir("gscore") / "identity_map.json"
 
 
@@ -46,6 +48,8 @@ class _Frame:
     ts: float
     bot_id: str
     forwarded: bool = False
+    matched: bool = False
+    swept: bool = False
 
 
 def _name(value: str) -> str:
@@ -55,7 +59,8 @@ def _name(value: str) -> str:
 class IdentityMap:
     """学习结果与路由状态都属于应用；文件只保存已锁定的映射。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock=None) -> None:
+        self._clock = clock if clock is not None else time.monotonic
         self._groups: dict[str, dict[str, str]] = {}
         self._users: dict[str, dict[str, str]] = {}
         self._groups_rev: dict[str, str] = {}
@@ -65,6 +70,8 @@ class IdentityMap:
         self._onebot: list[_Frame] = []
         self._qq: list[_Frame] = []
         self._routes: dict[str, dict[str, Any]] = {}
+        self._dirty = False
+        self._last_save = float("-inf")
         self._load()
 
     # ---------- 配置与持久化 ----------
@@ -87,14 +94,38 @@ class IdentityMap:
         if isinstance(groups, dict):
             for openid, info in groups.items():
                 if isinstance(info, dict) and isinstance(info.get("onebot_group"), str):
-                    self._lock_group(openid, info["onebot_group"], str(info.get("onebot_bot") or ""))
+                    self._lock_group(
+                        openid,
+                        info["onebot_group"],
+                        str(info.get("onebot_bot") or ""),
+                        str(info.get("qq_bot") or ""),
+                    )
         if isinstance(users, dict):
             for openid, info in users.items():
                 if isinstance(info, dict) and isinstance(info.get("uin"), str):
-                    self._lock_user(openid, info["uin"], persist=False)
+                    self._lock_user(openid, info["uin"], str(info.get("qq_bot") or ""), persist=False)
+        for openid, uin, hits in data.get("user_hits") or []:
+            if isinstance(openid, str) and isinstance(uin, str) and type(hits) is int and hits > 0:
+                self._user_hits[(openid, uin)] = hits
+        for group, openid, hits in data.get("group_hits") or []:
+            if isinstance(group, str) and isinstance(openid, str) and type(hits) is int and hits > 0:
+                self._group_hits[(group, openid)] = hits
 
-    def _save(self) -> None:
-        payload = {"version": 1, "groups": self._groups, "users": self._users}
+    def _save(self, *, force: bool = False) -> None:
+        """计数变化最多每 2 秒落盘一次；锁定或关闭时强制立即写。"""
+        self._dirty = True
+        now = self._clock()
+        if not force and now - self._last_save < SAVE_INTERVAL:
+            return
+        self._last_save = now
+        self._dirty = False
+        payload = {
+            "version": 2,
+            "groups": self._groups,
+            "users": self._users,
+            "user_hits": [[openid, uin, hits] for (openid, uin), hits in self._user_hits.items()],
+            "group_hits": [[group, openid, hits] for (group, openid), hits in self._group_hits.items()],
+        }
         try:
             MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
             temporary = MAP_FILE.with_suffix(".tmp")
@@ -103,17 +134,23 @@ class IdentityMap:
         except OSError:
             logger.opt(exception=True).warning("[gscore] 身份映射保存失败")
 
-    def _lock_group(self, openid: str, group: str, bot: str) -> bool:
-        if self._groups.get(openid, {}).get("onebot_group") == group:
+    def _lock_group(self, openid: str, group: str, bot: str, qq_bot: str = "") -> bool:
+        current = self._groups.get(openid) or {}
+        if current.get("onebot_group") == group and (not qq_bot or current.get("qq_bot") == qq_bot):
             return False
-        self._groups[openid] = {"onebot_group": group, "onebot_bot": bot}
+        self._groups[openid] = {
+            "onebot_group": group,
+            "onebot_bot": bot,
+            "qq_bot": qq_bot or str(current.get("qq_bot") or ""),
+        }
         self._groups_rev[group] = openid
         return True
 
-    def _lock_user(self, openid: str, uin: str, *, persist: bool = True) -> bool:
-        if self._users.get(openid, {}).get("uin") == uin:
+    def _lock_user(self, openid: str, uin: str, qq_bot: str = "", *, persist: bool = True) -> bool:
+        current = self._users.get(openid) or {}
+        if current.get("uin") == uin and (not qq_bot or current.get("qq_bot") == qq_bot):
             return False
-        self._users[openid] = {"uin": uin}
+        self._users[openid] = {"uin": uin, "qq_bot": qq_bot or str(current.get("qq_bot") or "")}
         self._users_rev[uin] = openid
         if persist:
             self._save()
@@ -121,8 +158,7 @@ class IdentityMap:
 
     # ---------- 指纹与配对 ----------
 
-    @staticmethod
-    def _frame(event: Event, platform: str) -> _Frame:
+    def _frame(self, event: Event, platform: str) -> _Frame:
         message = event.original_message if event.original_message is not None else event.message
         text = message.plain_text().strip()
         images = sum(1 for segment in message.segments if segment.type == "image")
@@ -135,13 +171,22 @@ class IdentityMap:
             text=text,
             images=images,
             second=int(event.occurred_at.timestamp()),
-            ts=time.monotonic(),
+            ts=self._clock(),
             bot_id=event.bot_id,
         )
 
     @staticmethod
     def _prune(frames: list[_Frame], now: float) -> None:
         frames[:] = [frame for frame in frames if now - frame.ts <= WINDOW_SECONDS]
+
+    def _sweep(self, frames: list[_Frame], now: float) -> None:
+        """宽限期内没有配对的消息才算映射失败，避免先到的一方误清零。"""
+        for frame in frames:
+            if frame.swept or frame.matched or now - frame.ts <= MATCH_GRACE:
+                continue
+            frame.swept = True
+            if frame.text:
+                self._failure(frame)
 
     @staticmethod
     def _candidates(frame: _Frame, pool: list[_Frame]) -> list[_Frame]:
@@ -154,37 +199,53 @@ class IdentityMap:
             and item.second == frame.second
         ]
 
-    def _learn(self, onebot: _Frame, qq: _Frame) -> None:
-        nickname_match = bool(_name(onebot.name)) and _name(onebot.name) == _name(qq.name)
+    @staticmethod
+    def _nickname_match(onebot: _Frame, qq: _Frame) -> bool:
+        return bool(_name(onebot.name)) and _name(onebot.name) == _name(qq.name)
+
+    def _hit(self, onebot: _Frame, qq: _Frame) -> None:
+        """昵称+文本+同秒的唯一命中；连续 5 次才锁定，计数落盘。"""
         changed = False
         if qq.user not in self._users:
-            if nickname_match:
-                changed = self._lock_user(qq.user, onebot.user)
-            else:
-                key = (qq.user, onebot.user)
-                self._user_hits[key] = self._user_hits.get(key, 0) + 1
-                if self._user_hits[key] >= HIT_LIMIT:
-                    self._user_hits.pop(key, None)
-                    changed = self._lock_user(qq.user, onebot.user)
+            key = (qq.user, onebot.user)
+            self._user_hits[key] = self._user_hits.get(key, 0) + 1
+            if self._user_hits[key] >= HIT_LIMIT:
+                self._user_hits.pop(key, None)
+                changed = self._lock_user(qq.user, onebot.user, qq.bot_id, persist=False) or changed
         if qq.group not in self._groups:
             key = (onebot.group, qq.group)
             self._group_hits[key] = self._group_hits.get(key, 0) + 1
             if self._group_hits[key] >= HIT_LIMIT:
                 self._group_hits.pop(key, None)
-                changed = self._lock_group(qq.group, onebot.group, onebot.bot_id) or changed
+                changed = self._lock_group(qq.group, onebot.group, onebot.bot_id, qq.bot_id) or changed
+        self._save(force=changed)
         if changed:
-            self._save()
             logger.info("[gscore] 身份映射更新: 群 {} 用户 {} 条", len(self._groups), len(self._users))
 
-    def _ambiguous(self, frame: _Frame, candidates: list[_Frame]) -> None:
-        """同一窗口出现多个候选时丢弃本轮，并清掉相关连击。"""
-        for item in candidates:
-            if frame.platform == "onebot":
-                self._user_hits.pop((item.user, frame.user), None)
-                self._group_hits.pop((frame.group, item.group), None)
-            else:
-                self._user_hits.pop((frame.user, item.user), None)
-                self._group_hits.pop((item.group, frame.group), None)
+    def _failure(self, frame: _Frame) -> None:
+        """本轮配不上：清掉该用户与所在群的所有连击，下一轮从零开始。"""
+        changed = False
+        if frame.platform == "onebot":
+            for key in [key for key in self._user_hits if key[1] == frame.user]:
+                self._user_hits.pop(key, None)
+                changed = True
+            for key in [key for key in self._group_hits if key[0] == frame.group]:
+                self._group_hits.pop(key, None)
+                changed = True
+        else:
+            for key in [key for key in self._user_hits if key[0] == frame.user]:
+                self._user_hits.pop(key, None)
+                changed = True
+            for key in [key for key in self._group_hits if key[1] == frame.group]:
+                self._group_hits.pop(key, None)
+                changed = True
+        if changed:
+            self._save()
+
+    def close(self) -> None:
+        """进程退出前把被节流掉的计数补写一次。"""
+        if self._dirty:
+            self._save(force=True)
 
     # ---------- 观测与决策 ----------
 
@@ -201,14 +262,24 @@ class IdentityMap:
         return Observation()
 
     def _observe_onebot(self, event: Event) -> Observation:
-        now = time.monotonic()
+        now = self._clock()
         self._prune(self._qq, now)
+        self._sweep(self._onebot, now)
+        self._sweep(self._qq, now)
         frame = self._frame(event, "onebot")
         candidates = self._candidates(frame, self._qq)
-        if len(candidates) == 1:
-            self._learn(frame, candidates[0])
-        elif len(candidates) > 1:
-            self._ambiguous(frame, candidates)
+        # 已映射用户不再参与学习，也不让它影响群连击。
+        if frame.user in self._users_rev:
+            frame.swept = True
+        elif frame.text:
+            if len(candidates) == 1 and self._nickname_match(frame, candidates[0]):
+                frame.matched = candidates[0].matched = True
+                self._hit(frame, candidates[0])
+            elif candidates:
+                frame.swept = True
+                for item in candidates:
+                    item.swept = True
+                self._failure(frame)
         observation = Observation(action="forward")
         # 已映射用户且群映射已锁定：交给官方 Bot 处理，OneBot 侧只用于学习。
         if frame.user in self._users_rev and frame.group in self._groups_rev:
@@ -218,15 +289,24 @@ class IdentityMap:
         return observation
 
     def _observe_qq(self, event: Event, groups: set[str]) -> Observation:
-        now = time.monotonic()
+        now = self._clock()
         self._prune(self._onebot, now)
+        self._sweep(self._onebot, now)
+        self._sweep(self._qq, now)
         frame = self._frame(event, "qq")
         pool = [item for item in self._onebot if item.group in groups]
         candidates = self._candidates(frame, pool)
-        if len(candidates) == 1:
-            self._learn(candidates[0], frame)
-        elif len(candidates) > 1:
-            self._ambiguous(frame, candidates)
+        if frame.user in self._users:
+            frame.swept = True
+        elif frame.text:
+            if len(candidates) == 1 and self._nickname_match(candidates[0], frame):
+                frame.matched = candidates[0].matched = True
+                self._hit(candidates[0], frame)
+            elif candidates:
+                frame.swept = True
+                for item in candidates:
+                    item.swept = True
+                self._failure(frame)
         observation = Observation(action="default")
         group_info = self._groups.get(frame.group)
         onebot = candidates[0] if len(candidates) == 1 else None
@@ -267,7 +347,7 @@ class IdentityMap:
     def remember_receive(self, receive: MessageReceive, observation: Observation) -> None:
         if observation.action != "rewrite" or not receive.msg_id:
             return
-        now = time.monotonic()
+        now = self._clock()
         for key in [key for key, value in self._routes.items() if value["ts"] < now - ROUTE_TTL]:
             self._routes.pop(key, None)
         self._routes[receive.msg_id] = {
