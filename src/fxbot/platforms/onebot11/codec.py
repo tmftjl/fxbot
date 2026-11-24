@@ -172,6 +172,9 @@ def parse_event(payload: dict[str, Any], *, bot_id: str) -> Event:
             "time": timestamp,
             "sub_type": subtype,
             "sender_role": role if isinstance(role, str) and role in {"admin", "owner", "member"} else None,
+            # 群名片可能与 QQ 昵称不同，跨适配器配对需要原始昵称。
+            "sender_nickname": sender.get("nickname") if isinstance(sender.get("nickname"), str) else None,
+            "sender_card": sender.get("card") if isinstance(sender.get("card"), str) else None,
         },
         to_me=to_me,
         original_message=original,

@@ -41,11 +41,15 @@ def log_frame(msg: MessageSend) -> None:
             logger.info("[gscore][core] {}: {}", kind, segment.data)
 
 
-async def dispatch_outgoing(services: ApplicationServices, msg: MessageSend) -> SendResult | None:
-    """按 bot_id 查找适配器；未知平台不崩溃、不伪造消息。"""
+async def dispatch_outgoing(
+    services: ApplicationServices, msg: MessageSend, *, mapping: object | None = None
+) -> SendResult | None:
+    """按 bot_id 查找适配器；身份映射生效时先把官方入站的回复路由回官方 Bot。"""
     if is_log_frame(msg):
         log_frame(msg)
         return None
+    if mapping is not None:
+        msg = mapping.rewrite_outgoing(msg)
     adapter = find_send(msg.bot_id)
     if adapter is None:
         return None

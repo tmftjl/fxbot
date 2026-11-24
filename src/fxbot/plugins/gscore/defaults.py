@@ -11,4 +11,7 @@ DEFAULTS: dict[str, Any] = {
     "token": "",
     "bot_id": "FxBot",
     "reply_image": True,
+    # 双 Bot 群身份映射：只填 OneBot 群号，映射从两侧消息自动学习。
+    "mapping_enabled": False,
+    "mapping_groups": [],
 }

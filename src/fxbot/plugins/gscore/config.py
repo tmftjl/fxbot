@@ -25,6 +25,10 @@ def validate_config(data: dict[str, Any]) -> None:
         raise ValueError("gscore port 必须位于 1 到 65535")
     if "token" in data and data["token"] != data["token"].strip():
         raise ValueError("gscore token 不能包含首尾空白")
+    if "mapping_groups" in data:
+        groups = data["mapping_groups"]
+        if not isinstance(groups, list) or not all(isinstance(item, str) and item.isdigit() for item in groups):
+            raise ValueError("gscore mapping_groups 必须是 OneBot 群号字符串数组")
 
 
 REG = get_manager().register("gscore", DEFAULTS, clean_extra=True, validator=validate_config)

@@ -43,6 +43,10 @@ async def forward_message(context: HandlerContext) -> None:
     config = get_config()
     if not config["enabled"] or context.app_services is None:
         return
+    service = context.service(build_service)
+    observation = service.mapping.observe(context.event)
+    if observation.action == "drop":
+        return
     try:
         receive = await build_receive(
             context.event,
@@ -54,7 +58,9 @@ async def forward_message(context: HandlerContext) -> None:
         logger.warning("[gscore] 无法转换消息事件: {}", exc)
         return
     if receive is not None:
-        context.service(build_service).submit(receive)
+        service.mapping.apply_receive(receive, observation)
+        service.mapping.remember_receive(receive, observation)
+        service.submit(receive)
 
 
 @member_joined.handle()

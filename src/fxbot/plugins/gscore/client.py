@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 from ...core import ApplicationServices
 from .models import MessageSend, MessageReceive, decode_send, encode_receive, recall_receipt
 from .dispatch import dispatch_outgoing
+from .mapping import IdentityMap
 from ...core.plugin import Service
 
 INITIAL_BACKOFF = 1.0
@@ -94,6 +95,7 @@ class GscoreService(Service):
         connect_timeout: float = CONNECT_TIMEOUT,
     ) -> None:
         self.runtime = runtime
+        self.mapping = IdentityMap()
         self._connector = connector if connector is not None else connect
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._initial_backoff = initial_backoff
@@ -184,7 +186,7 @@ class GscoreService(Service):
     async def _process(self, msg: MessageSend) -> None:
         recall_id: str | list[str] | None = None
         try:
-            result = await dispatch_outgoing(self.runtime, msg)
+            result = await dispatch_outgoing(self.runtime, msg, mapping=self.mapping)
             if result is not None:
                 recall_id = result.recall_id
         except asyncio.CancelledError:

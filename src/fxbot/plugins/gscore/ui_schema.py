@@ -60,6 +60,20 @@ def get_ui_schema() -> dict[str, Any]:
                         "default": DEFAULTS["reply_image"],
                         "helpMessage": "开启后会把被引用消息中的图片一并上报给 gsuid_core。",
                     },
+                    {
+                        "field": "mapping_enabled",
+                        "label": "双 Bot 身份映射",
+                        "component": "Switch",
+                        "default": DEFAULTS["mapping_enabled"],
+                        "helpMessage": "只在下方列出的双 Bot 群生效：学到映射后，官方 Bot 收到的事件按 OneBot 身份上报，回复仍由官方 Bot 发出。",
+                    },
+                    {
+                        "field": "mapping_groups",
+                        "label": "需要映射的 OneBot 群号",
+                        "component": "GTags",
+                        "default": DEFAULTS["mapping_groups"],
+                        "helpMessage": "只填 OneBot 群号（如 757463664）。QQ 官方侧的群 openid 由两侧消息自动配对锁定，需要连续 5 次唯一命中。",
+                    },
                 ],
             }
         ],
