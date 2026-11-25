@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import time
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -35,6 +36,18 @@ from ..console.routes import (
 from ..console.server import mount_console
 from ..platforms.onebot11.protocol import OneBot11Protocol
 from ..platforms.onebot12.protocol import OneBot12Protocol
+
+
+def _elapsed(seconds: float) -> str:
+    """连接时长只用于日志，秒级精度足够。"""
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total} 秒"
+    minutes, sec = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes} 分 {sec} 秒" if sec else f"{minutes} 分钟"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} 小时 {rest} 分钟" if rest else f"{hours} 小时"
 
 
 def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
@@ -124,18 +137,31 @@ def create_app(settings: Settings, services: Runtime | None = None) -> FastAPI:
             await websocket.close(code=1008)
             return
         close_code = 1011
+        reason = "未知原因"
+        started = time.monotonic()
         try:
             await websocket.accept(subprotocol=subprotocol)
             logger.info("[OneBot] {} Bot {} 已连接", protocol.platform, bot_id)
             while True:
                 connection.receive(await websocket.receive_json())
-        except WebSocketDisconnect:
+        except WebSocketDisconnect as error:
             disconnected = True
+            close_code = error.code
+            reason = "客户端断开"
         except ValueError:
             logger.warning("OneBot 连接协议无效")
             close_code = 1008
+            reason = "协议无效"
         finally:
             await connection.close(close_code)
+            logger.info(
+                "[OneBot] {} Bot {} 已断开（{}，关闭码 {}，连接时长 {}）",
+                protocol.platform,
+                bot_id,
+                reason,
+                close_code,
+                _elapsed(time.monotonic() - started),
+            )
 
     mount_console(
         app,

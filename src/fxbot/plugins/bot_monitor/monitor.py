@@ -89,11 +89,12 @@ async def run_tick(services: Any, state: dict[str, Any], *, now: float | None = 
         online.add(key)
         # 只有真的发过掉线提醒才补一条恢复；宽限内的重连抖动完全静默。
         if config["notify_recovery"] and info.get("alerted"):
-            await _notify(
+            if await _notify(
                 services,
                 bots,
                 f"【Bot 恢复】{key} 已重新上线，离线时长 {_duration(moment - info['since'])}",
-            )
+            ):
+                logger.info("[BotMonitor] 已发送恢复提醒: {}", key)
 
     for key in set(current) - online:
         online.add(key)
@@ -101,6 +102,7 @@ async def run_tick(services: Any, state: dict[str, Any], *, now: float | None = 
     for key in online - set(current):
         online.discard(key)
         offline.setdefault(key, {"since": moment, "since_wall": wall, "alerted": 0.0})
+        logger.debug("[BotMonitor] 检测到离线: {}", key)
 
     for key, info in list(offline.items()):
         if key in current:
@@ -122,3 +124,4 @@ async def run_tick(services: Any, state: dict[str, Any], *, now: float | None = 
         )
         if await _notify(services, bots, text):
             info["alerted"] = moment
+            logger.info("[BotMonitor] 已发送掉线提醒: {}（离线 {}）", key, _duration(elapsed))
