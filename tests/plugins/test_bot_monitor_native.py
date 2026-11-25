@@ -73,12 +73,31 @@ class BotMonitorTests(unittest.IsolatedAsyncioTestCase):
         await self.run_tick(runtime, state, 100)
         runtime.application.bots = (self.onebot,)
         await self.run_tick(runtime, state, 200)
+        await self.run_tick(runtime, state, 261)  # 越过宽限，发出掉线提醒
         self.onebot.send.reset_mock()
         runtime.application.bots = (self.onebot, self.onebot2)
-        await self.run_tick(runtime, state, 260)
+        await self.run_tick(runtime, state, 300)
         self.assertEqual(self.onebot.send.await_count, 1)
         self.assertIn("Bot 恢复", self.onebot.send.await_args.args[1].plain_text())
         self.assertEqual(state["offline"], {})
+
+    async def test_short_flap_stays_silent(self) -> None:
+        runtime = services([self.onebot, self.onebot2], ["200"])
+        state = {}
+        await self.run_tick(runtime, state, 100)
+        runtime.application.bots = (self.onebot,)
+        await self.run_tick(runtime, state, 130)
+        runtime.application.bots = (self.onebot, self.onebot2)
+        await self.run_tick(runtime, state, 160)
+        self.onebot.send.assert_not_awaited()
+        self.assertEqual(state["offline"], {})
+
+    def test_duration_uses_seconds_below_a_minute(self) -> None:
+        self.assertEqual(monitor._duration(3.2), "3 秒")
+        self.assertEqual(monitor._duration(59.9), "59 秒")
+        self.assertEqual(monitor._duration(60), "1 分钟")
+        self.assertEqual(monitor._duration(3599), "59 分钟")
+        self.assertEqual(monitor._duration(3661), "1 小时 1 分钟")
 
     async def test_openid_superuser_uses_qq_bot(self) -> None:
         dropped_qq = bot("qq", "1906397532")

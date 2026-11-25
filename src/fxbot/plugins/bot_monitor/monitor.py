@@ -23,7 +23,10 @@ def _key(bot: Any) -> str:
 
 
 def _duration(seconds: float) -> str:
-    minutes = max(1, int(seconds // 60))
+    total = max(1, int(seconds))
+    if total < 60:
+        return f"{total} 秒"
+    minutes = total // 60
     if minutes < 60:
         return f"{minutes} 分钟"
     hours, rest = divmod(minutes, 60)
@@ -84,7 +87,8 @@ async def run_tick(services: Any, state: dict[str, Any], *, now: float | None = 
     for key in set(current) & set(offline):
         info = offline.pop(key)
         online.add(key)
-        if config["notify_recovery"]:
+        # 只有真的发过掉线提醒才补一条恢复；宽限内的重连抖动完全静默。
+        if config["notify_recovery"] and info.get("alerted"):
             await _notify(
                 services,
                 bots,

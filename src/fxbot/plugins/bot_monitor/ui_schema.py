@@ -60,7 +60,7 @@ def get_ui_schema() -> dict[str, Any]:
                         "label": "恢复提醒",
                         "component": "Switch",
                         "default": DEFAULTS["notify_recovery"],
-                        "helpMessage": "Bot 重新上线时也发一条消息。",
+                        "helpMessage": "发出过掉线提醒的 Bot 重新上线时再发一条恢复消息；宽限内的短暂重连不提醒。",
                     },
                 ],
             }

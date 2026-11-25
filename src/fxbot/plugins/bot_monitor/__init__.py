@@ -12,7 +12,7 @@ __plugin_extensions__ = {"console.config": get_ui_schema}
 
 __plugin_meta__ = PluginMetadata(
     name="Bot 监控",
-    description="检测上线过的 Bot 掉线，并私聊提醒超级用户；恢复后同样提醒。",
+    description="检测上线过的 Bot 掉线，并私聊提醒超级用户；掉线提醒后恢复时再补一条。",
     usage="无需命令，在控制台「Bot 监控」配置页调整检测间隔与提醒策略。",
 )
 
