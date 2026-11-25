@@ -75,8 +75,9 @@ def _template() -> str:
     return _ASSET_REF.sub(lambda match: _image(_ASSET_NAMES.get(match.group(1), match.group(1))), raw)
 
 
-def _hour_chart(hours: list[int]) -> str:
+def _hour_chart(hours: list[int], labels: list[str] | None = None) -> str:
     peak = max(hours) if hours else 0
+    labels = labels or [f"{hour}" for hour in range(len(hours))]
     rows = []
     for hour, count in enumerate(hours):
         ratio = hour / (len(hours) - 1) if len(hours) > 1 else 0
@@ -107,8 +108,8 @@ def _hour_chart(hours: list[int]) -> str:
             f"background:linear-gradient(180deg,rgb({top[0]},{top[1]},{top[2]}) 0%,"
             f"rgb({bottom[0]},{bottom[1]},{bottom[2]}) 100%);"
             f"box-shadow:0 6px 14px rgba({bottom[0]},{bottom[1]},{bottom[2]},0.14);'"
-            f" title='{hour}时 - {count}条消息'></div></div>"
-            f"<span style='font-size:10px;color:#9a8aa3;margin-top:8px;line-height:1;'>{hour}</span></div>"
+            f" title='{labels[hour]}时 - {count}条消息'></div></div>"
+            f"<span style='font-size:10px;color:#9a8aa3;margin-top:8px;line-height:1;'>{labels[hour]}</span></div>"
         )
     wrapper = (
         "<div class='chart-container'><div style='display:flex;align-items:stretch;height:220px;"
@@ -241,7 +242,7 @@ def build_atri_html(report: dict[str, Any]) -> str:
     label = str(report.get("label") or "")
     template = _template()
     slots = {
-        "hourly_chart_html": _hour_chart(stats.get("hours") or []),
+        "hourly_chart_html": _hour_chart(stats.get("hours") or [], stats.get("hour_labels") or []),
         "topics_html": _topic_cards(analysis.get("topics") or []),
         "titles_html": _title_cards(analysis.get("titles") or []),
         "quotes_html": _quote_cards(analysis.get("quotes") or []),
@@ -260,7 +261,8 @@ def build_atri_html(report: dict[str, Any]) -> str:
         "total_tokens": f"{int(usage.get('total_tokens') or 0):,}",
         "prompt_tokens": f"{int(usage.get('prompt_tokens') or 0):,}",
         "completion_tokens": f"{int(usage.get('completion_tokens') or 0):,}",
-        "most_active_period": f"{peak:02d}点 ~ {peak + 1:02d}点" if isinstance(peak, int) else "—",
+        "most_active_period": str(stats.get("peak_label") or "")
+        or (f"{peak:02d}点 ~ {peak + 1:02d}点" if isinstance(peak, int) else "—"),
         "current_date": date,
         "current_datetime": f"{date} {current.strftime('%H:%M')}",
     }

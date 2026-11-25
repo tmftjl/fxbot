@@ -150,7 +150,9 @@ def _stats_row(stats: dict[str, Any]) -> str:
 
 def _peak_block(stats: dict[str, Any]) -> str:
     peak = stats.get("peak_hour")
-    text = f"{peak:02d}:00-{peak + 1:02d}:00" if isinstance(peak, int) else "—"
+    text = str(stats.get("peak_label") or "") or (
+        f"{peak:02d}:00-{peak + 1:02d}:00" if isinstance(peak, int) else "—"
+    )
     return (
         "<div class='active-peak-block'>"
         "<div>"
@@ -162,8 +164,9 @@ def _peak_block(stats: dict[str, Any]) -> str:
     )
 
 
-def _hour_chart(hours: list[int]) -> str:
+def _hour_chart(hours: list[int], labels: list[str] | None = None) -> str:
     peak = max(hours) if hours else 0
+    labels = labels or [f"{hour:02d}" for hour in range(len(hours))]
     bars = []
     for hour, count in enumerate(hours):
         height = max(round(count / peak * 100), 4) if peak else 4
@@ -175,9 +178,10 @@ def _hour_chart(hours: list[int]) -> str:
             f"opacity:{'1' if count else '0.3'};'></div></div>"
         )
     axis = []
-    for hour in range(len(hours)):
-        unit = "<span class='miku-hour-unit'>时</span>" if hour % 4 == 0 or hour == len(hours) - 1 else ""
-        axis.append(f"<div class='miku-axis-label'><span>{hour:02d}{unit}</span></div>")
+    last = len(hours) - 1
+    for hour, label in enumerate(labels):
+        unit = "<span class='miku-hour-unit'>时</span>" if hour % 4 == 0 or hour == last else ""
+        axis.append(f"<div class='miku-axis-label'><span>{label}{unit}</span></div>")
     bars_html = "".join(bars)
     axis_html = "".join(axis)
     return (
@@ -197,7 +201,8 @@ def _speakers(stats: dict[str, Any]) -> str:
 def _overview(stats: dict[str, Any]) -> str:
     return (
         "<div class='card-common' style='padding:20px 10px;'>"
-        + _hour_chart(stats.get("hours") or [])
+        + _hour_chart(stats.get("hours") or [], stats.get("hour_labels") or [])
+        + (f"<div class='miku-range'>{_escape(stats.get('range_label'))}</div>" if stats.get("range_label") else "")
         + _speakers(stats)
         + "</div>"
     )

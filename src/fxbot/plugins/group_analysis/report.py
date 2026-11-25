@@ -183,7 +183,7 @@ async def generate(
         if len(messages) < basic["min_messages"]:
             return ReportResult(False, reason="too_few")
         features = config["analysis_features"]
-        stats = build_stats(messages)
+        stats = build_stats(messages, window)
         analysis_messages = build_analysis_messages(messages, {bot.bot_id})
         users = build_user_stats(messages, features["max_user_titles"])
         analysis = await analyze(

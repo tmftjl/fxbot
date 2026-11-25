@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from datetime import datetime
 from unittest.mock import Mock, AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -27,6 +28,8 @@ from fxbot.platforms.onebot11 import OneBot11Client, parse_event
 from tests.runtime.test_server import HEADERS
 from fxbot.runtime.notifications import NotificationService
 from fxbot.plugins.group_analysis import config, report
+from fxbot.utils.tz import SHANGHAI_TZ
+from fxbot.plugins.group_analysis.history import HistoryWindow, build_stats
 from tests.migration.test_onebot11 import payload
 from fxbot.permission.authorization import Authorizer
 from fxbot.platforms.onebot11.extensions import OneBot11ExtendedClient
@@ -58,6 +61,42 @@ class ReportConfigTests(unittest.TestCase):
         ):
             with self.subTest(item=item), self.assertRaises(ValueError):
                 config.validate_config(item)
+
+
+class HourlyLayoutTests(unittest.TestCase):
+    """滚动 24 小时要按真实时间排序，首尾同小时不能合并成一根柱子。"""
+
+    @staticmethod
+    def stamp(day: int, hour: int, minute: int) -> int:
+        return int(datetime(2026, 11, day, hour, minute, tzinfo=SHANGHAI_TZ).timestamp())
+
+    def test_rolling_window_keeps_first_and_last_hour_separate(self) -> None:
+        end = self.stamp(25, 16, 25)
+        window = HistoryWindow(start=end - 86400, end=end, label="最近 24 小时", days=1)
+        stats = build_stats(
+            [
+                HistoryMessage("a", self.stamp(24, 16, 40), "1", "甲"),
+                HistoryMessage("b", self.stamp(24, 16, 45), "1", "甲"),
+                HistoryMessage("c", self.stamp(25, 16, 5), "2", "乙"),
+            ],
+            window,
+        )
+        self.assertEqual(len(stats["hours"]), 25)
+        self.assertEqual(stats["hour_labels"][0], "16")
+        self.assertEqual(stats["hour_labels"][-1], "16")
+        self.assertEqual(stats["hours"][0], 2)
+        self.assertEqual(stats["hours"][-1], 1)
+        self.assertEqual(stats["peak_label"], "昨天 16:00-17:00")
+        self.assertEqual(stats["range_label"], "11-24 16:25 – 11-25 16:25")
+
+    def test_multi_day_window_keeps_hour_of_day_histogram(self) -> None:
+        end = self.stamp(25, 16, 25)
+        window = HistoryWindow(start=end - 3 * 86400, end=end, label="最近 3 天", days=3)
+        stats = build_stats([HistoryMessage("a", self.stamp(24, 9, 0), "1", "甲")], window)
+        self.assertEqual(len(stats["hours"]), 24)
+        self.assertEqual(stats["hour_labels"][9], "09")
+        self.assertEqual(stats["peak_label"], "09:00-10:00")
+        self.assertEqual(stats["range_label"], "最近 3 天（截至 11-25 16:25）")
 
 
 class ReportGenerationTests(unittest.IsolatedAsyncioTestCase):

@@ -434,6 +434,14 @@ body {
     white-space: nowrap;
 }
 
+.miku-range {
+    margin-top: 6px;
+    text-align: center;
+    font-family: var(--font-num);
+    font-size: 0.7rem;
+    color: var(--text-sub);
+}
+
 .miku-speakers {
     display: flex;
     flex-wrap: wrap;
