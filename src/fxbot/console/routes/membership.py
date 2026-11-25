@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any
 from datetime import datetime, timezone, timedelta
 
@@ -11,7 +13,7 @@ from fastapi import Depends, Request, APIRouter, HTTPException
 from fxbot.core.errors import ActionFailed
 
 from ..auth import bearer_auth
-from ...core import Message, SessionTarget
+from ...core import Message, MessageSegment, SessionTarget
 from ..dependencies import runtime_for
 from ...membership.guard import membership_guard
 from ...core.capabilities import Capability
@@ -54,10 +56,45 @@ def _online_group_bot(request: Request, row: Any):
     return bot, target
 
 
-async def _send_group_message(request: Request, row: Any, message: str) -> str:
+MAX_NOTIFY_IMAGES = 9
+MAX_NOTIFY_IMAGE_BYTES = 8 * 1024 * 1024
+
+
+def _decode_notify_images(items: object) -> list[bytes]:
+    """控制台上传的是 data URL，解码后交给平台客户端上传。"""
+    values = items if isinstance(items, list) else []
+    if len(values) > MAX_NOTIFY_IMAGES:
+        raise HTTPException(status_code=400, detail=f"通知图片最多 {MAX_NOTIFY_IMAGES} 张")
+    images: list[bytes] = []
+    for item in values:
+        raw = str(item or "").strip()
+        if not raw:
+            continue
+        if raw.startswith("data:"):
+            _, _, raw = raw.partition(",")
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError):
+            raise HTTPException(status_code=400, detail="通知图片不是有效的 base64") from None
+        if not data:
+            continue
+        if len(data) > MAX_NOTIFY_IMAGE_BYTES:
+            raise HTTPException(status_code=400, detail="单张通知图片不能超过 8MB")
+        images.append(data)
+    return images
+
+
+def _notify_message(text: str, images: list[bytes]) -> Message:
+    """文字可选，图片也可选，至少有一段内容。"""
+    segments = [MessageSegment.text(text)] if text else []
+    segments.extend(MessageSegment.image(data) for data in images)
+    return Message(segments)
+
+
+async def _send_group_message(request: Request, row: Any, message: str | Message) -> str:
     """只通过记录所属平台的连接发送，不把失败包装成删除记录的理由。"""
     bot, target = _online_group_bot(request, row)
-    await bot.send(target, Message.text(message))
+    await bot.send(target, Message.text(message) if isinstance(message, str) else message)
     return target.bot_key()
 
 
@@ -216,8 +253,9 @@ async def notify_groups(payload: dict[str, Any], request: Request) -> dict[str, 
     text = str(payload.get("text") or "").strip()
     if not group_ids:
         raise HTTPException(status_code=400, detail="群列表不能为空")
-    if not text:
-        raise HTTPException(status_code=400, detail="通知文本不能为空")
+    images = _decode_notify_images(payload.get("images"))
+    if not text and not images:
+        raise HTTPException(status_code=400, detail="通知内容和图片不能同时为空")
 
     sent = 0
     failed = 0
@@ -227,7 +265,7 @@ async def notify_groups(payload: dict[str, Any], request: Request) -> dict[str, 
             failed += 1
             continue
         try:
-            await _send_group_message(request, row, text)
+            await _send_group_message(request, row, _notify_message(text, images))
             sent += 1
         except (HTTPException, ConnectionError, ActionFailed, TimeoutError):
             logger.opt(exception=True).warning("会员通知发送失败")

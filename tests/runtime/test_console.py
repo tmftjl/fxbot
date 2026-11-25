@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import sqlite3
 import unittest
@@ -273,6 +274,35 @@ class ConsoleTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"sent": 0, "failed": 3})
+
+    def test_notify_sends_uploaded_images(self) -> None:
+        sent: list[Message] = []
+        online = SimpleNamespace(
+            platform="onebot11",
+            bot_id="100",
+            send=AsyncMock(side_effect=lambda target, message: sent.append(message)),
+        )
+        self.client.portal.call(lambda: self.app.state.runtime.register(online, close=AsyncMock()))
+        record = SimpleNamespace(group_id="onebot11:100:group:1")
+        image = "data:image/png;base64," + base64.b64encode(b"png-bytes").decode()
+        with patch.object(membership_service, "get_group", side_effect=lambda key: record):
+            response = self.client.post(
+                "/fxbot/membership/notify",
+                headers=self.headers,
+                json={"group_ids": [record.group_id], "text": "notice", "images": [image]},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"sent": 1, "failed": 0})
+        self.assertEqual([segment.type for segment in sent[0].segments], ["text", "image"])
+        self.assertEqual(sent[0].segments[1].data["file"], b"png-bytes")
+
+    def test_notify_rejects_empty_content(self) -> None:
+        response = self.client.post(
+            "/fxbot/membership/notify",
+            headers=self.headers,
+            json={"group_ids": ["onebot11:100:group:1"], "text": "", "images": []},
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 class ResourceOwnershipTests(unittest.TestCase):
