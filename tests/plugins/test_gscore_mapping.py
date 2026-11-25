@@ -27,9 +27,12 @@ def event(
     *,
     nickname: str | None = None,
     images: int = 0,
+    mentions: tuple[str, ...] = (),
 ) -> Event:
     target = SessionTarget(platform, bot_id, "group", target_id)
-    segments = [MessageSegment.text(text)] if text else []
+    segments = [MessageSegment.mention(user_id) for user_id in mentions]
+    if text:
+        segments.append(MessageSegment.text(text))
     segments.extend(MessageSegment.image(b"png") for _ in range(images))
     metadata = {"sender_nickname": nickname} if nickname is not None else {}
     return Event(
@@ -212,6 +215,69 @@ class MappingTests(unittest.TestCase):
             [segment.data for segment in receive.content],
             ["1492639107", "100", "C" * 32, " wwkp"],
         )
+
+    def test_rewrite_mentions_uses_paired_onebot_copy(self) -> None:
+        self.mapping._lock_user("A" * 32, "3226795632")
+        self.mapping._lock_group("OPENID", "300", "100", "102445077")
+        onebot = event(
+            "onebot11",
+            "100",
+            "300",
+            "3226795632",
+            "🐯",
+            " ww声骸",
+            7000,
+            nickname="友利奈绪",
+            mentions=("389258577",),
+        )
+        qq = event(
+            "qq",
+            "102445077",
+            "OPENID",
+            "A" * 32,
+            "友利奈绪",
+            " ww声骸",
+            7000,
+            mentions=("B" * 32,),
+        )
+        self.assertEqual(self.mapping.observe(onebot).action, "drop")
+        observation = self.mapping.observe(qq)
+        self.assertEqual(observation.action, "rewrite")
+        self.assertEqual(observation.mentions, ("389258577",))
+        receive = MessageReceive(
+            bot_id="qqgroup",
+            bot_self_id="102445077",
+            msg_id="official-msg",
+            user_type="group",
+            group_id="OPENID",
+            user_id="A" * 32,
+            content=[WireMessage("at", "B" * 32), WireMessage("text", " ww声骸")],
+        )
+        self.mapping.apply_receive(receive, observation)
+        self.assertEqual([segment.data for segment in receive.content], ["389258577", " ww声骸"])
+
+    def test_rewrite_mentions_ignores_unbalanced_pairs(self) -> None:
+        self.mapping._lock_user("A" * 32, "3226795632")
+        observation = Observation(
+            action="rewrite",
+            uin="3226795632",
+            group="300",
+            onebot_bot="100",
+            qq_bot="102445077",
+            qq_group="OPENID",
+            mentions=("389258577",),
+        )
+        receive = MessageReceive(
+            bot_id="qqgroup",
+            bot_self_id="102445077",
+            msg_id="official-msg",
+            user_type="group",
+            group_id="OPENID",
+            user_id="A" * 32,
+            content=[WireMessage("at", "B" * 32), WireMessage("at", "C" * 32)],
+        )
+        self.mapping.apply_receive(receive, observation)
+        self.assertEqual([segment.data for segment in receive.content], ["B" * 32, "C" * 32])
 
     def test_unmapped_message_keeps_original_route(self) -> None:
         outgoing = MessageSend(bot_id="onebot", bot_self_id="100", msg_id="unknown", target_type="group", target_id="300")

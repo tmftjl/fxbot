@@ -162,6 +162,21 @@ class InboundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receive.content[2].data, "https://img.example.test/a.jpg")
         self.assertEqual(receive.content[3].data, "m0")
 
+    async def test_self_mention_uses_bot_id(self) -> None:
+        """官方平台的自我提及是 openid，统一成 Bot 自身 ID 才能让 core 识别。"""
+        message = Message([MessageSegment.mention("SELFOPENID"), MessageSegment.text(" ww声骸")])
+        message.segments[0].data["is_bot"] = True
+        event = make_event(platform="qq", bot_id="appid", message=message)
+        receive = await build_receive(
+            event,
+            bot=BotStub("qq", "appid"),
+            services=ServicesStub(),
+            reply_image=False,
+        )
+        self.assertIsNotNone(receive)
+        assert receive is not None
+        self.assertEqual([item.data for item in receive.content if item.type == "at"], ["appid"])
+
     async def test_all_inbound_media_urls_stay_bare_for_downstream_plugins(self) -> None:
         message = Message(
             [

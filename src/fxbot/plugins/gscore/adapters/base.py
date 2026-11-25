@@ -335,6 +335,9 @@ class CoreAdapter(Adapter):
                     content.append(WireMessage("text", text))
             elif kind == "mention":
                 user_id = segment.data.get("user_id")
+                if segment.data.get("is_bot"):
+                    # 平台对「自己」的标识不统一（官方是 openid），统一成 Bot 自身 ID。
+                    user_id = bot.bot_id
                 if user_id is not None and str(user_id):
                     content.append(WireMessage("at", str(user_id)))
             elif kind == "reply":

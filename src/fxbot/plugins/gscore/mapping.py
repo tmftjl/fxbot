@@ -32,6 +32,7 @@ class Observation:
     onebot_bot: str = ""
     qq_bot: str = ""
     qq_group: str = ""
+    mentions: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -50,6 +51,7 @@ class _Frame:
     forwarded: bool = False
     matched: bool = False
     swept: bool = False
+    mentions: tuple[str, ...] = ()
 
 
 def _name(value: str) -> str:
@@ -162,6 +164,11 @@ class IdentityMap:
         message = event.original_message if event.original_message is not None else event.message
         text = message.plain_text().strip()
         images = sum(1 for segment in message.segments if segment.type == "image")
+        mentions = tuple(
+            str(segment.data.get("user_id"))
+            for segment in message.segments
+            if segment.type == "mention" and segment.data.get("user_id") is not None
+        )
         nickname = event.metadata.get("sender_nickname") if platform == "onebot" else event.user_name
         return _Frame(
             platform=platform,
@@ -173,6 +180,7 @@ class IdentityMap:
             second=int(event.occurred_at.timestamp()),
             ts=self._clock(),
             bot_id=event.bot_id,
+            mentions=mentions,
         )
 
     @staticmethod
@@ -324,6 +332,8 @@ class IdentityMap:
                 observation.onebot_bot = group_info["onebot_bot"]
                 observation.qq_bot = frame.bot_id
                 observation.qq_group = frame.group
+                # 官方副本的提及是 openid；同一条消息的 OneBot 副本里是 QQ 号。
+                observation.mentions = onebot.mentions if onebot is not None else ()
         else:
             observation.action = "drop"
         frame.forwarded = observation.action == "rewrite"
@@ -347,19 +357,26 @@ class IdentityMap:
 
     def _rewrite_mentions(self, receive: MessageReceive, observation: Observation, official_bot: str) -> None:
         """提及也要跟着换身份：官方 openid 换成 QQ 号，机器人的提及换成 OneBot Bot。"""
-        for segment in receive.content or []:
-            if segment.type != "at":
-                continue
+        segments = [segment for segment in receive.content or [] if segment.type == "at"]
+        if not segments:
+            return
+        for segment in segments:
+            if str(segment.data or "") in {observation.qq_bot, official_bot} and observation.onebot_bot:
+                segment.data = observation.onebot_bot
+        # 映射表里没有的人，用同一条消息 OneBot 副本的提及按顺序补；
+        # 数量对不上说明配对不可靠（例如 @机器人 多出的合成段），只保留已知改写。
+        if not observation.onebot_bot:
+            return
+        remaining = [segment for segment in segments if str(segment.data or "") != observation.onebot_bot]
+        paired = [mention for mention in observation.mentions if mention and mention != observation.onebot_bot]
+        aligned = len(remaining) == len(paired)
+        for index, segment in enumerate(remaining):
             target = str(segment.data or "")
-            if not target:
-                continue
-            if target in {observation.qq_bot, official_bot}:
-                if observation.onebot_bot:
-                    segment.data = observation.onebot_bot
-                continue
             info = self._users.get(target)
             if info is not None:
                 segment.data = info["uin"]
+            elif aligned:
+                segment.data = paired[index]
 
     def remember_receive(self, receive: MessageReceive, observation: Observation) -> None:
         if observation.action != "rewrite" or not receive.msg_id:
