@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 from fxbot.core import Event, Message, MessageSegment, SessionTarget
 from fxbot.plugins.gscore import mapping as mapping_module
-from fxbot.plugins.gscore.mapping import IdentityMap
-from fxbot.plugins.gscore.models import MessageReceive, MessageSend
+from fxbot.plugins.gscore.mapping import IdentityMap, Observation
+from fxbot.plugins.gscore.models import Message as WireMessage, MessageReceive, MessageSend
 
 CONFIG = {"mapping_enabled": True, "mapping_groups": ["300"]}
 
@@ -180,6 +180,38 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(rewritten.bot_id, "qqgroup")
         self.assertEqual(rewritten.bot_self_id, "102445077")
         self.assertEqual(rewritten.target_id, "OPENID")
+
+    def test_rewrite_mentions_swaps_openids_and_bot_identity(self) -> None:
+        self.mapping._lock_user("A" * 32, "3226795632")
+        self.mapping._lock_user("B" * 32, "1492639107")
+        self.mapping._lock_group("OPENID", "300", "100", "102445077")
+        observation = Observation(
+            action="rewrite",
+            uin="3226795632",
+            group="300",
+            onebot_bot="100",
+            qq_bot="102445077",
+            qq_group="OPENID",
+        )
+        receive = MessageReceive(
+            bot_id="qqgroup",
+            bot_self_id="102445077",
+            msg_id="official-msg",
+            user_type="group",
+            group_id="OPENID",
+            user_id="A" * 32,
+            content=[
+                WireMessage("at", "B" * 32),
+                WireMessage("at", "102445077"),
+                WireMessage("at", "C" * 32),
+                WireMessage("text", " wwkp"),
+            ],
+        )
+        self.mapping.apply_receive(receive, observation)
+        self.assertEqual(
+            [segment.data for segment in receive.content],
+            ["1492639107", "100", "C" * 32, " wwkp"],
+        )
 
     def test_unmapped_message_keeps_original_route(self) -> None:
         outgoing = MessageSend(bot_id="onebot", bot_self_id="100", msg_id="unknown", target_type="group", target_id="300")

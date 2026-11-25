@@ -332,17 +332,34 @@ class IdentityMap:
 
     # ---------- 入站改写与出站回程 ----------
 
-    @staticmethod
-    def apply_receive(receive: MessageReceive, observation: Observation) -> None:
+    def apply_receive(self, receive: MessageReceive, observation: Observation) -> None:
         """把官方事件伪装成 OneBot 身份，让 gs 命中旧绑定。"""
         if observation.action != "rewrite":
             return
+        official_bot = receive.bot_self_id
         receive.bot_id = "onebot"
         receive.bot_self_id = observation.onebot_bot
         receive.user_id = observation.uin
         receive.group_id = observation.group
         if isinstance(receive.sender, dict):
             receive.sender["user_id"] = observation.uin
+        self._rewrite_mentions(receive, observation, official_bot)
+
+    def _rewrite_mentions(self, receive: MessageReceive, observation: Observation, official_bot: str) -> None:
+        """提及也要跟着换身份：官方 openid 换成 QQ 号，机器人的提及换成 OneBot Bot。"""
+        for segment in receive.content or []:
+            if segment.type != "at":
+                continue
+            target = str(segment.data or "")
+            if not target:
+                continue
+            if target in {observation.qq_bot, official_bot}:
+                if observation.onebot_bot:
+                    segment.data = observation.onebot_bot
+                continue
+            info = self._users.get(target)
+            if info is not None:
+                segment.data = info["uin"]
 
     def remember_receive(self, receive: MessageReceive, observation: Observation) -> None:
         if observation.action != "rewrite" or not receive.msg_id:
