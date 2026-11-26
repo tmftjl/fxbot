@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import json
 import time
@@ -54,6 +55,10 @@ FLUSH_INTERVAL = 2.0
 MAX_MESSAGE_CHARS = 3500
 MAX_BUFFER_CHARS = 60_000
 AUTO_IMAGE_THRESHOLD = 600
+_ENGINE_META = {
+    "claude": ("Claude Code", "https://github.com/agentclientprotocol/claude-agent-acp"),
+    "codex": ("Codex", "https://github.com/agentclientprotocol/codex-acp"),
+}
 MAX_SESSIONS = 16
 SPAWN_FAIL_THRESHOLD = 3
 SPAWN_COOLDOWN = 60.0
@@ -70,6 +75,84 @@ FileSender = Callable[[Path, str], Awaitable[None]]
 _pid_lock = threading.Lock()
 _spawn_failures = 0
 _spawn_block_until = 0.0
+
+
+def _windows_path_dirs() -> list[Path]:
+    """读取注册表里的用户/系统 PATH，弥补服务进程 PATH 过旧。"""
+    dirs: list[Path] = []
+    try:
+        import winreg
+
+        targets = (
+            (winreg.HKEY_CURRENT_USER, "Environment"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        )
+        for root, key in targets:
+            try:
+                with winreg.OpenKey(root, key) as handle:
+                    value, _ = winreg.QueryValueEx(handle, "Path")
+            except OSError:
+                continue
+            for part in str(value).split(";"):
+                text = os.path.expandvars(part.strip())
+                if text:
+                    dirs.append(Path(text))
+    except Exception:
+        return dirs
+    return dirs
+
+
+def _candidate_dirs() -> list[Path]:
+    """可执行文件的额外搜索目录。"""
+    dirs = [Path(os.environ[key]) for key in ("ProgramFiles", "LOCALAPPDATA", "APPDATA") if os.environ.get(key)]
+    dirs.extend(
+        [
+            Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "nodejs",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "nodejs",
+            Path(os.environ.get("APPDATA", "")) / "npm",
+        ]
+    )
+    dirs.extend(_windows_path_dirs())
+    nvm_root = Path.home() / ".nvm" / "versions" / "node"
+    if nvm_root.is_dir():
+        dirs.extend(sorted(nvm_root.iterdir()))
+    dirs.append(Path.home() / ".local" / "bin")
+    return [path for path in dirs if str(path).strip()]
+
+
+def _resolve_executable(name: str) -> str:
+    """在 PATH、常见 Node 目录和注册表 PATH 中查找可执行文件。"""
+    found = shutil.which(name)
+    if found:
+        return found
+    suffixes = (".exe", ".cmd", ".bat") if os.name == "nt" else ("",)
+    for directory in _candidate_dirs():
+        for suffix in suffixes:
+            candidate = directory / f"{name}{suffix}"
+            if candidate.is_file():
+                return str(candidate)
+    return ""
+
+
+def _resolve_engine_argv(argv: list[str]) -> list[str]:
+    """解析启动命令的绝对路径；找不到时给出明确错误。"""
+    if not argv:
+        raise RuntimeError("没有可用的 ACP 启动命令")
+    executable = _resolve_executable(argv[0])
+    if not executable:
+        raise RuntimeError(f"找不到 {argv[0]}，请安装 Node.js 并确认在 PATH 中")
+    return [executable, *argv[1:]]
+
+
+def _spawn_env() -> dict[str, str]:
+    """让适配器使用本机的 Claude CLI（若存在），保持版本一致。"""
+    env = dict(os.environ)
+    if env.get("CLAUDE_CODE_EXECUTABLE"):
+        return env
+    cli = _resolve_executable("claude")
+    if cli and Path(cli).suffix.lower() not in {".cmd", ".bat"}:
+        env["CLAUDE_CODE_EXECUTABLE"] = cli
+    return env
 
 
 def _pid_path() -> Path:
@@ -246,7 +329,6 @@ class CcSession:
     async def _send_image(self, data: bytes) -> None:
         """发送一张图片。"""
         if self._image_sender is None:
-            await self._notify(f"[图片 {len(data) // 1024} KiB]")
             return
         try:
             await self._image_sender(data)
@@ -264,13 +346,19 @@ class CcSession:
             command = cc_agent_command(self.engine)
             if not command:
                 raise RuntimeError("没有可用的 ACP 启动命令")
-            command[0] = shutil.which(command[0]) or command[0]
+            command = _resolve_engine_argv(command)
             self.workdir.mkdir(parents=True, exist_ok=True)
             cm: Any = None
             conn: Any = None
             proc: Any = None
             try:
-                cm = spawn_agent_process(_Client(self), command[0], *command[1:], cwd=str(self.workdir))
+                cm = spawn_agent_process(
+                    _Client(self),
+                    command[0],
+                    *command[1:],
+                    cwd=str(self.workdir),
+                    env=_spawn_env(),
+                )
                 conn, proc = await cm.__aenter__()
                 self._cm, self._proc, self.conn = cm, proc, conn
                 _record_pid(proc.pid)
@@ -383,8 +471,6 @@ class CcSession:
                 await self._send(tool_text)
             if markdown:
                 await self._send(markdown)
-            elif not tool_text:
-                await self._send("（Claude Code 没有输出）")
             await self._send_attachments(markdown, tool_text)
             return
 
@@ -407,7 +493,6 @@ class CcSession:
         if footer:
             blocks.append(cc_render.ChatBlock("usage_footer", footer))
         if not blocks:
-            await self._send("（Claude Code 没有输出）")
             return
         context = cc_render.ImageContext(
             engine_display="Claude Code",
@@ -440,13 +525,11 @@ class CcSession:
                     continue
                 continue
             if self._file_sender is None:
-                await self._notify(f"[文件] {path}")
                 continue
             try:
                 await self._file_sender(path, path.name)
             except Exception:
                 logger.opt(exception=True).debug("[ServerAdmin] Claude Code 文件发送失败")
-                await self._notify(f"[文件] {path}")
 
     async def _flush_loop(self) -> None:
         while True:
@@ -557,14 +640,18 @@ class CcSession:
         """按先后顺序处理最早的一条待审批请求。"""
         entry = next(((f, o) for f, o in self._pendings if not f.done()), None)
         if entry is None:
-            return "当前没有待审批的请求。"
+            return "没有待审核请求\n刚发过命令时，agent 可能还在处理"
         future, options = entry
         option = next((item for item in options if item.kind == kind), None)
         if option is None:
             offered = "、".join(sorted({item.kind for item in options})) or "无"
-            return f"agent 没有提供 {kind} 选项，可选：{offered}。"
+            return f"无法选择 {kind}（仅有 {offered}）"
         future.set_result(option.option_id)
-        return "已允许。" if kind.startswith("allow") else "已拒绝。"
+        if kind == "allow_always":
+            return "已永久允许，agent 继续执行"
+        if kind == "allow_once":
+            return "已允许，agent 继续执行"
+        return "已拒绝，agent 已放弃此操作"
 
     async def cancel(self) -> str:
         """打断当前任务，会话保留；待审批请求按拒绝处理。"""
@@ -575,7 +662,7 @@ class CcSession:
                 future.set_result(None)
         with suppress(Exception):
             await self.conn.cancel(session_id=self.acp_session)
-        return "已请求打断。"
+        return "已打断 1 个任务"
 
     async def close(self, *, drop_native: bool = True) -> None:
         """关闭 ACP 会话和子进程；drop_native 决定是否丢弃保留的会话 id。"""
@@ -605,6 +692,27 @@ class CcSession:
             cc_store.drop(self.key)
         elif kept:
             cc_store.put(self.key, kept)
+
+
+def _markdown_table(headers: list[str], rows: list[list[object | None]]) -> str:
+    """生成 Markdown 表格，单元格里的竖线转义。"""
+
+    def cell(value: object | None) -> str:
+        return str(value or "").replace("|", r"\|")
+
+    head = "| " + " | ".join(headers) + " |"
+    sep = "| " + " | ".join("---" for _ in headers) + " |"
+    body = ["| " + " | ".join(cell(value) for value in row) + " |" for row in rows]
+    return "\n".join([head, sep, *body])
+
+
+async def render_markdown_pngs(markdown: str, display: str) -> list[bytes]:
+    """按 cc 的渲染资产把 Markdown 渲染成图片；失败返回空表。"""
+    body = cc_render.build_html_body(
+        [cc_render.ChatBlock("agent_md", markdown)],
+        cc_render.ImageContext(engine_display=display, render_style="list"),
+    )
+    return await cc_render.render_to_pngs(body, max_width=720, scale=cc_render_scale())
 
 
 def _collect_attachments(text: str, workdir: Path) -> list[Path]:
@@ -802,11 +910,11 @@ class CcManager:
             if cc_busy_behavior() == "reject":
                 return False, "上一轮还在执行，先 cc stop 或等它结束。"
             queue.append(item)
-            return True, f"已排队，前面还有 {len(queue) - 1} 条。"
+            return True, ""
         queue.append(item)
         await self._ensure_capacity(skey)
         self._drains[skey] = asyncio.create_task(self._drain(skey), name=f"cc-prompt-{skey}")
-        return True, f"已交给 {session.engine}，结果会在这条会话里陆续发出。"
+        return True, ""
 
     async def _drain(self, skey: str) -> None:
         """串行消费该用户的队列。"""
@@ -833,13 +941,13 @@ class CcManager:
         skey = self._session_key(key)
         queue = self._queues.get(skey) or deque()
         if not queue:
-            return "当前没有排队任务。"
-        lines = [f"排队：{len(queue)} 条"]
+            return "queue 为空"
+        lines = [f"queue ({len(queue)} 条)"]
         for index, item in enumerate(queue, start=1):
             text = str(item[0] or "").strip()
             preview = " ".join(text.split())[:40] or "[图片]"
             lines.append(f"{index}. {preview}")
-        lines.append("取消：cc dequeue <序号>")
+        lines.append("cc dequeue <qid> 删一条；cc stop 全砍")
         return "\n".join(lines)
 
     async def dequeue(self, key: str, index: str) -> str:
@@ -847,15 +955,15 @@ class CcManager:
         skey = self._session_key(key)
         queue = self._queues.get(skey)
         if not queue:
-            return "当前没有排队任务。"
+            return "queue 为空"
         try:
             position = int(index)
         except ValueError:
-            return "用法：cc dequeue <序号>（先用 cc queue 查看）"
+            return "用法：cc dequeue <qid>"
         if position < 1 or position > len(queue):
-            return f"序号超出范围，当前排队 {len(queue)} 条。"
+            return f"#{index} 不在 queue 里"
         del queue[position - 1]
-        return f"已取消第 {position} 条排队任务，剩余 {len(queue)} 条。"
+        return f"✓ 已取消 #{position}"
 
     async def clear(self, key: str) -> str:
         """只清当前引擎的工作目录内容，会话和历史保留。"""
@@ -865,23 +973,22 @@ class CcManager:
             return "还在执行，先 cc stop 再清空工作目录。"
         target = session.workdir if session is not None else cc_workdir(skey)
         removed = await asyncio.to_thread(_wipe, target)
-        return f"已清空工作目录中的 {removed} 项。" if removed else "工作目录已经是空的。"
+        engine = session.engine if session is not None else cc_engine(key)
+        return f"{engine}: 工作区已清空" if removed else f"{engine}: 工作区为空，无需清理"
 
-    def doctor(self) -> str:
-        """检查 ACP 依赖是否可用。"""
-        rows = [
-            ("node", shutil.which("node")),
-            ("npx", shutil.which("npx")),
-            ("claude", shutil.which("claude")),
-            ("codex", shutil.which("codex")),
-        ]
-        lines = ["ACP 体检"]
-        for name, path in rows:
-            lines.append(f"{name}: {path or '未找到'}")
+    def doctor_markdown(self) -> str:
+        """按 CCUID 的表格格式输出引擎体检。"""
+        rows: list[list[object | None]] = []
         for engine in CC_ENGINES:
+            display, install_url = _ENGINE_META.get(engine, (engine, ""))
             command = cc_agent_command(engine)
-            lines.append(f"{engine}: " + (" ".join(command) if command else "未配置"))
-        return "\n".join(lines)
+            launcher = command[0] if command else ""
+            found = _resolve_executable(launcher) if launcher else ""
+            if found:
+                rows.append([engine, display, "ok", ""])
+            else:
+                rows.append([engine, display, f"missing {launcher}", install_url])
+        return "## ACP 体检\n\n" + _markdown_table(["Engine", "名称", "状态", "安装"], rows)
 
     def engines(self, key: str) -> str:
         """列出引擎和当前选择。"""
@@ -938,7 +1045,7 @@ class CcManager:
         """指定当前引擎下一次使用的 ACP 会话。"""
         sid = session_id.strip()
         if not sid:
-            return "用法：cc resume <session id>（先用 cc sessions 查看）"
+            return "用法：cc resume <序号|session_id>"
         skey = self._session_key(key)
         session = self._sessions.get(skey)
         if session is not None and session.busy:
@@ -949,7 +1056,7 @@ class CcManager:
         cc_store.put(skey, sid)
         session._force_resume = True
         session._resume_requested = sid
-        return f"下一次 cc 会恢复到会话 {sid}。"
+        return f"已绑定历史 session：(无标题)\n{sid}\n下一条消息会从这里继续"
 
     async def reset(self, key: str) -> str:
         """关闭当前引擎会话并清空上下文。"""
@@ -966,9 +1073,13 @@ class CcManager:
     async def stop(self, key: str) -> str:
         """打断当前任务并清空排队。"""
         skey = self._session_key(key)
-        self._queues.pop(skey, None)
+        queue = self._queues.pop(skey, deque())
+        count = len(queue)
         session = self._sessions.get(skey)
-        return "还没有会话。" if session is None else await session.cancel()
+        if session is not None and session.busy:
+            await session.cancel()
+            count += 1
+        return f"已打断 {count} 个任务" if count else "当前没有正在执行的任务。"
 
     def resolve(self, key: str, kind: str) -> str:
         session = self._sessions.get(self._session_key(key))
@@ -978,7 +1089,7 @@ class CcManager:
         skey = self._session_key(key)
         session = self._sessions.get(skey)
         if session is None:
-            return f"还没有会话（引擎 {cc_engine(key)}）。发送 cc <任务> 开始。"
+            return "无活跃 session"
         if session.busy:
             state = "执行中"
         elif session._pendings:

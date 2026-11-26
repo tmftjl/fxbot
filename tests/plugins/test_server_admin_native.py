@@ -597,6 +597,37 @@ class ChatModeTests(unittest.IsolatedAsyncioTestCase):
         cancel.assert_called_once_with(SERVER)
 
 
+class ClaudeCodePrefixTests(unittest.IsolatedAsyncioTestCase):
+    def test_cc_pattern_allows_no_space(self):
+        import re
+
+        for message, expected in (
+            ("cc你好", "你好"),
+            ("cc 你好", "你好"),
+            ("cc	help", "help"),
+            ("CC看一下", "看一下"),
+        ):
+            match = re.match(plugin.CC_PATTERN, message)
+            self.assertIsNotNone(match, message)
+            self.assertEqual(match.group(1), expected)
+        for message in ("cc", "cc ", "cc　"):
+            self.assertIsNone(re.match(plugin.CC_PATTERN, message), message)
+
+    async def test_submit_does_not_send_ack(self):
+        context = SimpleNamespace(
+            event=make_event(text="cc hello"),
+            bot=BotStub(),
+            match=SimpleNamespace(groups=("hello",)),
+            send=AsyncMock(),
+        )
+        with (
+            patch.object(plugin, "image_sources_for_event", AsyncMock(return_value=[])),
+            patch.object(plugin.cc_manager, "start", AsyncMock(return_value=(True, ""))),
+        ):
+            await plugin._handle_cc(context)
+        context.send.assert_not_called()
+
+
 class ClaudeCodeUtilityTests(unittest.IsolatedAsyncioTestCase):
     def test_collect_attachments_stays_inside_workdir(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -621,13 +652,17 @@ class ClaudeCodeUtilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(root.is_dir())
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_doctor_reports_binaries(self):
-        with patch.object(cc_service.shutil, "which", side_effect=lambda name: f"/bin/{name}"):
-            text = cc_service.manager.doctor()
-        self.assertIn("node: /bin/node", text)
-        self.assertIn("npx: /bin/npx", text)
-        self.assertIn("claude: npx -y @agentclientprotocol/claude-agent-acp@0.112.0", text)
-        self.assertIn("codex: npx -y @agentclientprotocol/codex-acp@2.0.1", text)
+    def test_doctor_reports_engine_table(self):
+        with patch.object(cc_service, "_resolve_executable", return_value="/bin/npx"):
+            text = cc_service.manager.doctor_markdown()
+        self.assertIn("## ACP 体检", text)
+        self.assertIn("| Engine | 名称 | 状态 | 安装 |", text)
+        self.assertIn("| claude | Claude Code | ok |", text)
+        self.assertIn("| codex | Codex | ok |", text)
+        with patch.object(cc_service, "_resolve_executable", return_value=""):
+            missing = cc_service.manager.doctor_markdown()
+        self.assertIn("missing npx", missing)
+        self.assertIn("https://github.com/agentclientprotocol/codex-acp", missing)
 
     async def test_resume_records_pending_session(self):
         manager = cc_service.CcManager()
@@ -666,9 +701,9 @@ class ClaudeCodeDetailTests(unittest.IsolatedAsyncioTestCase):
         reject = SimpleNamespace(kind="reject_once", option_id="r1")
         future = asyncio.get_event_loop().create_future()
         session._pendings.append((future, [first, reject]))
-        self.assertEqual(session.resolve("reject_once"), "已拒绝。")
+        self.assertIn("已拒绝", session.resolve("reject_once"))
         self.assertEqual(future.result(), "r1")
-        self.assertEqual(session.resolve("allow_once"), "当前没有待审批的请求。")
+        self.assertIn("没有待审核请求", session.resolve("allow_once"))
 
     def test_resolve_reports_offered_kinds(self):
         session = cc_service.CcSession("probe", Path("work"))
@@ -699,7 +734,7 @@ class ClaudeCodeDetailTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(cc_service, "cc_busy_behavior", return_value="queue"):
                     ok, message = await manager.start("probe", "x", AsyncMock())
                 self.assertTrue(ok)
-                self.assertIn("排队", message)
+                self.assertEqual(message, "")
 
     def test_engine_store_roundtrip(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -731,7 +766,7 @@ class ClaudeCodeDetailTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("第一条", info)
                 self.assertIn("第二条", info)
                 message = await manager.dequeue("probe", "1")
-                self.assertIn("剩余 1", message)
+                self.assertIn("已取消 #1", message)
                 self.assertNotIn("第一条", manager.queue_info("probe"))
 
     async def test_cancel_denies_pending_approvals(self):
@@ -744,6 +779,21 @@ class ClaudeCodeDetailTests(unittest.IsolatedAsyncioTestCase):
         message = await session.cancel()
         self.assertIn("打断", message)
         self.assertIsNone(future.result())
+
+    def test_spawn_env_uses_global_cli(self):
+        import os
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_CODE_EXECUTABLE", None)
+            with patch.object(cc_service, "_resolve_executable", return_value="/bin/claude"):
+                env = cc_service._spawn_env()
+            self.assertEqual(env["CLAUDE_CODE_EXECUTABLE"], "/bin/claude")
+            with patch.object(cc_service, "_resolve_executable", return_value="/bin/claude.cmd"):
+                env = cc_service._spawn_env()
+            self.assertNotIn("CLAUDE_CODE_EXECUTABLE", env)
+            os.environ["CLAUDE_CODE_EXECUTABLE"] = "/custom/claude"
+            env = cc_service._spawn_env()
+            self.assertEqual(env["CLAUDE_CODE_EXECUTABLE"], "/custom/claude")
 
     def test_pid_record_roundtrip(self):
         with tempfile.TemporaryDirectory() as directory:

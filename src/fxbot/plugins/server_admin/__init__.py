@@ -7,7 +7,6 @@ import re
 import json
 import asyncio
 from typing import Any
-from contextlib import suppress
 
 from loguru import logger
 
@@ -30,7 +29,14 @@ from .policy import decide as decide_command
 from ...config import get_manager as get_config_manager
 from .executor import audit, executor
 from .ui_schema import get_ui_schema
-from .cc_service import manager as cc_manager, sender_for, session_key, file_sender_for, image_sender_for
+from .cc_service import (
+    manager as cc_manager,
+    sender_for,
+    session_key,
+    file_sender_for,
+    image_sender_for,
+    render_markdown_pngs,
+)
 from ...chat.media import load_images
 from ...chat.tools import ToolError, ToolContext, ToolRuntime, tool
 from ...permission import is_superuser_event
@@ -526,8 +532,10 @@ async def _send_cc_help(context: HandlerContext) -> None:
     await context.send(_CC_HELP)
 
 
+CC_PATTERN = r"^[cC]{2}[ \t　 ]*(\S[\s\S]*)$"
+
 cc_cmd = on_regex(
-    r"^[cC]{2}(?:\s+([\s\S]*))?$",
+    CC_PATTERN,
     name="cc",
     display_name="Claude Code",
     level="superuser",
@@ -549,7 +557,6 @@ async def _handle_cc(context: HandlerContext) -> None:
         sources = await image_sources_for_event(context.bot, context.event)
         images = await load_images(sources) if sources else []
         if not text and not images:
-            await _send_cc_help(context)
             return
         if not text:
             lowered = ""
@@ -571,7 +578,16 @@ async def _handle_cc(context: HandlerContext) -> None:
             await context.send(cc_manager.engines(key) if not arg else await cc_manager.switch_engine(key, arg))
             return
         if lowered == "doctor":
-            await context.send(cc_manager.doctor())
+            markdown = cc_manager.doctor_markdown()
+            try:
+                images = await render_markdown_pngs(markdown, "ACP")
+            except Exception:
+                images = []
+            if images:
+                for image in images:
+                    await context.send(Message([MessageSegment.image(image)]))
+            else:
+                await context.send(markdown)
             return
         if lowered in {"sessions", "session"}:
             await context.send(await cc_manager.sessions(key))
@@ -584,7 +600,7 @@ async def _handle_cc(context: HandlerContext) -> None:
             await context.send(await cc_manager.dequeue(key, parts[1] if len(parts) > 1 else ""))
             return
         if lowered == "resume":
-            await context.send("用法：cc resume <session id>（先用 cc sessions 查看）")
+            await context.send("用法：cc resume <序号|session_id>")
             return
         if lowered.startswith("resume "):
             sid = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
@@ -605,8 +621,7 @@ async def _handle_cc(context: HandlerContext) -> None:
             file_sender_for(context.bot, context.event),
             images=images,
         )
-        await context.send(message)
+        if message:
+            await context.send(message)
     except Exception:
         logger.opt(exception=True).warning("[ServerAdmin] Claude Code 命令失败")
-        with suppress(Exception):
-            await context.send("Claude Code 命令执行失败，详情见日志。")
