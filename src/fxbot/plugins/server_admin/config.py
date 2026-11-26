@@ -198,3 +198,12 @@ def cc_engine(key: str) -> str:
 
     engine = cc_store.get_engine(key)
     return engine if engine in CC_ENGINE_COMMANDS else "claude"
+
+
+def cc_session_scope() -> str:
+    """Claude Code 会话范围：single 全平台共用一个，user 按平台用户隔离。"""
+    rules = REG.load()
+    if REG._last_error is not None:
+        return "user"
+    value = str(rules.get("cc_session_scope") or "").strip().lower()
+    return value if value in {"single", "user"} else "user"

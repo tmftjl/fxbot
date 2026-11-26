@@ -21,6 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "cc_permission_mode": "ask",
     "cc_show_thinking": False,
     "cc_output_format": "image",
+    "cc_session_scope": "single",
     "cc_render_scale": 2,
     "cc_tool_display": "off",
     "cc_approve_timeout": 60,
@@ -127,6 +128,22 @@ def get_ui_schema() -> dict[str, Any]:
                             "options": [
                                 {"label": "发到聊天确认（ask）", "value": "ask"},
                                 {"label": "自动允许（allow）", "value": "allow"},
+                            ]
+                        },
+                    },
+                    {
+                        "field": "cc_session_scope",
+                        "label": "Claude Code 会话范围",
+                        "component": "Select",
+                        "default": DEFAULTS["cc_session_scope"],
+                        "helpMessage": (
+                            "single：所有平台和用户共用一个会话（单人使用推荐，只有一个进程）；"
+                            "user：每个平台用户各一个会话。"
+                        ),
+                        "componentProps": {
+                            "options": [
+                                {"label": "单人共用（single）", "value": "single"},
+                                {"label": "每用户独立（user）", "value": "user"},
                             ]
                         },
                     },

@@ -597,6 +597,17 @@ class ChatModeTests(unittest.IsolatedAsyncioTestCase):
         cancel.assert_called_once_with(SERVER)
 
 
+class ClaudeCodeScopeTests(unittest.TestCase):
+    def test_session_key_scope(self):
+        event = make_event()
+        with patch.object(cc_service, "cc_session_scope", return_value="single"):
+            self.assertEqual(cc_service.session_key(event), "shared")
+        with patch.object(cc_service, "cc_session_scope", return_value="user"):
+            key = cc_service.session_key(event)
+        self.assertIn("private", key)
+        self.assertIn(USER_ID, key)
+
+
 class ClaudeCodePrefixTests(unittest.IsolatedAsyncioTestCase):
     def test_cc_pattern_allows_no_space(self):
         import re

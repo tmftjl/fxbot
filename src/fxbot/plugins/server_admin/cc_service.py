@@ -45,6 +45,7 @@ from .config import (
     cc_agent_command,
     cc_busy_behavior,
     cc_output_format,
+    cc_session_scope,
     cc_show_thinking,
     cc_approve_timeout,
     cc_permission_mode,
@@ -1132,7 +1133,9 @@ manager = CcManager()
 
 
 def session_key(event: object) -> str:
-    """同一用户跨私聊群聊共用一条会话。"""
+    """single 模式下全平台共用一个会话，否则按平台用户隔离。"""
+    if cc_session_scope() == "single":
+        return "shared"
     return SessionTarget(
         str(getattr(event, "platform", "") or ""),
         str(getattr(event, "bot_id", "") or ""),
