@@ -1739,6 +1739,8 @@ class ChatRepository:
         """撤回消息：未落库时保留墓碑，否则标记删除并丢弃相关学习批次。"""
         if not platform_message_id:
             return None
+        # 有些撤回事件没有操作者（如 OneBot11 friend_recall）：显式插入 NULL 会撞 NOT NULL 约束
+        operator = str(operator or "")
         now = utc_now_naive()
         await session.execute(
             sqlite_insert(ChatRecallTombstone)
