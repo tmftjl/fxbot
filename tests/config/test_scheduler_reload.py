@@ -40,6 +40,7 @@ class SchedulerReloadTests(unittest.IsolatedAsyncioTestCase):
             lifecycle=AsyncMock(),
             emoji_reconcile=AsyncMock(),
             emoji_cleanup=AsyncMock(),
+            memory_schedule=AsyncMock(),
         )
         self.membership = MembershipMaintenance(
             self.application, self.manager, AsyncMock(), AsyncMock(), self.scheduler
@@ -59,11 +60,13 @@ class SchedulerReloadTests(unittest.IsolatedAsyncioTestCase):
         jobs = self.jobs()
         self.assertEqual(jobs["chat:emoji_reconcile"].schedule.seconds, 1020)
         self.assertEqual(jobs["chat:emoji_cleanup"].schedule.seconds, 9000)
-        self.assertEqual(len(jobs), 5)
+        self.assertEqual(len(jobs), 6)
 
     async def test_calendar_and_diagnostics_are_immediate_each_minute(self) -> None:
         self.memory.configure()
         self.memory.configure()
+        self.assertTrue(self.jobs()["chat:memory_schedule"].immediate)
+        self.assertEqual(self.jobs()["chat:memory_schedule"].schedule.seconds, 30)
         for name in ("chat:calendar", "chat:lifecycle"):
             self.assertTrue(self.jobs()[name].immediate)
             self.assertEqual(self.jobs()[name].schedule.seconds, 60)

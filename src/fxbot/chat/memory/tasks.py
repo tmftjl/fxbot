@@ -22,6 +22,7 @@ class MemoryMaintenance:
         lifecycle: Callback,
         emoji_reconcile: Callback,
         emoji_cleanup: Callback,
+        memory_schedule: Callback,
     ) -> None:
         """绑定共享调度器和维护任务。"""
         self.config = config
@@ -30,10 +31,12 @@ class MemoryMaintenance:
         self.lifecycle = lifecycle
         self.emoji_reconcile = emoji_reconcile
         self.emoji_cleanup = emoji_cleanup
+        self.memory_schedule = memory_schedule
 
     def configure(self) -> None:
         """根据已校验配置重排，保持相同任务的运行实例。"""
         emoji = self.config.get_system()["chat"]["emoji"]
+        self.scheduler.set(Job("chat:memory_schedule", Interval(30), self.memory_schedule, immediate=True))
         self.scheduler.set(Job("chat:calendar", Interval(60), self.calendar, immediate=True))
         self.scheduler.set(Job("chat:lifecycle", Interval(60), self.lifecycle, immediate=True))
         self.scheduler.set(
@@ -49,5 +52,11 @@ class MemoryMaintenance:
 
     def stop(self) -> None:
         """注销自己注册的任务，不影响会员或其他业务的调度。"""
-        for name in ("chat:calendar", "chat:lifecycle", "chat:emoji_reconcile", "chat:emoji_cleanup"):
+        for name in (
+            "chat:memory_schedule",
+            "chat:calendar",
+            "chat:lifecycle",
+            "chat:emoji_reconcile",
+            "chat:emoji_cleanup",
+        ):
             self.scheduler.remove(name)

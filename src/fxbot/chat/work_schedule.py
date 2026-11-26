@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+from time import monotonic
 from typing import Any
 from datetime import date, datetime
 
@@ -99,6 +100,32 @@ def can_reply(chat: dict[str, Any] | None = None, *, session_id: str | None = No
     if rest_time_exempt(session_id):
         return True
     return bool(schedule_status(chat)["allowed"])
+
+
+_BACKGROUND_ALLOWED_TTL = 15.0
+_background_allowed_cache: tuple[float, bool] | None = None
+
+
+def _schedule_allows_background() -> bool:
+    """短时缓存工作日判断；后台循环每秒检查时不再反复深拷贝配置。"""
+    global _background_allowed_cache
+    moment = monotonic()
+    cached = _background_allowed_cache
+    if cached is not None and moment - cached[0] < _BACKGROUND_ALLOWED_TTL:
+        return cached[1]
+    allowed = bool(schedule_status()["allowed"])
+    _background_allowed_cache = (moment, allowed)
+    return allowed
+
+
+def background_model_allowed(session_id: str | None = None) -> bool:
+    """后台模型与嵌入任务是否允许运行：只看作息和显式放行，不看聊天总开关。
+
+    休息时间返回 False，调用方应跳过本轮并保留待处理数据，等下一个周期或上班后重试。
+    """
+    if session_id and rest_time_exempt(session_id):
+        return True
+    return _schedule_allows_background()
 
 
 def work_life_prompt(chat: dict[str, Any], *, session_id: str | None = None) -> str:

@@ -23,6 +23,7 @@ from ..config import get_manager as get_config_manager
 from .personas import DEFAULT_PERSONA
 from ..utils.paths import config_dir
 from .memory.models import ChatEmoji, utc_now_naive
+from .work_schedule import background_model_allowed
 from .memory.prompts import learning_prompt
 from .message_adapter import emoji_sources_for_event
 from ..core.application import Application
@@ -156,6 +157,8 @@ def collect_in_background(tenant: str, bot: BotClient, event: Event, application
 
 async def _analyze(tenant: str, digest: str, path: Path) -> bool:
     """串行完成当前会话的识别、审核和注册，避免并发占用同一名额。"""
+    if not background_model_allowed(tenant):
+        return False
     async with _tenant_lock(tenant):
         cfg = emoji_config()
         maximum = int(cfg.get("max_reg_num", 64))

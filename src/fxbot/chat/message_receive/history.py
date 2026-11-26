@@ -22,6 +22,7 @@ from ..session import history_enabled
 from ...utils.tz import to_naive_utc
 from ..providers import LLMResponse
 from ..memory.models import ChatTurn, ChatMessage, ChatTurnItem, utc_now_naive
+from ..work_schedule import background_model_allowed
 from ..replyer.prompt import strip_images, mentions_line, build_user_content
 from ..amemorix.people import remember_person
 from ..message_context import message_metadata, restore_reference
@@ -574,7 +575,7 @@ async def record_group_message(
         group_id = session_id.partition(":group:")[2] if ":group:" in session_id else ""
         await _track_message(session_id, platform, user_id, user_name, group_id, occurred_at)
     threshold = int((chat_cfg.get("message_receive") or {}).get("image_parse_threshold", 5))
-    if images and vision_configured(chat_cfg) and len(images) <= threshold:
+    if images and vision_configured(chat_cfg) and len(images) <= threshold and background_model_allowed(session_id):
         try:
             async with fallback_provider("vision", session_id) as provider:
                 descriptions = await describe_sources(provider, images)

@@ -13,6 +13,7 @@ from .jargon import learn_jargon
 from .models import ChatMessage
 from .expression import learn_expressions
 from .repository import chat_repository
+from ..work_schedule import background_model_allowed
 
 MAX_PENDING_MESSAGES = 100
 MIN_MESSAGES = 10
@@ -101,6 +102,8 @@ class TrimmedLearning:
             tenant, job = key
             if len(rows) < MIN_MESSAGES or key in self.tasks or key in self.blocked:
                 continue
+            if not background_model_allowed(tenant):
+                continue
             if sum(active_job == job for _, active_job in self.tasks) >= maximum:
                 continue
             snapshot = list(rows.values())
@@ -108,6 +111,8 @@ class TrimmedLearning:
 
             async def run(key=key, snapshot=snapshot, generation=generation) -> None:
                 tenant, job = key
+                if not background_model_allowed(tenant):
+                    return
                 try:
                     saved = (
                         await learn_expressions(tenant, messages=snapshot)

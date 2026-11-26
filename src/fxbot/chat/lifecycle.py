@@ -49,6 +49,7 @@ class ChatLifecycle:
             lifecycle=lifecycle_tick,
             emoji_reconcile=emoji_reconcile_tick,
             emoji_cleanup=emoji_cleanup_tick,
+            memory_schedule=self.sync_memory_schedule,
         )
         self._memory_task: asyncio.Task[bool] | None = None
 
@@ -95,6 +96,10 @@ class ChatLifecycle:
         resources.callback(self.maintenance.stop)
         self.maintenance.configure()
         resources.callback(self.configuration.subscribe(self.maintenance.configure))
+
+    async def sync_memory_schedule(self) -> None:
+        """休息时间整体挂起记忆内核，上班时间恢复，后台循环随之停启。"""
+        await amemorix_runtime.sync_schedule()
 
     async def _start_memory(self) -> bool:
         """后台初始化长期记忆内核；失败只降级，不影响聊天主链路。"""

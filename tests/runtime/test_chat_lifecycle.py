@@ -55,7 +55,9 @@ class ChatLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 aclose=action("stop:providers"),
                 has_provider=Mock(return_value=True),
             ),
-            "amemorix_runtime": SimpleNamespace(start=action("start:memory"), stop=action("stop:memory")),
+            "amemorix_runtime": SimpleNamespace(
+                start=action("start:memory"), stop=action("stop:memory"), sync_schedule=action("sync:memory")
+            ),
             "image_writeback": SimpleNamespace(start=action("start:images"), stop=action("stop:images")),
             "chat_writeback": SimpleNamespace(start=action("start:writeback"), stop=action("stop:writeback")),
             "trimmed_learning": SimpleNamespace(start=opening("learning"), stop=action("stop:learning")),
@@ -75,7 +77,7 @@ class ChatLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_startup_installs_jobs_and_shutdown_preserves_unrelated_jobs(self) -> None:
         self.scheduler.set(Job("outside", Interval(60), AsyncMock()))
         await self.app.start()
-        self.assertEqual(len(self.scheduler.jobs), 5)
+        self.assertEqual(len(self.scheduler.jobs), 6)
         self.config.subscribe.assert_called_once()
         await self.app.stop()
         self.assertEqual([job.name for job in self.scheduler.jobs], ["outside"])
