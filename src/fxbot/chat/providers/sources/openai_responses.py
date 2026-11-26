@@ -248,8 +248,11 @@ class OpenAIResponsesProvider(ChatProvider):
         temperature: float = 0.7,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        stop: list[str] | None = None,
+        thinking: bool | None = None,
     ) -> LLMResponse:
-        """执行一次 Responses 对话请求。"""
+        """执行一次 Responses 对话请求；该端点不支持 stop/thinking，参数仅为接口对齐。"""
+        del stop, thinking
         return await self._create(
             model=model or self.model_name,
             input_items=_input_items(messages),

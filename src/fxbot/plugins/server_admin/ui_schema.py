@@ -14,71 +14,17 @@ DEFAULTS: dict[str, Any] = {
         r"(?:>|tee\s+)\s*/dev/(?:sd|hd|vd|nvme|mmcblk|disk)",
         r":\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:",
     ],
-    "auto_run_commands": [
-        "pwd",
-        "ls",
-        "dir",
-        "whoami",
-        "hostname",
-        "uname",
-        "uptime",
-        "date",
-        "df",
-        "free",
-        "echo",
-        "cat",
-        "head",
-        "tail",
-        "wc",
-        "stat",
-        "file",
-        "du",
-        "grep",
-        "pgrep",
-        "ps",
-        "id",
-        "who",
-        "w",
-        "env",
-        "printenv",
-        "which",
-        "lsblk",
-        "lscpu",
-        "lsmod",
-        "nproc",
-        "lsof",
-        "ss",
-        "netstat",
-        "ping",
-        "dig",
-        "systemctl status",
-        "systemctl is-active",
-        "systemctl is-enabled",
-        "systemctl is-failed",
-        "systemctl list-units",
-        "systemctl list-unit-files",
-        "systemctl list-timers",
-        "systemctl show",
-        "systemctl cat",
-        "docker ps",
-        "docker images",
-        "docker logs",
-        "docker inspect",
-        "docker stats",
-        "docker version",
-        "docker info",
-        "docker top",
-        "docker diff",
-        "docker compose ps",
-        "docker compose logs",
-        "journalctl",
-        "git status",
-        "git log",
-        "git diff",
-        "git show",
-        "git rev-parse",
-    ],
-    "skip_confirmation": False,
+    "permission_mode": "auto",
+    "confirmed_commands": [],
+    "cc_idle_seconds": 1800,
+    "cc_keep_context": False,
+    "cc_permission_mode": "ask",
+    "cc_show_thinking": False,
+    "cc_output_format": "image",
+    "cc_render_scale": 2,
+    "cc_tool_display": "off",
+    "cc_approve_timeout": 60,
+    "cc_busy_behavior": "queue",
     "allow_sharing": True,
     "allow_debounce": False,
     "allow_typing": False,
@@ -98,13 +44,31 @@ def get_ui_schema() -> dict[str, Any]:
                 "title": "服务器运维",
                 "schemas": [
                     {
-                        "field": "skip_confirmation",
-                        "label": "全部命令免确认",
-                        "component": "Switch",
-                        "default": DEFAULTS["skip_confirmation"],
-                        "helpMessage": "开启后除黑名单外全部直接执行。仅建议测试或临时排障时打开。",
+                        "field": "permission_mode",
+                        "label": "权限模式",
+                        "component": "Select",
+                        "default": DEFAULTS["permission_mode"],
+                        "helpMessage": (
+                            "auto：黑名单仍然拒绝；已永久允许的直接执行；其余命令由分类器判断是否与你的要求一致，"
+                            "一致且低风险直接执行，不一致、拿不准或分类器不可用就确认。"
+                            "confirm：除黑名单和已永久允许的命令外全部确认。"
+                            "bypass：除黑名单外全部直接执行。"
+                        ),
+                        "componentProps": {
+                            "options": [
+                                {"label": "跟随请求自动判断（auto）", "value": "auto"},
+                                {"label": "逐条确认（confirm）", "value": "confirm"},
+                                {"label": "全部放行（bypass）", "value": "bypass"},
+                            ]
+                        },
                     },
-                    {"component": "Divider", "label": "会话能力"},
+                    {
+                        "field": "blocked_commands",
+                        "label": "禁止提交的命令规则",
+                        "component": "GTags",
+                        "default": DEFAULTS["blocked_commands"],
+                        "helpMessage": "正则匹配，不区分大小写；命中即拒绝，不进入确认。只防误操作，不是安全边界。",
+                    },
                     {
                         "field": "allow_sharing",
                         "label": "共享学习内容",
@@ -133,7 +97,103 @@ def get_ui_schema() -> dict[str, Any]:
                         "default": DEFAULTS["allow_split"],
                         "helpMessage": "长回复按句拆成多条发送，更像真人聊天。",
                     },
-                    {"component": "Divider", "label": "运维人格"},
+                    {
+                        "field": "cc_idle_seconds",
+                        "label": "Claude Code 空闲回收",
+                        "component": "InputNumber",
+                        "default": DEFAULTS["cc_idle_seconds"],
+                        "helpMessage": "空闲超过该秒数关闭子进程，下次 cc 自动重开。",
+                        "componentProps": {"min": 60, "max": 86400},
+                    },
+                    {
+                        "field": "cc_keep_context",
+                        "label": "空闲回收保留上下文",
+                        "component": "Switch",
+                        "default": DEFAULTS["cc_keep_context"],
+                        "helpMessage": (
+                            "关：回收时连上下文一起清，下次 cc 是全新会话；"
+                            "开：只关子进程、保留 ACP 会话，下次自动 resume（冷启动慢几秒）。"
+                        ),
+                    },
+                    {
+                        "field": "cc_permission_mode",
+                        "label": "Claude Code 工具权限",
+                        "component": "Select",
+                        "default": DEFAULTS["cc_permission_mode"],
+                        "helpMessage": (
+                            "ask：危险工具调用发到聊天里，等「cc 允许 / cc 允许 永久 / cc 拒绝」；allow：自动允许。"
+                        ),
+                        "componentProps": {
+                            "options": [
+                                {"label": "发到聊天确认（ask）", "value": "ask"},
+                                {"label": "自动允许（allow）", "value": "allow"},
+                            ]
+                        },
+                    },
+                    {
+                        "field": "cc_output_format",
+                        "label": "Claude Code 输出格式",
+                        "component": "Select",
+                        "default": DEFAULTS["cc_output_format"],
+                        "helpMessage": "image：正文渲染成图片；text：纯文本；auto：超过 600 字符才出图。",
+                        "componentProps": {
+                            "options": [
+                                {"label": "图片（image）", "value": "image"},
+                                {"label": "纯文本（text）", "value": "text"},
+                                {"label": "自动（auto）", "value": "auto"},
+                            ]
+                        },
+                    },
+                    {
+                        "field": "cc_render_scale",
+                        "label": "渲染清晰度",
+                        "component": "InputNumber",
+                        "default": DEFAULTS["cc_render_scale"],
+                        "helpMessage": "1 省流量，2 高清（默认），3 更清晰但体积大。",
+                        "componentProps": {"min": 1, "max": 3},
+                    },
+                    {
+                        "field": "cc_tool_display",
+                        "label": "工具调用显示",
+                        "component": "Select",
+                        "default": DEFAULTS["cc_tool_display"],
+                        "helpMessage": "off 不显示；brief 只显示工具标题；full 额外加简要说明。",
+                        "componentProps": {
+                            "options": [
+                                {"label": "不显示（off）", "value": "off"},
+                                {"label": "标题（brief）", "value": "brief"},
+                                {"label": "标题+说明（full）", "value": "full"},
+                            ]
+                        },
+                    },
+                    {
+                        "field": "cc_approve_timeout",
+                        "label": "Claude Code 审批超时",
+                        "component": "InputNumber",
+                        "default": DEFAULTS["cc_approve_timeout"],
+                        "helpMessage": "权限请求等待人工回复的秒数，超时按拒绝处理。",
+                        "componentProps": {"min": 10, "max": 3600},
+                    },
+                    {
+                        "field": "cc_busy_behavior",
+                        "label": "Claude Code 忙时行为",
+                        "component": "Select",
+                        "default": DEFAULTS["cc_busy_behavior"],
+                        "helpMessage": "queue：新消息排队串行执行；reject：直接拒绝。",
+                        "componentProps": {
+                            "options": [
+                                {"label": "排队（queue）", "value": "queue"},
+                                {"label": "拒绝（reject）", "value": "reject"},
+                            ]
+                        },
+                    },
+                    {
+                        "field": "cc_show_thinking",
+                        "label": "Claude Code 回发思考",
+                        "component": "Switch",
+                        "default": DEFAULTS["cc_show_thinking"],
+                        "helpMessage": "开启后把 agent 的思考片段也发到聊天里。",
+                    },
                     {
                         "field": "persona",
                         "label": "人格内容",
@@ -141,25 +201,6 @@ def get_ui_schema() -> dict[str, Any]:
                         "default": DEFAULTS["persona"],
                         "helpMessage": "留空使用插件内置人格；填写后每次进入服务器模式都会写入「运维」人格。",
                         "componentProps": {"rows": 10},
-                    },
-                    {"component": "Divider", "label": "命令黑名单"},
-                    {
-                        "field": "blocked_commands",
-                        "label": "禁止提交的命令规则",
-                        "component": "GTags",
-                        "default": DEFAULTS["blocked_commands"],
-                        "helpMessage": "正则匹配，不区分大小写；命中即拒绝，不进入确认。只防误操作，不是安全边界。",
-                    },
-                    {"component": "Divider", "label": "完整命令免确认"},
-                    {
-                        "field": "auto_run_commands",
-                        "label": "免确认的完整命令",
-                        "component": "GTags",
-                        "default": DEFAULTS["auto_run_commands"],
-                        "helpMessage": (
-                            "完整命令精确匹配，参数和大小写必须一致；"
-                            "未列出的命令以及管道、重定向等 shell 组合都需确认。"
-                        ),
                     },
                 ],
             }

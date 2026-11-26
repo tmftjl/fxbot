@@ -98,14 +98,11 @@ def _cache_is_valid(cache_file: Path, config: dict[str, Any], assets: list[Path]
         return False
 
 
-@help_cmd.handle()
-async def _handle_help(context) -> None:
-    """发送对应关键词的帮助图。"""
-    groups = context.match.groups
-    keyword = str(groups[0]).strip() if groups and groups[0] else ""
+async def help_image(keyword: str | None = None) -> bytes:
+    """按关键词生成帮助图；未知关键词返回空字节。"""
     resolved_ref = _resolve_config_ref(keyword or None)
     if keyword and resolved_ref is None:
-        return
+        return b""
 
     config = load_help_config(resolved_ref)
     title = str(config.get("title") or "帮助")
@@ -146,5 +143,15 @@ async def _handle_help(context) -> None:
 
     if not image_bytes:
         image_bytes = _fallback_image(title, sub_title, groups_data)
+    return image_bytes
 
+
+@help_cmd.handle()
+async def _handle_help(context) -> None:
+    """发送对应关键词的帮助图。"""
+    groups = context.match.groups
+    keyword = str(groups[0]).strip() if groups and groups[0] else ""
+    image_bytes = await help_image(keyword or None)
+    if keyword and not image_bytes:
+        return
     await context.finish(Message([MessageSegment.image(image_bytes)]))

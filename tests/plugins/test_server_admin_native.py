@@ -10,12 +10,16 @@ import importlib
 from types import SimpleNamespace
 from pathlib import Path
 from datetime import datetime, timezone
+from contextlib import ExitStack
 from unittest.mock import Mock, AsyncMock, patch
 
 import fxbot.plugins.server_admin as plugin
 import fxbot.plugins.server_admin.store as store
 import fxbot.plugins.server_admin.access as access
 import fxbot.plugins.server_admin.config as config
+import fxbot.plugins.server_admin.policy as policy
+import fxbot.plugins.server_admin.cc_store as cc_store
+import fxbot.plugins.server_admin.cc_service as cc_service
 from fxbot.core import Event, Message, SessionTarget
 from fxbot.core.application import Application, ApplicationState
 
@@ -199,7 +203,7 @@ class CommandPolicyTests(unittest.TestCase):
                 self.assertTrue(executor.needs_confirmation(command, allow))
 
     def test_blocked_commands_and_unreadable_config_fail_closed(self):
-        data = {"blocked_commands": [r"\brm\s+-rf\s+/", r"["], "auto_run_commands": ["ls"]}
+        data = {"blocked_commands": [r"\brm\s+-rf\s+/", r"["], "confirmed_commands": ["ls"]}
         rules = SimpleNamespace(load=Mock(return_value=data), _last_error=None)
         with patch.object(config, "REG", rules):
             self.assertNotEqual(config.blocked_reason("rm -rf /"), "")
@@ -207,7 +211,7 @@ class CommandPolicyTests(unittest.TestCase):
         broken = SimpleNamespace(load=Mock(return_value={}), _last_error="bad config")
         with patch.object(config, "REG", broken):
             self.assertEqual(config.blocked_reason("ls"), "命令黑名单配置不可用")
-            self.assertEqual(config.auto_run_commands(), [])
+            self.assertEqual(config.confirmed_commands(), [])
             self.assertFalse(config.skip_confirmation())
 
     def test_pending_command_requires_second_event_confirmation(self):
@@ -241,6 +245,39 @@ class CommandPolicyTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 manager.submit(SERVER, "pwd", directory, lambda: False, allow=[], application=self.application)
 
+    def test_permanent_reply_is_accepted_and_distinguished(self):
+        manager = executor.CommandExecutor()
+        with tempfile.TemporaryDirectory() as directory, patch.object(executor, "audit"):
+            job = manager.submit(
+                SERVER, "make install", directory, lambda: True, allow=[], application=self.application
+            )
+            manager.presented(SERVER, job["job_id"], "first")
+            self.assertTrue(executor.is_permanent_reply("确认执行 永久！"))
+            self.assertTrue(executor.is_permanent_reply("以后都允许"))
+            self.assertFalse(executor.is_permanent_reply("确认执行"))
+            with patch.object(manager, "_start") as start:
+                manager.confirm(SERVER, "second", "确认执行 永久")
+                start.assert_called_once()
+
+    def test_permanent_allow_commands_are_persisted_once(self):
+        data = {"confirmed_commands": ["ls"]}
+
+        class FakeProxy:
+            _last_error = None
+
+            def load(self):
+                return json.loads(json.dumps(data))
+
+            def save(self, value):
+                data.clear()
+                data.update(json.loads(json.dumps(value)))
+
+        with patch.object(config, "REG", FakeProxy()):
+            self.assertTrue(config.remember_command("make install"))
+            self.assertTrue(config.remember_command("make install"))
+            self.assertEqual(data["confirmed_commands"], ["ls", "make install"])
+            self.assertFalse(config.remember_command("  "))
+
     def test_confirmation_rejects_negative_ambiguous_and_question_replies(self):
         manager = executor.CommandExecutor()
         with tempfile.TemporaryDirectory() as directory, patch.object(executor, "audit"):
@@ -257,6 +294,262 @@ class CommandPolicyTests(unittest.TestCase):
             with patch.object(manager, "_start") as start:
                 manager.confirm(SERVER, "second", "确认执行！")
                 start.assert_called_once()
+
+
+class ClaudeCodeSessionTests(unittest.IsolatedAsyncioTestCase):
+    def test_cc_store_roundtrip_and_drop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sessions.json"
+            with patch.object(cc_store, "_path", return_value=path):
+                cc_store.put(SERVER, "sid-1")
+                self.assertEqual(cc_store.get(SERVER), "sid-1")
+                cc_store.drop(SERVER)
+                self.assertEqual(cc_store.get(SERVER), "")
+
+    async def test_open_session_prefers_resume_and_falls_back(self):
+        session = cc_service.CcSession("probe", Path("work"))
+        calls = []
+
+        class Resumed:
+            async def resume_session(self, **kwargs):
+                calls.append("resume")
+                raise RuntimeError("not supported")
+
+            async def load_session(self, **kwargs):
+                calls.append("load")
+                return SimpleNamespace(session_id="restored")
+
+            async def new_session(self, **kwargs):
+                calls.append("new")
+                return SimpleNamespace(session_id="fresh")
+
+        with (
+            patch.object(cc_service, "cc_keep_context", return_value=True),
+            patch.object(cc_service.cc_store, "get", return_value="sticky"),
+            patch.object(cc_service.cc_store, "put") as put,
+        ):
+            await session._open_session(Resumed())
+        self.assertEqual(session.acp_session, "restored")
+        self.assertEqual(calls, ["resume", "load"])
+        put.assert_called_once_with("probe", "restored")
+
+    async def test_open_session_creates_new_when_resume_fails(self):
+        session = cc_service.CcSession("probe", Path("work"))
+
+        class Broken:
+            async def resume_session(self, **kwargs):
+                raise RuntimeError("no")
+
+            async def load_session(self, **kwargs):
+                raise RuntimeError("no")
+
+            async def new_session(self, **kwargs):
+                return SimpleNamespace(session_id="fresh")
+
+        with (
+            patch.object(cc_service, "cc_keep_context", return_value=True),
+            patch.object(cc_service.cc_store, "get", return_value="sticky"),
+            patch.object(cc_service.cc_store, "put"),
+        ):
+            await session._open_session(Broken())
+        self.assertEqual(session.acp_session, "fresh")
+
+    async def test_close_drops_or_keeps_native_id(self):
+        session = cc_service.CcSession("probe", Path("work"))
+        session.acp_session = "sid"
+        with patch.object(cc_service.cc_store, "drop") as drop, patch.object(cc_service.cc_store, "put") as put:
+            await session.close(drop_native=True)
+        drop.assert_called_once_with("probe")
+        put.assert_not_called()
+
+        session.acp_session = "sid"
+        with patch.object(cc_service.cc_store, "drop") as drop, patch.object(cc_service.cc_store, "put") as put:
+            await session.close(drop_native=False)
+        drop.assert_not_called()
+        put.assert_called_once_with("probe", "sid")
+
+
+class PermissionPolicyTests(unittest.IsolatedAsyncioTestCase):
+    def rules(self, mode="auto", confirmed=()):
+        stack = ExitStack()
+        stack.enter_context(patch.object(policy, "permission_mode", return_value=mode))
+        stack.enter_context(patch.object(policy, "confirmed_commands", return_value=list(confirmed)))
+        return stack
+
+    def test_permanent_commands_run_exactly_and_never_widen(self):
+        with self.rules(confirmed=["rm -rf /tmp/x"]):
+            decision = policy.rule_decision("rm -rf /tmp/x")
+            self.assertEqual((decision.action, decision.reason), ("allow", "已永久允许"))
+            self.assertIsNone(policy.rule_decision("rm -rf /tmp/x2"))
+
+    def test_mode_decisions_before_classifier(self):
+        with self.rules(mode="bypass"):
+            self.assertTrue(policy.rule_decision("rm -rf /tmp/x").auto_run)
+        with self.rules(mode="confirm"):
+            self.assertEqual(policy.rule_decision("ls").action, "ask")
+        with self.rules(mode="auto"):
+            self.assertIsNone(policy.rule_decision("ls"))
+
+    def history(self, messages):
+        return patch.object(policy, "_history", return_value=list(messages))
+
+    async def test_fast_stage_allow_skips_review(self):
+        answers = ["<block>no</block>"]
+        with (
+            self.rules(),
+            self.history([{"role": "user", "content": "看下磁盘"}]),
+            patch.object(policy, "_ask", AsyncMock(side_effect=answers)) as ask,
+        ):
+            decision = await policy.decide(session_id=SERVER, command="df -h", cwd=".", request_text="看下磁盘")
+        self.assertTrue(decision.auto_run)
+        self.assertEqual(ask.await_count, 1)
+        kwargs = ask.await_args.kwargs
+        self.assertEqual(kwargs["max_tokens"], 64)
+        self.assertEqual(kwargs["stop"], ["</block>"])
+        self.assertIn("## Session Context", kwargs["system"])
+
+    async def test_fast_stage_blocks_then_review_decides(self):
+        with (
+            self.rules(),
+            self.history([{"role": "user", "content": "看下磁盘"}]),
+            patch.object(
+                policy,
+                "_ask",
+                AsyncMock(
+                    side_effect=[
+                        "<block>yes</block>",
+                        "<thinking>超出请求</thinking><block>no</block>",
+                    ]
+                ),
+            ) as ask,
+        ):
+            allowed = await policy.decide(session_id=SERVER, command="df -h", cwd=".", request_text="看下磁盘")
+        self.assertTrue(allowed.auto_run)
+        self.assertEqual(ask.await_count, 2)
+        self.assertEqual(ask.await_args_list[1].kwargs["max_tokens"], 4096)
+        self.assertNotIn("stop", ask.await_args_list[1].kwargs)
+        with (
+            self.rules(),
+            self.history([{"role": "user", "content": "看下磁盘"}]),
+            patch.object(
+                policy,
+                "_ask",
+                AsyncMock(
+                    side_effect=[
+                        "<block>yes</block>",
+                        (
+                            "<thinking>重启无关服务</thinking><block>yes</block>"
+                            "<category>Scope</category><reason>[Scope] 超出请求</reason>"
+                        ),
+                    ]
+                ),
+            ),
+        ):
+            blocked = await policy.decide(
+                session_id=SERVER, command="systemctl restart nginx", cwd=".", request_text="看下磁盘"
+            )
+        self.assertEqual(blocked.action, "ask")
+        self.assertIn("[Scope] 超出请求", blocked.reason)
+
+    async def test_unparseable_review_and_timeout_fall_back_to_ask(self):
+        with (
+            self.rules(),
+            self.history([{"role": "user", "content": "看下磁盘"}]),
+            patch.object(policy, "_ask", AsyncMock(side_effect=["<block>yes</block>", "随便说说"])),
+        ):
+            decision = await policy.decide(session_id=SERVER, command="df -h", cwd=".", request_text="看下磁盘")
+        self.assertEqual(decision.action, "ask")
+        with (
+            self.rules(),
+            patch.object(policy, "_classify", side_effect=asyncio.TimeoutError),
+        ):
+            decision = await policy.decide(session_id=SERVER, command="df -h", cwd=".", request_text="看下磁盘")
+        self.assertEqual((decision.action, decision.reason), ("ask", "分类器超时"))
+
+    async def test_missing_user_context_never_reaches_classifier(self):
+        with self.rules(), self.history([]), patch.object(policy, "_ask", AsyncMock()) as ask:
+            decision = await policy.decide(session_id=SERVER, command="make install", cwd=".", request_text="  ")
+        self.assertEqual(decision.action, "ask")
+        ask.assert_not_called()
+
+    async def test_classifier_request_disables_thinking(self):
+        captured = {}
+
+        class FakeProvider:
+            async def chat(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(content="<block>no</block>")
+
+        class FakeTaskProvider:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return FakeProvider()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        with (
+            patch("fxbot.chat.providers.routing.candidate_providers", return_value=["probe"]),
+            patch("fxbot.chat.providers.routing.TaskProvider", FakeTaskProvider),
+        ):
+            text = await policy._ask(SERVER, "t", system="s", max_tokens=64, timeout=5, stop=["</block>"])
+        self.assertEqual(text, "<block>no</block>")
+        self.assertIs(captured["thinking"], False)
+        self.assertEqual(captured["stop"], ["</block>"])
+        self.assertEqual(captured["max_tokens"], 64)
+        self.assertEqual(captured["temperature"], 0.0)
+
+    async def test_transcript_too_long_blocks_without_calling_model(self):
+        with (
+            self.rules(),
+            patch.object(policy, "build_transcript", return_value="x" * (policy._MAX_HISTORY_CHARS + 1)),
+            patch.object(policy, "_ask", AsyncMock()) as ask,
+        ):
+            decision = await policy.decide(session_id=SERVER, command="df -h", cwd=".", request_text="看下磁盘")
+        self.assertEqual(decision.action, "ask")
+        self.assertIn("对话过长", decision.reason)
+        ask.assert_not_called()
+
+    def test_system_context_carries_environment(self):
+        text = policy._system_content("/srv/app")
+        self.assertTrue(text.startswith(policy.SYSTEM_PROMPT))
+        self.assertIn("## Session Context", text)
+        self.assertIn("- working directory: /srv/app", text)
+        self.assertIn("- platform: ", text)
+
+    def test_transcript_keeps_user_text_and_tool_calls_only(self):
+        history = [
+            {"role": "system", "content": "系统提示"},
+            {"role": "user", "content": "看下日志\n再重启服务"},
+            {
+                "role": "assistant",
+                "content": "我准备执行命令",
+                "tool_calls": [{"function": {"name": "server_exec", "arguments": '{"command": "tail -n 20 app.log"}'}}],
+            },
+            {"role": "tool", "name": "server_exec", "content": "log body"},
+            {"role": "user", "content": "内部规划", "_planner_internal": True},
+        ]
+        with self.history(history):
+            text = policy.build_transcript(SERVER, "systemctl restart api", "/srv", "看下日志 再重启服务")
+        self.assertIn("User: 看下日志 再重启服务", text)
+        self.assertIn('server_exec {"command":"tail -n 20 app.log"}', text)
+        self.assertIn('Bash {"command":"systemctl restart api","cwd":"/srv"}', text)
+        self.assertIn("Assistant: 我准备执行命令", text)
+        self.assertNotIn("log body", text)
+        self.assertNotIn("内部规划", text)
+
+    def test_parse_block_and_reason(self):
+        self.assertEqual(policy.parse_block("<block>YES</block><reason>x</reason>"), "yes")
+        self.assertEqual(policy.parse_block("<block>no</block>"), "no")
+        self.assertEqual(policy.parse_block("没有标签"), "")
+        self.assertEqual(policy.parse_reason("<reason> 超出请求\n扩大范围 </reason>"), "超出请求 扩大范围")
+        self.assertEqual(
+            policy.parse_category("<category> Irreversible Local Destruction </category>"),
+            "Irreversible Local Destruction",
+        )
+        self.assertEqual(policy.parse_category("没有标签"), "")
 
 
 class ChatModeTests(unittest.IsolatedAsyncioTestCase):
@@ -302,6 +595,243 @@ class ChatModeTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(await plugin.server_exec(context, runtime, cancel=True), {"cancelled": True})
         cancel.assert_called_once_with(SERVER)
+
+
+class ClaudeCodeUtilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_collect_attachments_stays_inside_workdir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inside = root / "report.md"
+            inside.write_text("ok", encoding="utf-8")
+            outside = Path(tempfile.gettempdir()) / "cc-outside.txt"
+            outside.write_text("no", encoding="utf-8")
+            try:
+                found = cc_service._collect_attachments(f"见 {inside} 和 {outside}", root)
+                self.assertEqual(found, [inside.resolve()])
+            finally:
+                outside.unlink(missing_ok=True)
+
+    def test_wipe_keeps_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("x", encoding="utf-8")
+            (root / "sub").mkdir()
+            (root / "sub" / "b.txt").write_text("y", encoding="utf-8")
+            self.assertEqual(cc_service._wipe(root), 2)
+            self.assertTrue(root.is_dir())
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_doctor_reports_binaries(self):
+        with patch.object(cc_service.shutil, "which", side_effect=lambda name: f"/bin/{name}"):
+            text = cc_service.manager.doctor()
+        self.assertIn("node: /bin/node", text)
+        self.assertIn("npx: /bin/npx", text)
+        self.assertIn("claude: npx -y @agentclientprotocol/claude-agent-acp@0.112.0", text)
+        self.assertIn("codex: npx -y @agentclientprotocol/codex-acp@2.0.1", text)
+
+    async def test_resume_records_pending_session(self):
+        manager = cc_service.CcManager()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(cc_service, "cc_workdir", return_value=Path(directory)),
+                patch.object(cc_service.cc_store, "put") as put,
+            ):
+                message = await manager.resume("probe", "sid-1")
+                self.assertIn("sid-1", message)
+                put.assert_called_once_with("probe|claude", "sid-1")
+                self.assertTrue(manager.get("probe")._force_resume)
+
+
+class ClaudeCodeHelpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cc_help_uses_plugin_help_image(self):
+        context = SimpleNamespace(send=AsyncMock())
+        with patch("fxbot.plugins.help.help_image", AsyncMock(return_value=b"png")):
+            await plugin._send_cc_help(context)
+        message = context.send.await_args.args[0]
+        self.assertEqual(message.segments[0].type, "image")
+        self.assertEqual(message.segments[0].data["file"], b"png")
+
+    async def test_cc_help_falls_back_to_text(self):
+        context = SimpleNamespace(send=AsyncMock())
+        with patch("fxbot.plugins.help.help_image", AsyncMock(return_value=b"")):
+            await plugin._send_cc_help(context)
+        text = context.send.await_args.args[0]
+        self.assertIn("cc <任务>", text)
+
+
+class ClaudeCodeDetailTests(unittest.IsolatedAsyncioTestCase):
+    def test_resolve_handles_pending_requests_in_order(self):
+        session = cc_service.CcSession("probe", Path("work"))
+        first = SimpleNamespace(kind="allow_once", option_id="a1")
+        reject = SimpleNamespace(kind="reject_once", option_id="r1")
+        future = asyncio.get_event_loop().create_future()
+        session._pendings.append((future, [first, reject]))
+        self.assertEqual(session.resolve("reject_once"), "已拒绝。")
+        self.assertEqual(future.result(), "r1")
+        self.assertEqual(session.resolve("allow_once"), "当前没有待审批的请求。")
+
+    def test_resolve_reports_offered_kinds(self):
+        session = cc_service.CcSession("probe", Path("work"))
+        future = asyncio.get_event_loop().create_future()
+        session._pendings.append((future, [SimpleNamespace(kind="reject_once", option_id="r1")]))
+        message = session.resolve("allow_once")
+        self.assertIn("reject_once", message)
+        self.assertFalse(future.done())
+
+    def test_tool_summary_compacts_content(self):
+        block = SimpleNamespace(content=SimpleNamespace(text="Bash\n执行了命令"))
+        update = SimpleNamespace(content=[block])
+        self.assertEqual(cc_service._tool_summary(update), "Bash 执行了命令")
+
+    async def test_busy_behavior_reject_and_queue(self):
+        manager = cc_service.CcManager()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(cc_service, "cc_workdir", return_value=Path(directory)),
+                patch.object(cc_service.cc_store, "put"),
+            ):
+                session = manager.get("probe")
+                session.busy = True
+                with patch.object(cc_service, "cc_busy_behavior", return_value="reject"):
+                    ok, message = await manager.start("probe", "x", AsyncMock())
+                self.assertFalse(ok)
+                self.assertIn("上一轮", message)
+                with patch.object(cc_service, "cc_busy_behavior", return_value="queue"):
+                    ok, message = await manager.start("probe", "x", AsyncMock())
+                self.assertTrue(ok)
+                self.assertIn("排队", message)
+
+    def test_engine_store_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "engines.json"
+            with patch.object(cc_store, "_engine_path", return_value=path):
+                cc_store.put_engine("probe", "codex")
+                self.assertEqual(cc_store.get_engine("probe"), "codex")
+
+    async def test_switch_engine_persists_choice(self):
+        manager = cc_service.CcManager()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(cc_service, "cc_workdir", return_value=Path(directory)),
+                patch.object(cc_service.cc_store, "put_engine") as put_engine,
+            ):
+                message = await manager.switch_engine("probe", "codex")
+        self.assertIn("codex", message)
+        put_engine.assert_called_once_with("probe", "codex")
+
+    async def test_queue_list_and_dequeue(self):
+        manager = cc_service.CcManager()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(cc_service, "cc_workdir", return_value=Path(directory)):
+                session = manager.get("probe")
+                session.busy = True
+                await manager.start("probe", "第一条", AsyncMock())
+                await manager.start("probe", "第二条", AsyncMock())
+                info = manager.queue_info("probe")
+                self.assertIn("第一条", info)
+                self.assertIn("第二条", info)
+                message = await manager.dequeue("probe", "1")
+                self.assertIn("剩余 1", message)
+                self.assertNotIn("第一条", manager.queue_info("probe"))
+
+    async def test_cancel_denies_pending_approvals(self):
+        session = cc_service.CcSession("probe", Path("work"))
+        session.busy = True
+        session.acp_session = "sid"
+        session.conn = SimpleNamespace(cancel=AsyncMock())
+        future = asyncio.get_event_loop().create_future()
+        session._pendings.append((future, []))
+        message = await session.cancel()
+        self.assertIn("打断", message)
+        self.assertIsNone(future.result())
+
+    def test_pid_record_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pids.json"
+            with patch.object(cc_service, "_pid_path", return_value=path):
+                cc_service._record_pid(1234)
+                self.assertEqual(cc_service._load_pids(), {"1234": "claude-agent-acp"})
+                cc_service._forget_pid(1234)
+                self.assertEqual(cc_service._load_pids(), {})
+
+
+class ClaudeCodeRenderTests(unittest.IsolatedAsyncioTestCase):
+    def test_prompt_blocks_carry_text_and_images(self):
+        blocks = cc_service._prompt_blocks("看一下", ["data:image/png;base64,QUJD"])
+        self.assertEqual(getattr(blocks[0], "type"), "text")
+        self.assertEqual(getattr(blocks[1], "type"), "image")
+        self.assertEqual(blocks[1].mime_type, "image/png")
+        self.assertEqual(cc_service._image_bytes(blocks[1]), b"ABC")
+
+    def test_usage_footer_accepts_dict_usage(self):
+        response = SimpleNamespace(usage={"input_tokens": 10, "output_tokens": 20}, stop_reason="end_turn")
+        self.assertEqual(cc_service._usage_footer(response), "in 10 · out 20 · end_turn")
+        self.assertEqual(cc_service._usage_footer(SimpleNamespace()), "")
+
+    async def test_image_mode_renders_pngs_instead_of_text(self):
+        session = cc_service.CcSession("probe", Path("work"))
+        images: list[bytes] = []
+        texts: list[str] = []
+
+        async def send_text(text):
+            texts.append(text)
+
+        async def send_image(data):
+            images.append(data)
+
+        session.attach(send_text, image=send_image)
+        session._markdown.append("# 结果")
+        session._tool_notes.append(("execute", "Bash 已执行", ""))
+        with (
+            patch.object(cc_service, "cc_output_format", return_value="image"),
+            patch.object(cc_service, "cc_render_scale", return_value=1),
+            patch.object(
+                cc_service.cc_render,
+                "render_to_pngs",
+                AsyncMock(return_value=[b"png-1", b"png-2"]),
+            ) as render,
+        ):
+            await session._deliver_output(SimpleNamespace(usage={"input_tokens": 5}, stop_reason="end_turn"))
+        self.assertEqual(images, [b"png-1", b"png-2"])
+        render.assert_awaited_once()
+        self.assertFalse(texts)
+
+    async def test_text_mode_sends_markdown_directly(self):
+        session = cc_service.CcSession("probe", Path("work"))
+        texts: list[str] = []
+
+        async def send_text(text):
+            texts.append(text)
+
+        session.attach(send_text)
+        session._markdown.append("hello")
+        with patch.object(cc_service, "cc_output_format", return_value="text"):
+            await session._deliver_output(SimpleNamespace())
+        self.assertEqual(texts, ["hello"])
+
+
+class ClaudeCodeCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_allow_commands_resolve_permission(self):
+        event = make_event()
+        cases = (
+            ("allow", "allow_once"),
+            ("allow always", "allow_always"),
+            ("deny", "reject_once"),
+            ("允许", "allow_once"),
+            ("允许 永久", "allow_always"),
+            ("拒绝", "reject_once"),
+        )
+        for text, kind in cases:
+            context = SimpleNamespace(
+                event=event,
+                bot=BotStub(),
+                match=SimpleNamespace(groups=(text,)),
+                send=AsyncMock(),
+            )
+            with patch.object(plugin.cc_manager, "resolve", return_value="ok") as resolve:
+                await plugin._handle_cc(context)
+            self.assertEqual(resolve.call_args.args[1], kind)
+            context.send.assert_awaited_once_with("ok")
 
 
 class _Stream:

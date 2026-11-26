@@ -28,6 +28,11 @@ dependencies = [
     "pypinyin>=0.55,<0.56",
     "curl_cffi>=0.17,<0.18",
     "packaging>=26,<27",
+    "agent-client-protocol>=1.0.0rc2,<2",
+    "markdown-it-py>=4",
+    "mdit-py-plugins>=0.6",
+    "pygments>=2",
+    "linkify-it-py>=2",
 ]
 
 [project.optional-dependencies]

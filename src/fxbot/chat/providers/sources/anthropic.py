@@ -117,6 +117,8 @@ class AnthropicProvider(ChatProvider):
         temperature: float = 0.7,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        stop: list[str] | None = None,
+        thinking: bool | None = None,
     ) -> LLMResponse:
         """执行一次 Claude 对话请求。"""
         system_prompt, converted_messages = self._convert_to_anthropic_format(messages)
@@ -128,6 +130,10 @@ class AnthropicProvider(ChatProvider):
         }
         if system_prompt:
             params["system"] = system_prompt
+        if stop:
+            params["stop_sequences"] = stop
+        if thinking is False:
+            params["thinking"] = {"type": "disabled"}
         if tools:
             params["tools"] = [
                 {

@@ -121,13 +121,17 @@ class GeminiProvider(ChatProvider):
         temperature: float = 0.7,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        stop: list[str] | None = None,
+        thinking: bool | None = None,
     ) -> LLMResponse:
-        """执行一次 Gemini 对话请求。"""
+        """执行一次 Gemini 对话请求；thinking 参数仅为接口对齐。"""
+        del thinking
         system_instruction, contents = self._convert_to_gemini_format(messages)
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=temperature,
             max_output_tokens=max_tokens,
+            stop_sequences=stop or None,
             tools=self._convert_tools_to_gemini_format(tools),
         )
 

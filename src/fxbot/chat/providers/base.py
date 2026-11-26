@@ -67,6 +67,8 @@ class ChatProvider(BaseProvider):
         temperature: float = 0.7,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        stop: list[str] | None = None,
+        thinking: bool | None = None,
     ) -> LLMResponse:
         """执行一次对话请求。"""
 

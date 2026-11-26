@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import re
 import json
 import asyncio
 from typing import Any
+from contextlib import suppress
 
 from loguru import logger
 
 from . import store
-from ...core import Event, BotClient, HandlerContext
+from ...core import Event, Message, BotClient, HandlerContext, MessageSegment
 from .access import (
     actor_base,
     is_superuser,
@@ -23,21 +25,30 @@ from .access import (
     execution_allowed,
     owner_allowed_group,
 )
-from .config import blocked_reason, policy_switches, auto_run_commands, skip_confirmation
+from .config import blocked_reason, permission_mode, policy_switches, remember_command, skip_confirmation
+from .policy import decide as decide_command
+from ...config import get_manager as get_config_manager
 from .executor import audit, executor
 from .ui_schema import get_ui_schema
+from .cc_service import manager as cc_manager, sender_for, session_key, file_sender_for, image_sender_for
+from ...chat.media import load_images
 from ...chat.tools import ToolError, ToolContext, ToolRuntime, tool
+from ...permission import is_superuser_event
 from ...core.plugin import PluginMetadata, on_regex
 from ...utils.paths import data_dir, config_dir, startup_marker_path
 from ...chat.extensions import LLMRequest, ChatContext, ChatExtension, SessionPolicy, chat_service
-from ...chat.message_adapter import event_identity, adapt_message_event
+from ...chat.message_adapter import event_identity, adapt_message_event, image_sources_for_event
 
 __plugin_extensions__ = {"console.config": get_ui_schema}
 
 __plugin_meta__ = PluginMetadata(
     name="服务器运维",
     description="超级用户的独立服务器运维会话，执行 Bot 进程权限内的 shell 命令；私聊与群聊共用同一会话。",
-    usage="#服务器模式 / #聊天模式（私聊）；群聊用 #服务器模式# 接对话；危险命令须回复「确认执行」。",
+    usage=(
+        "#服务器模式 / #聊天模式（私聊）；群聊用 #服务器模式# 接对话；"
+        "auto 模式下跟随请求自动执行，拿不准或命中强制确认规则时回复「确认执行」。"
+        " 超级用户可用 cc <任务> 调用 Claude Code（cc new / cc stop / cc status / cc allow / cc deny）。"
+    ),
     type="application",
 )
 
@@ -138,6 +149,13 @@ def _prompt(context: ChatContext, request: LLMRequest) -> None:
             "这是服务器运维会话。命令用 server_exec 执行，未结束用 job_id 查，别重复提交。"
             "全部命令免确认已开启：直接执行，破坏性操作先讲清影响。被禁用规则拒绝就如实说，别绕过。"
         )
+    elif permission_mode() == "auto":
+        note = (
+            "这是服务器运维会话。命令用 server_exec 执行，未结束用 job_id 查，别重复提交。"
+            "权限模式 auto：与当前要求一致的日常命令会直接执行；命中强制确认规则、或与要求不一致时，"
+            "工具会返回待确认状态，此时先把命令展示给对方，等回复「确认执行」后再调 server_confirm，否则 cancel。"
+            "被禁用规则拒绝就如实说，别绕过。"
+        )
     else:
         note = (
             "这是服务器运维会话。命令用 server_exec 执行，未结束用 job_id 查，别重复提交。"
@@ -196,8 +214,17 @@ def _describe(result: dict[str, Any]) -> str:
         f"要执行这条命令吗？\n\n{result['command']}\n\n"
         f"工作目录：{result['cwd']}\n"
         "它跑在 Bot 的系统权限下，可能改动或删除数据。\n"
-        "回复「确认执行」同意执行，或要求取消。"
+        "回复「确认执行」同意本次执行；回复「确认执行 永久」同意并以后不再询问这条命令；或要求取消。"
     )
+
+
+def _request_text(runtime: ToolRuntime) -> str:
+    """取本次真实请求文本供分类器比对；群聊入口去掉模式前缀。"""
+    try:
+        text = event_plain_text(runtime.event)
+    except Exception:
+        return ""
+    return _GROUP_COMMAND.sub("", text, count=1).strip()
 
 
 def _message_key(runtime: ToolRuntime) -> str:
@@ -354,14 +381,31 @@ async def server_exec(
             except Exception:
                 logger.opt(exception=True).error("[ServerAdmin] 黑名单拦截审计失败")
             raise ToolError(f"命令命中服务器禁用规则，已拒绝执行：{reason[:120]}", code="server_admin_denied")
+        decision = await decide_command(
+            session_id=context.session_id,
+            command=command,
+            cwd=cwd or os.getcwd(),
+            request_text=_request_text(runtime),
+        )
+        try:
+            audit(
+                "policy",
+                context.session_id,
+                user_id=str(context.user_id),
+                command=command,
+                decision=decision.action,
+                source=decision.source,
+                reason=decision.reason,
+            )
+        except Exception:
+            logger.opt(exception=True).error("[ServerAdmin] 权限决策审计失败")
         result = executor.submit(
             context.session_id,
             command,
             cwd,
             authorize,
-            allow=auto_run_commands(),
-            auto_run_all=skip_confirmation(),
             application=runtime.application,
+            auto_run=decision.auto_run,
         )
         if result["status"] == "running":
             job = executor.jobs[result["job_id"]]
@@ -395,6 +439,7 @@ async def server_exec(
     description=(
         "对方在会话里明确同意执行当前待确认命令后调用，无参数。"
         "仅接受「确认执行」「确认」「同意执行」「执行」「跑吧」「行」或 yes/confirm 的完整回复；"
+        "对方说「确认执行 永久」「永久允许」「以后都允许」时同样可以调用，代码会把这条完整命令记入永久允许。"
         "提问、否定、含糊和其他内容会被代码拒绝，不能替对方决定。"
         "调用后命令立即执行并返回结果，直接向对方汇报。"
     ),
@@ -415,6 +460,18 @@ async def server_confirm(context: ToolContext, runtime: ToolRuntime) -> dict:
         raise ToolError("没有待确认的命令，或确认已过期", code="server_admin_invalid") from None
     except PermissionError:
         raise ToolError("未获得明确确认，或执行权限已失效", code="server_admin_denied") from None
+    if executor.is_permanent_reply(reply):
+        remembered = remember_command(str(result.get("command") or ""))
+        try:
+            audit(
+                "permanent_allow",
+                context.session_id,
+                user_id=str(context.user_id),
+                command=str(result.get("command") or ""),
+                saved=remembered,
+            )
+        except Exception:
+            logger.opt(exception=True).error("[ServerAdmin] 永久允许审计失败")
     job = executor.jobs[result["job_id"]]
     if job.task is not None:
         try:
@@ -427,3 +484,129 @@ async def server_confirm(context: ToolContext, runtime: ToolRuntime) -> dict:
     ):
         raise ToolError("执行已取消或权限已失效", code="server_admin_denied")
     return job.result()
+
+
+# ---- Claude Code（cc 前缀，仅超级用户，私聊群聊都可用） ----
+
+_CC_HELP = (
+    "Claude Code 命令：\n"
+    "cc <任务>        交给 Claude Code 执行\n"
+    "cc new          重置会话（清上下文）\n"
+    "cc clear        清空工作目录（会话保留）\n"
+    "cc stop         打断当前任务\n"
+    "cc status       查看会话状态\n"
+    "cc sessions     列出可恢复会话\n"
+    "cc resume <id>  恢复指定会话\n"
+    "cc doctor       检查 ACP 依赖\n"
+    "cc 允许 / cc 允许 永久 / cc 拒绝（或 allow / allow always / deny）   审批工具调用"
+)
+
+
+async def _cc_rule(context: HandlerContext) -> bool:
+    """只允许超级用户使用，私聊和群聊都放行。"""
+    try:
+        system = get_config_manager().get_system()["system"]
+        return is_superuser_event(system, context.event)
+    except Exception:
+        logger.opt(exception=True).debug("[ServerAdmin] Claude Code 超级用户校验失败")
+        return False
+
+
+async def _send_cc_help(context: HandlerContext) -> None:
+    """优先发送与 #服务器帮助 同款的帮助图。"""
+    try:
+        from ..help import help_image
+
+        image = await help_image("server_admin")
+    except Exception:
+        image = b""
+    if image:
+        await context.send(Message([MessageSegment.image(image)]))
+        return
+    await context.send(_CC_HELP)
+
+
+cc_cmd = on_regex(
+    r"^[cC]{2}(?:\s+([\s\S]*))?$",
+    name="cc",
+    display_name="Claude Code",
+    level="superuser",
+    scene="all",
+    priority=6,
+    block=True,
+    rule=_cc_rule,
+)
+
+
+@cc_cmd.handle()
+async def _handle_cc(context: HandlerContext) -> None:
+    """cc 前缀入口：控制命令或提交任务。"""
+    try:
+        groups = context.match.groups if isinstance(context.match.groups, tuple) else ()
+        text = str(groups[0] or "").strip() if groups else ""
+        key = session_key(context.event)
+        lowered = text.lower()
+        sources = await image_sources_for_event(context.bot, context.event)
+        images = await load_images(sources) if sources else []
+        if not text and not images:
+            await _send_cc_help(context)
+            return
+        if not text:
+            lowered = ""
+        if lowered in {"new", "reset"}:
+            await context.send(await cc_manager.reset(key))
+            return
+        if lowered == "clear":
+            await context.send(await cc_manager.clear(key))
+            return
+        if lowered == "stop":
+            await context.send(await cc_manager.stop(key))
+            return
+        if lowered == "status":
+            await context.send(cc_manager.status(key))
+            return
+        if lowered == "engine" or lowered.startswith(("engine ", "eng ")) or lowered == "eng":
+            parts = text.split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            await context.send(cc_manager.engines(key) if not arg else await cc_manager.switch_engine(key, arg))
+            return
+        if lowered == "doctor":
+            await context.send(cc_manager.doctor())
+            return
+        if lowered in {"sessions", "session"}:
+            await context.send(await cc_manager.sessions(key))
+            return
+        if lowered in {"queue", "q"}:
+            await context.send(cc_manager.queue_info(key))
+            return
+        if lowered.startswith(("dequeue ", "dq ")):
+            parts = text.split(maxsplit=1)
+            await context.send(await cc_manager.dequeue(key, parts[1] if len(parts) > 1 else ""))
+            return
+        if lowered == "resume":
+            await context.send("用法：cc resume <session id>（先用 cc sessions 查看）")
+            return
+        if lowered.startswith("resume "):
+            sid = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
+            await context.send(await cc_manager.resume(key, sid))
+            return
+        if text.startswith("允许") or lowered.startswith(("allow", "approve")):
+            kind = "allow_always" if ("永久" in text or "always" in lowered) else "allow_once"
+            await context.send(cc_manager.resolve(key, kind))
+            return
+        if text.startswith("拒绝") or lowered in {"deny", "reject"}:
+            await context.send(cc_manager.resolve(key, "reject_once"))
+            return
+        started, message = await cc_manager.start(
+            key,
+            text,
+            sender_for(context.bot, context.event),
+            image_sender_for(context.bot, context.event),
+            file_sender_for(context.bot, context.event),
+            images=images,
+        )
+        await context.send(message)
+    except Exception:
+        logger.opt(exception=True).warning("[ServerAdmin] Claude Code 命令失败")
+        with suppress(Exception):
+            await context.send("Claude Code 命令执行失败，详情见日志。")

@@ -72,8 +72,10 @@ class OpenAIProvider(ChatProvider):
         temperature: float = 0.7,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        stop: list[str] | None = None,
+        thinking: bool | None = None,
     ) -> LLMResponse:
-        """执行一次 OpenAI 对话请求。"""
+        """执行一次 OpenAI 对话请求；关闭 thinking 时用 reasoning_effort=none。"""
         params: dict[str, Any] = {
             "model": model or self.model_name,
             "messages": [
@@ -86,6 +88,10 @@ class OpenAIProvider(ChatProvider):
             params["tool_choice"] = "auto"
         if max_tokens:
             params["max_tokens"] = max_tokens
+        if stop:
+            params["stop"] = stop
+        if thinking is False:
+            params["reasoning_effort"] = "none"
 
         try:
             resp = await self.client.chat.completions.create(**params)

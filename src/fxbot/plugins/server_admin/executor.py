@@ -16,7 +16,6 @@ from collections.abc import Callable, Iterable
 
 from loguru import logger
 
-from .ui_schema import DEFAULTS
 from ...utils.tz import now
 from ...utils.paths import data_dir
 from ...core.application import Application, ApplicationState
@@ -27,14 +26,34 @@ OUTPUT_LIMIT = 4000
 MAX_COMMAND_CHARS = 12000
 _METACHARS = re.compile(r"[\n\r;&|><`$()%{}]")
 _CONFIRM_REPLIES = frozenset({"确认", "确认执行", "同意执行", "执行", "跑吧", "行", "yes", "confirm"})
+_PERMANENT_REPLIES = frozenset(
+    {
+        "确认执行永久",
+        "确认执行 永久",
+        "永久确认执行",
+        "永久允许",
+        "永久同意",
+        "以后都允许",
+        "以后都同意",
+        "一直允许",
+        "always",
+        "always allow",
+    }
+)
+
+
+def is_permanent_reply(reply: str) -> bool:
+    """回执是否明确选择了「永久允许」；其余肯定说法只算本次。"""
+    text = reply.strip().rstrip("。.!！").casefold()
+    return text in _PERMANENT_REPLIES
 
 
 def needs_confirmation(command: str, allow: Iterable[str] | None = None) -> bool:
-    """只有配置中的完整命令免确认；参数、大小写和 shell 组合均不猜测等价性。"""
+    """只有显式给出的完整命令免确认；参数、大小写和 shell 组合均不猜测等价性。"""
     value = command.strip()
     if _METACHARS.search(value):
         return True
-    rules = DEFAULTS["auto_run_commands"] if allow is None else allow
+    rules = () if allow is None else allow
     return value not in {item.strip() for item in rules}
 
 
@@ -115,8 +134,12 @@ class CommandExecutor:
         auto_run_all: bool = False,
         *,
         application: Application,
+        auto_run: bool | None = None,
     ) -> dict:
-        """保存确切命令后返回确认请求或启动任务，启动前再次校验权限。"""
+        """保存确切命令后返回确认请求或启动任务，启动前再次校验权限。
+
+        ``auto_run`` 由上层权限决策给出；为 None 时沿用旧的免确认清单判定。
+        """
         self._prune()
         if self.stopping or application.state is not ApplicationState.RUNNING or not authorize():
             raise PermissionError("执行权限不足")
@@ -133,7 +156,9 @@ class CommandExecutor:
         job = Command(session_id, command, str(directory), authorize, application)
         audit("submitted", session_id, job_id=job.id, command=command, cwd=str(directory))
         self.jobs[job.id] = job
-        if auto_run_all or not needs_confirmation(command, allow):
+        if auto_run is None:
+            auto_run = auto_run_all or not needs_confirmation(command, allow)
+        if auto_run:
             self._start(job)
         return job.result()
 
@@ -155,8 +180,8 @@ class CommandExecutor:
         job = self._pending(session_id)
         if job is None or not source or job.source == source:
             raise ValueError("没有匹配的待确认命令，或确认已过期")
-        if reply.strip().rstrip("。.!！").casefold() not in _CONFIRM_REPLIES:
-            raise PermissionError("请明确回复「确认执行」后再执行；否定、问题和其他内容不构成确认")
+        if reply.strip().rstrip("。.!！").casefold() not in _CONFIRM_REPLIES and not is_permanent_reply(reply):
+            raise PermissionError("请明确回复「确认执行」或「确认执行 永久」后再执行；否定、问题和其他内容不构成确认")
         audit("confirmed", session_id, job_id=job.id, reply=reply[:500])
         self._start(job)
         return job.result()

@@ -1,0 +1,420 @@
+from __future__ import annotations
+
+import re
+import base64
+import asyncio
+from html import escape
+from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from datetime import datetime
+from functools import lru_cache
+from dataclasses import dataclass
+
+from pygments import highlight
+from acp.schema import PermissionOption, ToolCallLocation
+from markdown_it import MarkdownIt
+from pygments.util import ClassNotFound
+from pygments.lexer import Lexer
+from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
+from mdit_py_plugins.gfm import gfm_plugin
+from mdit_py_plugins.deflist import deflist_plugin
+from pygments.formatters.html import HtmlFormatter
+
+from .cc_playwright import render_html_to_pngs
+
+PermissionMode = str
+
+
+def clean_permission_summary(summary: str | None) -> str | None:
+    """权限摘要只做去空白处理。"""
+    text = (summary or "").strip()
+    return text or None
+
+
+def permission_display(decision: str, *, matched: bool):
+    """简化版权限状态，供渲染块使用。"""
+    from types import SimpleNamespace
+
+    if decision == "ask":
+        return SimpleNamespace(label="待审核", state="pending", unmatched_text=None)
+    if not matched:
+        return SimpleNamespace(label="已取消", state="denied", unmatched_text="没有匹配选项")
+    state = "allowed" if decision.startswith("allow") else "denied"
+    return SimpleNamespace(label="已处理", state=state, unmatched_text=None)
+
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+
+_HERE = Path(__file__).parent
+CHAT_CSS = _HERE / "render_assets" / "chat.css"
+CHAT_HTML = _HERE / "render_assets" / "chat.html.j2"
+CHAT_JS = _HERE / "render_assets" / "chat.js"
+_ASSETS = _HERE / "render_assets"
+_VENDOR = _ASSETS / "vendor"
+_KATEX_JS = _VENDOR / "katex" / "katex.min.js"
+_KATEX_CSS = _VENDOR / "katex" / "katex.min.css"
+_MERMAID_JS = _VENDOR / "mermaid" / "mermaid.min.js"
+# 复用 cc_help/icon_path/ 下的 engine logo（512x512 RGBA、字形约 55% 居中对齐）
+_ENGINE_ICON_DIR = _HERE / "render_assets" / "icons"
+
+
+@lru_cache(maxsize=16)
+def engine_icon_url(engine_name: str) -> str | None:
+    """`cc_help/icon_path/{engine}.png` → base64 data URI，文件不存在返回 None。
+
+    用 data URI 不用 `file://`：set_content() 的 page URL 是 about:blank，chromium 默认 block 跨协议
+    file:// 资源；inline base64 跟 vendor css/字体同套路，0 网络/0 协议依赖。"""
+    p = _ENGINE_ICON_DIR / f"{engine_name}.png"
+    if not p.exists():
+        return None
+    data = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{data}"
+
+
+_FONT_URL = re.compile(r"url\([\"']?(fonts/[^)\"']+\.woff2)[\"']?\)")
+
+_SINGLE_IMAGE_HEIGHT_CSS_PX = 6000
+_IMAGE_SLICE_HEIGHT_CSS_PX = 6000
+# Cursor IDE 行号引用 info string: `<start>:<end>:<path>`
+_CURSOR_REF_RE = re.compile(r"^(\d+):(\d+):(.+)$")
+
+
+def _text(s: str) -> str:
+    return escape(s, quote=False).replace("\n", " ")
+
+
+_PYG_FORMATTER = HtmlFormatter(cssclass="highlight", style="friendly", nowrap=True)
+
+
+def _resolve_caption_and_lexer(name: str) -> tuple[str | None, Lexer | None]:
+    """info string → (caption_or_None, lexer_or_None)
+    * Cursor 行号引用 `<start>:<end>:<path>` → caption=路径行号, lexer 按 path
+    * 已知 lang                             → caption=None (无 figure 包裹), lexer
+    * 未知 lang                             → caption=lang, lexer=None
+    * 无                                    → (None, None)
+    """
+    if not name:
+        return None, None
+    cursor_ref = _CURSOR_REF_RE.match(name)
+    if cursor_ref:
+        start, end, path = cursor_ref.groups()
+        caption = f"{path} :{start}-{end}"
+        try:
+            return caption, get_lexer_for_filename(path)
+        except ClassNotFound:
+            return caption, None
+    try:
+        return None, get_lexer_by_name(name)
+    except ClassNotFound:
+        return name, None
+
+
+def _highlight_fence(code: str, name: str, _attrs: str) -> str:
+    """markdown-it-py fence renderer。统一 DOM：mermaid → `<pre class="mermaid">`（前端处理）；
+    无 caption → `<pre[.highlight]><code>`（2 层）；有 caption → 外包 `<figure class="cc-code">`（3 层）。
+    pygments `nowrap=True` 只出 token spans，自己包 pre.highlight，CSS `.highlight .k` 子选择器仍匹配。"""
+    name = name.strip()
+    if name.lower() == "mermaid":
+        return f'<pre class="mermaid">{escape(code, quote=False)}</pre>'
+    caption, lexer = _resolve_caption_and_lexer(name)
+    if lexer is not None:
+        body = f'<pre class="highlight"><code>{highlight(code, lexer, _PYG_FORMATTER)}</code></pre>'
+    else:
+        body = f"<pre><code>{escape(code, quote=False)}</code></pre>"
+    if caption is None:
+        return body
+    return f'<figure class="cc-code"><figcaption>{escape(caption)}</figcaption>{body}</figure>'
+
+
+def _build_md_engine() -> MarkdownIt:
+    """commonmark + GFM 全套（table/strikethrough/autolink/tasklist/alerts/footnote + dollarmath）+ deflist。
+
+    GFM 表格、math、alert、deflist 由 MarkdownIt 处理。raw HTML 关闭，避免 agent
+    正文里的 HTML 直接进入 Chromium；代码高亮/mermaid 由 renderer 生成可信 HTML。
+    """
+    md = MarkdownIt("commonmark", {"highlight": _highlight_fence, "html": False, "linkify": True})
+    md.enable("linkify")
+    md.disable("image")
+    md.use(gfm_plugin, dollarmath=True)
+    md.use(deflist_plugin)
+    return md
+
+
+_UNTRUSTED_MD_ENGINE = _build_md_engine()
+
+BlockKind = Literal[
+    "agent_md",
+    "agent_image",
+    "agent_audio",
+    "think",
+    "tool",
+    "tool_failed",
+    "plan",
+    "plan_removed",
+    "mode",
+    "error",
+    "permission",
+    "usage_footer",
+]
+
+
+@dataclass(slots=True, frozen=True)
+class ChatBlock:
+    kind: BlockKind
+    body: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class MediaBlock(ChatBlock):
+    data: str
+    mime_type: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ToolBlock(ChatBlock):
+    tool_kind: str
+    tool_call_id: str | None = None
+    title: str | None = None
+    summary: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PlanBlock(ChatBlock):
+    # None = 旧版无 id 的 AgentPlanUpdate，整会话只有一份
+    plan_id: str | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class PermissionBlock(ChatBlock):
+    decision: PermissionMode
+    tool_kind: str | None
+    title: str | None
+    matched: bool
+    locations: tuple[ToolCallLocation, ...]
+    content_summary: str | None
+    options: list[PermissionOption]
+
+
+def _format_duration(sec: float) -> str:
+    """230ms / 12.3s / 2m15s。<60s 用秒，>=60 拆 m/s。"""
+    if sec < 1:
+        return f"{int(sec * 1000)}ms"
+    if sec < 60:
+        return f"{sec:.1f}s"
+    m = int(sec // 60)
+    s = int(sec - m * 60)
+    return f"{m}m{s}s"
+
+
+@dataclass(slots=True)
+class ImageContext:
+    engine_display: str
+    model_label: str | None = None  # e.g. "claude-sonnet-4-7"；None 隐藏
+    elapsed_sec: float | None = None  # per-prompt 推理耗时；None 隐藏（mid-stream flush 用）
+    icon_url: str | None = None  # engine logo data URI；None 不渲 logo
+    render_style: Literal["chat", "list"] = "chat"
+
+
+def _tag(label: str, kind: str = "") -> str:
+    cls = f"cc-tag cc-tag-{kind}" if kind else "cc-tag"
+    return f'<span class="{cls}">{_text(label)}</span>'
+
+
+# 裸 join 时 `out## title` 会被当 prose；标题前强制插换行。`[^\n#]` 排除 `#` 免拆 `##`/`###`
+_HEADING_INLINE = re.compile(r"([^\n#])(#{1,6}\s+)")
+_BLOCK_MARKER = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s|```)")
+
+
+def _normalize_blocks(md: str) -> str:
+    expanded: list[str] = []
+    for line in md.split("\n"):
+        if line.lstrip().startswith("|"):
+            expanded.append(line)
+        else:
+            expanded.extend(_HEADING_INLINE.sub(r"\1\n\n\2", line).split("\n"))
+    lines = expanded
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        if i > 0 and lines[i - 1].strip() and not _BLOCK_MARKER.match(lines[i - 1]) and _BLOCK_MARKER.match(line):
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
+def _render_untrusted_markdown(md: str) -> str:
+    return _UNTRUSTED_MD_ENGINE.render(_normalize_blocks(md.rstrip()))
+
+
+def _render_labeled_markdown(label: str, label_kind: str, body: str) -> str:
+    rendered = _render_untrusted_markdown(body)
+    stripped = rendered.strip()
+    if stripped.startswith("<p>") and stripped.endswith("</p>") and stripped.count("<p>") == 1:
+        return f"{_tag(label, label_kind)}{stripped[3:-4]}"
+    return f'{_tag(label, label_kind)}<div class="cc-tool-body">{rendered}</div>'
+
+
+def _render_block(block: ChatBlock) -> str:
+    if block.kind == "agent_md":
+        return _render_untrusted_markdown(block.body)
+    if block.kind in {"agent_image", "agent_audio"}:
+        return ""
+    if block.kind == "think":
+        return f'<div class="cc-think">{_tag("think")}{_text(block.body)}</div>'
+    if isinstance(block, ToolBlock):
+        kind = block.tool_kind
+        if kind == "other":
+            return _render_untrusted_markdown(block.body)
+        return f'<div class="cc-tool cc-tool-{kind}">{_render_labeled_markdown(kind, kind, block.body)}</div>'
+    if block.kind == "tool_failed":
+        body = _render_labeled_markdown("failed", "failed", block.body)
+        return f'<div class="cc-tool cc-tool-failed">{body}</div>'
+    if block.kind in {"plan", "plan_removed"}:
+        return _render_untrusted_markdown(block.body)
+    if block.kind == "mode":
+        return f'<div class="cc-aux">{_tag("mode")}{_text(block.body)}</div>'
+    if block.kind == "error":
+        body = escape(block.body, quote=False)
+        return f'<div class="cc-error">{_tag("error", "failed")}<pre class="cc-error-body">{body}</pre></div>'
+    if isinstance(block, PermissionBlock):
+        return _render_permission(block)
+    if block.kind == "usage_footer":
+        return f'<div class="cc-usage-footer">{_text(block.body)}</div>'
+    return _text(block.body)
+
+
+def _render_permission(block: PermissionBlock) -> str:
+    tool_kind = block.tool_kind
+    tool_title = block.title
+    locations = block.locations
+    content_summary = clean_permission_summary(block.content_summary)
+    display = permission_display(block.decision, matched=block.matched)
+
+    header_parts = [_tag(display.label, display.state)]
+    if tool_kind is not None:
+        header_parts.append(_tag(tool_kind, tool_kind))
+    header = f'<div class="cc-perm-head">{"".join(header_parts)}</div>'
+
+    detail_parts: list[str] = []
+    if tool_title is not None:
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">操作</div>'
+            f'<pre class="cc-perm-command">{escape(tool_title, quote=False)}</pre>'
+            "</section>"
+        )
+    if display.unmatched_text is not None:
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">结果</div>'
+            f'<div class="cc-perm-text">{_text(display.unmatched_text)}</div>'
+            "</section>"
+        )
+    if locations:
+        items = "".join(
+            f"<li>{_text(loc.path)}{f':{loc.line}' if loc.line is not None else ''}</li>" for loc in locations
+        )
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">位置</div>'
+            f'<ul class="cc-perm-list">{items}</ul>'
+            "</section>"
+        )
+    if content_summary is not None:
+        detail_parts.append(
+            '<section class="cc-perm-section">'
+            '<div class="cc-perm-label">原因</div>'
+            f'<div class="cc-perm-text">{_text(content_summary)}</div>'
+            "</section>"
+        )
+    body = header + "".join(detail_parts)
+    return f'<div class="cc-permission cc-permission-{display.state}">{body}</div>'
+
+
+def build_html_body(blocks: list[ChatBlock], ctx: ImageContext) -> str:
+    ts = datetime.now().astimezone().strftime("%H:%M:%S")
+    elapsed_span = (
+        f'<span class="cc-elapsed">{_format_duration(ctx.elapsed_sec)}</span>' if ctx.elapsed_sec is not None else ""
+    )
+    logo_img = f'<span class="cc-engine-logo"><img src="{ctx.icon_url}" alt=""></span>' if ctx.icon_url else ""
+    top = (
+        f"{logo_img}"
+        f'<span class="cc-engine">{_text(ctx.engine_display)}</span>'
+        f'<span class="cc-ts">{ts}</span>'
+        f"{elapsed_span}"
+    )
+    sub = (
+        f'<div class="cc-subheader"><span class="cc-model">{_text(ctx.model_label)}</span></div>'
+        if ctx.model_label
+        else ""
+    )
+    header = f'<div class="cc-header">{top}</div>{sub}'
+    parts: list[str] = [header, ""]
+    if ctx.render_style == "list":
+        parts.append('<main class="cc-list-body">')
+    for block in blocks:
+        parts.append(_render_block(block))
+        parts.append("")
+    if ctx.render_style == "list":
+        parts.append("</main>")
+    return "\n".join(parts).strip()
+
+
+@lru_cache(maxsize=1)
+def _chat_css() -> str:
+    return _inline_font_urls(CHAT_CSS.read_text(encoding="utf-8"), _ASSETS)
+
+
+@lru_cache(maxsize=1)
+def _chat_html() -> str:
+    return CHAT_HTML.read_text(encoding="utf-8")
+
+
+@lru_cache(maxsize=1)
+def _katex_css() -> str:
+    return _inline_font_urls(_KATEX_CSS.read_text(encoding="utf-8"), _KATEX_CSS.parent)
+
+
+def _inline_font_urls(css: str, root: Path) -> str:
+    def repl(m: re.Match[str]) -> str:
+        data = base64.b64encode((root / m.group(1)).read_bytes()).decode("ascii")
+        return f"url(data:font/woff2;base64,{data})"
+
+    return _FONT_URL.sub(repl, css)
+
+
+@lru_cache(maxsize=1)
+def _pygments_css() -> str:
+    return _PYG_FORMATTER.get_style_defs(".highlight")
+
+
+def _html_doc(body: str) -> str:
+    css = f"{_katex_css()}{_chat_css()}{_pygments_css()}"
+    return (
+        _chat_html().replace("{{ asset_base }}", _ASSETS.as_uri()).replace("{{ css }}", css).replace("{{ body }}", body)
+    )
+
+
+async def _render_extras(page: Page) -> None:
+    has_math = await page.locator(".math").count() > 0
+    has_mermaid = await page.locator("pre.mermaid").count() > 0
+    if not has_math and not has_mermaid:
+        return
+    if has_math:
+        await page.add_script_tag(path=str(_KATEX_JS))
+    if has_mermaid:
+        await page.add_script_tag(path=str(_MERMAID_JS))
+    await page.add_script_tag(path=str(CHAT_JS))
+    await page.evaluate("window.ccuidRenderExtras()")
+
+
+async def render_to_pngs(body_html: str, *, max_width: int = 720, scale: int = 2) -> list[bytes]:
+    # 首次要读并 base64 内联数 MB 字体，每次还要拼整份文档，放线程里不卡事件循环
+    return await render_html_to_pngs(
+        await asyncio.to_thread(_html_doc, body_html),
+        max_width=max_width,
+        scale=scale,
+        single_image_height=_SINGLE_IMAGE_HEIGHT_CSS_PX,
+        slice_height=_IMAGE_SLICE_HEIGHT_CSS_PX,
+        render_extras=_render_extras,
+    )

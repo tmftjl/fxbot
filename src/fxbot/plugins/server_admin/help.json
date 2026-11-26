@@ -1,10 +1,97 @@
 {
-  "title": "服务器运维", "sub_title": "仅超级用户可用，机器人管理员不可用", "key": "服务器", "aliases": ["server_admin"],
-  "footer": "任意 shell 使用 Bot 进程权限，不是安全沙箱", "col_count": 1,
-  "groups": [{"group": "独立服务器会话", "list": [
-    {"icon": 1, "title": "#服务器模式", "desc": "私聊进入独立服务器运维会话"},
-    {"icon": 4, "title": "#服务器模式# 对话", "desc": "群里直接使用同一会话，回复发回本群"},
-    {"icon": 2, "title": "#聊天模式", "desc": "回普通私聊并取消命令任务"},
-    {"icon": 3, "title": "确认 / 取消", "desc": "像平时一样回话，AI 判断你的意思后执行或放弃"}
-  ]}]
+  "title": "服务器运维",
+  "sub_title": "仅超级用户可用，机器人管理员不可用",
+  "key": "服务器",
+  "aliases": [
+    "server_admin"
+  ],
+  "footer": "任意 shell 使用 Bot 进程权限，不是安全沙箱",
+  "col_count": 2,
+  "groups": [
+    {
+      "group": "独立服务器会话",
+      "list": [
+        {
+          "icon": 1,
+          "title": "#服务器模式",
+          "desc": "私聊进入独立服务器运维会话"
+        },
+        {
+          "icon": 4,
+          "title": "#服务器模式# 对话",
+          "desc": "群里直接使用同一会话，回复发回本群"
+        },
+        {
+          "icon": 2,
+          "title": "#聊天模式",
+          "desc": "回普通私聊并取消命令任务"
+        },
+        {
+          "icon": 3,
+          "title": "确认 / 取消",
+          "desc": "像平时一样回话，AI 判断你的意思后执行或放弃"
+        }
+      ]
+    },
+    {
+      "group": "Claude Code",
+      "list": [
+        {
+          "icon": 1,
+          "title": "cc <任务>",
+          "desc": "把任务交给 Claude Code 执行，可附图片"
+        },
+        {
+          "icon": 2,
+          "title": "cc new / reset",
+          "desc": "重置会话并清空上下文"
+        },
+        {
+          "icon": 3,
+          "title": "cc clear",
+          "desc": "只清空工作目录，会话保留"
+        },
+        {
+          "icon": 4,
+          "title": "cc stop",
+          "desc": "打断当前任务并清空排队"
+        },
+        {
+          "icon": 5,
+          "title": "cc status",
+          "desc": "查看状态、排队数、工作目录和会话"
+        },
+        {
+          "icon": 11,
+          "title": "cc queue / cc dequeue <n>",
+          "desc": "查看或取消排队任务"
+        },
+        {
+          "icon": 10,
+          "title": "cc engine [name]",
+          "desc": "查看或切换引擎（claude / codex）"
+        },
+        {
+          "icon": 6,
+          "title": "cc sessions",
+          "desc": "列出可恢复的历史会话"
+        },
+        {
+          "icon": 7,
+          "title": "cc resume <id>",
+          "desc": "下一次恢复到指定会话"
+        },
+        {
+          "icon": 8,
+          "title": "cc doctor",
+          "desc": "检查 node / npx / claude / ACP 命令"
+        },
+        {
+          "icon": 9,
+          "title": "cc 允许 / 允许 永久 / 拒绝",
+          "desc": "审批 Claude Code 的工具调用"
+        }
+      ]
+    }
+  ]
 }

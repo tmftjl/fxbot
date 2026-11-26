@@ -128,13 +128,17 @@ class VertexAIProvider(ChatProvider):
         temperature: float = 0.7,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
+        stop: list[str] | None = None,
+        thinking: bool | None = None,
     ) -> LLMResponse:
-        """执行一次 Vertex AI 对话请求。"""
+        """执行一次 Vertex AI 对话请求；thinking 参数仅为接口对齐。"""
         model_name = model or self.model_name
         request_body = self._convert_to_vertex_format(messages)
         generation_config: dict[str, Any] = {"temperature": temperature}
         if max_tokens:
             generation_config["maxOutputTokens"] = max_tokens
+        if stop:
+            generation_config["stopSequences"] = stop
         request_body["generationConfig"] = generation_config
         if tools_config := self._convert_tools_to_vertex_format(tools):
             request_body["tools"] = [tools_config]
