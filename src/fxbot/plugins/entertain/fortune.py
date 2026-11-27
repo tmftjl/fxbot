@@ -11,6 +11,7 @@ import base64
 import random
 from typing import Any
 from pathlib import Path
+from datetime import date, datetime, timedelta
 
 import httpx
 from PIL import Image, ImageOps, ImageDraw, UnidentifiedImageError
@@ -18,7 +19,7 @@ from loguru import logger
 
 from ...core import Capability, UnsupportedCapability
 from .config import cfg_api_urls
-from ...utils.tz import today_str
+from ...utils.tz import SHANGHAI_TZ, today, today_str
 from ...core.types import Message, MessageSegment
 from ...utils.http import get_shared_async_client
 from ...core.plugin import on_regex
@@ -285,6 +286,66 @@ def _star_text(entry: dict[str, Any]) -> tuple[int, str]:
 
 _RECAST_LIMIT = 1
 
+# 卡池开池当天与次日，全员签文固定为最高档；开池日取自卡池接口。
+_POOL_LUCK_TTL = 1800
+_POOL_LUCK_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def _pool_open_dates(payload: Any) -> set[date]:
+    """从卡池接口里取所有开池日期，字段缺失或格式不对的条目跳过。"""
+    pools = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(pools, list):
+        return set()
+    open_dates: set[date] = set()
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        try:
+            start = datetime.strptime(str(pool.get("start_time") or ""), "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=SHANGHAI_TZ
+            )
+        except ValueError:
+            continue
+        open_dates.add(start.date())
+    return open_dates
+
+
+def _is_gacha_lucky_date(day: date, open_dates: set[date]) -> bool:
+    """开池当天与其次日算卡池好运日。"""
+    return day in open_dates or day - timedelta(days=1) in open_dates
+
+
+async def _fetch_pool_open_dates() -> set[date]:
+    url = str(cfg_api_urls()["gacha_pool_api"]).strip()
+    if not url:
+        return set()
+    client = await get_shared_async_client()
+    response = await client.get(url, timeout=8)
+    response.raise_for_status()
+    return _pool_open_dates(response.json())
+
+
+async def gacha_lucky_day(day: date | None = None) -> bool:
+    """今天是不是卡池好运日；接口不可用时按普通运势处理，稍后重试。"""
+    day = day or today()
+    key = day.isoformat()
+    cached = _POOL_LUCK_CACHE.get(key)
+    if cached is not None and time.monotonic() - cached[0] < _POOL_LUCK_TTL:
+        return cached[1]
+    try:
+        lucky = _is_gacha_lucky_date(day, await _fetch_pool_open_dates())
+    except (httpx.HTTPError, OSError, ValueError):
+        logger.opt(exception=True).debug("[Fortune] 卡池开池日获取失败，按普通运势处理")
+        lucky = False
+    _POOL_LUCK_CACHE.clear()
+    _POOL_LUCK_CACHE[key] = (time.monotonic(), lucky)
+    return lucky
+
+
+def _top_fortunes() -> list[dict[str, Any]]:
+    """最高档签文（超好运），数据异常时退回全库。"""
+    return [item for item in _JRYS_DATA if _star_count(item) == 7] or list(_JRYS_DATA)
+
 
 _TRIGRAM_BITS = {
     "乾": "111",
@@ -550,6 +611,8 @@ def build_card_html(
             logger.opt(exception=True).debug("[Fortune] 背景图无法识别，使用渐变兜底")
 
     values = {
+        # 贴纸按年份走（FORTUNE '26），不必每年手改模板。
+        "sticker_text": f"FORTUNE {today_str('%y')}'",
         "font_face_rule": _font_face_rule(),
         "theme_color": theme,
         "background_image": background_image,
@@ -641,31 +704,39 @@ async def render_card_bytes(
     return image_bytes(_generate_fortune_canvas(nickname, record, image))
 
 
-def _get_or_create_today_fortune(user_id: str) -> tuple[dict[str, Any], bool]:
-    """获取或生成当天运势。"""
+def _get_or_create_today_fortune(user_id: str, *, gacha_lucky: bool = False) -> tuple[dict[str, Any], bool]:
+    """获取或生成当天运势；卡池日整库只从最高档里抽。"""
     if not _JRYS_DATA:
         _load_fortune_defs()
     today = today_str()
     _load_user_fortunes()
     record = _USER_FORTUNES.get(user_id)
     if record and record.get("time") == today:
+        # 开池日之前落地的普通签也统一升档，保证当天所有人都是超好运。
+        if gacha_lucky and not record.get("gacha_lucky"):
+            record["fortune"] = _pick_fortune(_top_fortunes())
+            record["gacha_lucky"] = True
+            _save_user_fortunes()
         return record, False
     if not _JRYS_DATA:
         raise ValueError("运势库为空，无法生成")
-    record = {"fortune": _pick_fortune(_JRYS_DATA), "time": today}
+    record = {"fortune": _pick_fortune(_top_fortunes() if gacha_lucky else _JRYS_DATA), "time": today}
+    if gacha_lucky:
+        record["gacha_lucky"] = True
     _USER_FORTUNES[user_id] = record
     # 生成后立即落盘，不依赖退出钩子。
     _save_user_fortunes()
     return record, True
 
 
-def _recast_today_fortune(user_id: str) -> tuple[dict[str, Any], bool]:
+def _recast_today_fortune(user_id: str, *, gacha_lucky: bool = False) -> tuple[dict[str, Any], bool]:
     """逆天改命：当天重抽一次，返回 (记录, 是否改命成功)。"""
-    record, _ = _get_or_create_today_fortune(user_id)
+    record, _ = _get_or_create_today_fortune(user_id, gacha_lucky=gacha_lucky)
     if int(record.get("recast", 0)) >= _RECAST_LIMIT:
         return record, False
     current = record.get("fortune") or {}
-    pool = [item for item in _JRYS_DATA if item != current] or list(_JRYS_DATA)
+    base = _top_fortunes() if record.get("gacha_lucky") else _JRYS_DATA
+    pool = [item for item in base if item != current] or list(base)
     record["fortune"] = _pick_fortune(pool)
     record["recast"] = int(record.get("recast", 0)) + 1
     _save_user_fortunes()
@@ -684,7 +755,7 @@ recast_matcher = on_regex(
 async def handle(context: HandlerContext) -> None:
     event = context.event
     nickname = event.user_name or event.user_id
-    data, _ = _get_or_create_today_fortune(event.user_id)
+    data, _ = _get_or_create_today_fortune(event.user_id, gacha_lucky=await gacha_lucky_day())
     image = await render_card_bytes(event.user_id, data, nickname, bot=context.bot)
     await context.send(Message([MessageSegment.image(image)]))
 
@@ -692,7 +763,7 @@ async def handle(context: HandlerContext) -> None:
 @recast_matcher.handle()
 async def handle_recast(context: HandlerContext) -> None:
     event = context.event
-    record, changed = _recast_today_fortune(event.user_id)
+    record, changed = _recast_today_fortune(event.user_id, gacha_lucky=await gacha_lucky_day())
     if not changed:
         await context.send("今天已经改过一次命了，明天再来。")
         return

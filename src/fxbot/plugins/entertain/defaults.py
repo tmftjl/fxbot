@@ -24,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
         "sick_quote_api": "https://oiapi.net/API/SickL/",
         "doro_api": "https://doro-api.hxxn.cc/get",
         "background_api": "http://127.0.0.1:1520/api/wuthering_waves/role_image/random",
+        "gacha_pool_api": "https://wh.loping151.site/api/waves/pool/list",
     },
     "image_display": {
         "enabled": True,

@@ -142,6 +142,13 @@ def get_ui_schema() -> dict[str, Any]:
                         "default": DEFAULTS["api_urls"]["background_api"],
                         "helpMessage": "运势背景图接口，留空则使用内置背景。",
                     },
+                    {
+                        "field": "gacha_pool_api",
+                        "label": "卡池接口",
+                        "component": "Input",
+                        "default": DEFAULTS["api_urls"]["gacha_pool_api"],
+                        "helpMessage": "卡池开池日接口；开池当天与次日全体签文为超好运，留空则不判定。",
+                    },
                 ],
             },
             {

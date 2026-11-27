@@ -429,6 +429,7 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
             patch.object(fortune, "_USER_FORTUNES", {}),
             patch.object(fortune, "_JRYS_DATA", [{"fortuneSummary": "吉"}]),
             patch.object(fortune, "_fetch_background_bytes", AsyncMock(return_value=None)),
+            patch.object(fortune, "gacha_lucky_day", AsyncMock(return_value=False)),
             patch.object(fortune, "render_card_bytes", AsyncMock(return_value=b"png")) as render,
         ):
             await fortune.handle(self.context())
@@ -441,13 +442,14 @@ class NativePluginTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(tools, "authorized", return_value=(self.event, self.bot)),
+            patch.object(tools.fortune, "gacha_lucky_day", AsyncMock(return_value=False)),
             patch.object(
                 tools.fortune, "_get_or_create_today_fortune", return_value=({"fortune": {}}, False)
             ) as get_record,
             patch.object(tools.fortune, "render_card_bytes", AsyncMock(return_value=b"png")),
         ):
             await tools.get_fortune_tool(Mock(), Mock())
-        get_record.assert_called_once_with("200")
+        get_record.assert_called_once_with("200", gacha_lucky=False)
 
     async def test_like_concurrent_requests_do_not_duplicate(self):
         likes = Likes()

@@ -39,7 +39,9 @@ async def authorized(ctx, rt, feature):
 )
 async def get_fortune_tool(ctx: ToolContext, rt: ToolRuntime, nickname: str = "您") -> str:
     event, bot = await authorized(ctx, rt, "entertain:today")
-    data, _ = fortune._get_or_create_today_fortune(event.user_id)
+    data, _ = fortune._get_or_create_today_fortune(
+        event.user_id, gacha_lucky=await fortune.gacha_lucky_day()
+    )
     image = await fortune.render_card_bytes(
         event.user_id, data, event.user_name or nickname, bot=bot
     )
