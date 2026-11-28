@@ -1,4 +1,4 @@
-"""在线 Bot 快照对比、掉线判定与超管私聊提醒。"""
+"""Bot 监控：掉线与假在线共用一套判据，连续失败后重启容器。"""
 
 from __future__ import annotations
 
@@ -9,9 +9,21 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
-from .config import get_config
+from .liveness import discover_containers, restart_container
 from ...core import Message, SessionTarget
 from ...core.errors import ActionFailed
+
+INTERVAL_SECONDS = 300.0
+"""掉线快照与假在线探活共用的检测间隔。"""
+
+FAIL_THRESHOLD = 3
+"""连续失败达到该次数才处置，中间任意一次成功即清零。"""
+
+PROBE_TIMEOUT = 10.0
+"""单次探活的响应超时。"""
+
+ACTION_COOLDOWN_SECONDS = 900.0
+"""同一 Bot 两次处置之间的最小间隔。"""
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _HEX = set("0123456789abcdefABCDEF")
@@ -47,10 +59,9 @@ def _candidates(bots: tuple[Any, ...], entry: str) -> list[Any]:
 
 
 async def _notify(services: Any, bots: tuple[Any, ...], text: str) -> bool:
-    """逐条投递给超级用户；任一投递成功即视为本轮已送达。"""
+    """只用一个 Bot 发一条提醒，首个投递成功即停。"""
     system = services.configuration.get_system().get("system") or {}
     entries = [str(item).strip() for item in system.get("superusers") or [] if str(item).strip()]
-    delivered = False
     for entry in entries:
         for bot in _candidates(bots, entry):
             target = SessionTarget(bot.platform, bot.bot_id, "private", entry)
@@ -58,70 +69,85 @@ async def _notify(services: Any, bots: tuple[Any, ...], text: str) -> bool:
                 await bot.send(target, Message.text(text))
             except _DELIVERY_ERRORS:
                 continue
-            delivered = True
-            break
-    if not delivered:
-        logger.warning("[BotMonitor] 提醒未能投递，下一轮重试: {}", text.splitlines()[-1])
-    return delivered
+            return True
+    logger.warning("[BotMonitor] 提醒未能投递，下一轮重试: {}", text.splitlines()[-1])
+    return False
+
+
+def _probe_action(bot: Any) -> str | None:
+    """只有 OneBot 连接能主动探活；其它平台只看在线快照。"""
+    return "get_login_info" if str(getattr(bot, "platform", "")).startswith("onebot") else None
+
+
+def _allows_action(state: dict[str, Any], key: str, moment: float) -> bool:
+    """处置受冷却约束，避免网络抖动时反复重启。"""
+    history = [item for item in state.setdefault("actions", {}).get(key, []) if moment - item < ACTION_COOLDOWN_SECONDS]
+    state["actions"][key] = history
+    return not history
+
+
+async def _act(services: Any, state: dict[str, Any], key: str, bot: Any, moment: float) -> None:
+    """能定位到容器就重启，否则只提醒；两种情况共用同一套节流。"""
+    bots = tuple(services.application.bots)
+    bot_id = str(bot.bot_id) if bot is not None else key.split(":", 1)[-1]
+    containers = await discover_containers(state, moment)
+    name = containers.get(bot_id)
+    if name is not None:
+        restarted = await restart_container(name)
+        text = "\n".join(
+            [
+                "【Bot 异常】",
+                key,
+                f"连续 {FAIL_THRESHOLD} 次检测失败",
+                f"已重启容器 {name}" if restarted else f"重启容器 {name} 失败，请人工检查",
+            ]
+        )
+        if restarted:
+            state["actions"][key].append(moment)
+    else:
+        text = "\n".join(
+            [
+                "【Bot 异常】",
+                key,
+                f"连续 {FAIL_THRESHOLD} 次检测失败",
+                "未找到对应容器，仅提醒",
+            ]
+        )
+        state["actions"][key].append(moment)
+    if await _notify(services, bots, text):
+        state.setdefault("alerted", set()).add(key)
 
 
 async def run_tick(services: Any, state: dict[str, Any], *, now: float | None = None) -> None:
-    """对比两次快照；首次只建立基线，维护窗口内的抖动由宽限期吸收。"""
-    config = get_config()
-    if not config["enabled"]:
-        return
-    bots = tuple(services.application.bots)
-    current = {_key(bot): bot for bot in bots}
+    """一轮同时判定掉线与假在线：连续失败达到阈值后按节流处置。"""
     moment = time.monotonic() if now is None else now
-    wall = time.time()
+    current = {_key(bot): bot for bot in services.application.bots}
+    known: set[str] = state.setdefault("known", set())
+    known.update(current)
+    fails: dict[str, int] = state.setdefault("fails", {})
+    alerted: set[str] = state.setdefault("alerted", set())
 
-    if not state.get("initialized"):
-        state["online"] = set(current)
-        state["offline"] = {}
-        state["initialized"] = True
-        return
+    for key in sorted(known):
+        bot = current.get(key)
+        action = _probe_action(bot) if bot is not None else None
+        healthy = bot is not None
+        if action is not None:
+            try:
+                await bot.call(action, timeout=PROBE_TIMEOUT)
+            except Exception:
+                healthy = False
+        fails[key] = 0 if healthy else fails.get(key, 0) + 1
 
-    online: set[str] = state["online"]
-    offline: dict[str, dict[str, float]] = state["offline"]
+    for key in sorted(alerted & {item for item, count in fails.items() if count == 0} & set(current)):
+        alerted.discard(key)
+        logger.info("[BotMonitor] {} 已恢复", key)
+        await _notify(services, tuple(services.application.bots), f"【Bot 恢复】{key} 已恢复响应")
 
-    for key in set(current) & set(offline):
-        info = offline.pop(key)
-        online.add(key)
-        # 只有真的发过掉线提醒才补一条恢复；宽限内的重连抖动完全静默。
-        if config["notify_recovery"] and info.get("alerted"):
-            if await _notify(
-                services,
-                bots,
-                f"【Bot 恢复】{key} 已重新上线，离线时长 {_duration(moment - info['since'])}",
-            ):
-                logger.info("[BotMonitor] 已发送恢复提醒: {}", key)
-
-    for key in set(current) - online:
-        online.add(key)
-
-    for key in online - set(current):
-        online.discard(key)
-        offline.setdefault(key, {"since": moment, "since_wall": wall, "alerted": 0.0})
-        logger.debug("[BotMonitor] 检测到离线: {}", key)
-
-    for key, info in list(offline.items()):
-        if key in current:
+    for key in sorted(known):
+        if fails.get(key, 0) < FAIL_THRESHOLD:
             continue
-        elapsed = moment - info["since"]
-        if elapsed < config["offline_grace_seconds"]:
+        if not _allows_action(state, key, moment):
+            logger.warning("[BotMonitor] {} 连续失败，但处于冷却期", key)
             continue
-        repeat = float(config["repeat_minutes"]) * 60
-        last = info.get("alerted", 0.0)
-        if last and (repeat <= 0 or moment - last < repeat):
-            continue
-        text = "\n".join(
-            [
-                "【Bot 掉线】",
-                key,
-                f"离线时长：{_duration(elapsed)}",
-                f"开始时间：{_clock(info['since_wall'])}",
-            ]
-        )
-        if await _notify(services, bots, text):
-            info["alerted"] = moment
-            logger.info("[BotMonitor] 已发送掉线提醒: {}（离线 {}）", key, _duration(elapsed))
+        await _act(services, state, key, current.get(key), moment)
+        fails[key] = 0
