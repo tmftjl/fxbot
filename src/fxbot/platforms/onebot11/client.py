@@ -21,8 +21,9 @@ from ...core import (
 
 ActionSender = Callable[..., Awaitable[Any]]
 FileUploader = Callable[[SessionTarget, Path, str], Awaitable[Any]]
-# 合并转发要等 NapCat 把视频/图片上传到 QQ，明显慢于普通动作。
-FORWARD_TIMEOUT = 120.0
+# 合并转发要等 NapCat 把视频/图片上传到 QQ，大文件可能持续很久，因此不设实际上限；
+# 连接断开仍由 ActionBroker 的离线信号中止，只有 NapCat 活着但不响应时才会一直等待。
+FORWARD_TIMEOUT = 86400.0
 
 
 class OneBot11Client:
